@@ -304,13 +304,29 @@ export OPENAI_BASE_URL="http://localhost:$VLLM_PORT/v1"
 
 HARBOR_CMD=( uv run harbor run
              --dataset "$DATASET"
-             --agent-import-path "$AGENT_IMPORT_PATH"
-             --model "hosted_vllm/$SERVED_MODEL_NAME"
              --env docker
              --n-concurrent "$N_CONCURRENT"
-             --agent-kwarg "api_base=http://localhost:$VLLM_PORT/v1"
              --job-name "$JOB_NAME"
              -k "$N_ATTEMPTS" )
+# AGENT_IMPORT_PATH with a ":" is a module:Class import path (e.g.
+# VanilluxAgent:VanilluxAgent); otherwise it's a harbor built-in agent name
+# (e.g. mini-swe-agent, swe-agent, terminus).
+#   * import-path SWE agents take an explicit api_base agent-kwarg and the
+#     hosted_vllm/ litellm provider.
+#   * built-in agents resolve the endpoint from OPENAI_BASE_URL + --model and
+#     need the openai/ provider (the installed harbor's litellm has no
+#     "hosted_vllm" provider registered). Do NOT set MSWEA_API_KEY: harbor's
+#     mini-swe-agent forwards only that when present and skips OPENAI_API_KEY,
+#     which litellm's openai provider then reports as "Missing credentials".
+if [[ "$AGENT_IMPORT_PATH" == *:* ]]; then
+    HARBOR_CMD+=( --agent-import-path "$AGENT_IMPORT_PATH"
+                  --model "hosted_vllm/$SERVED_MODEL_NAME"
+                  --agent-kwarg "api_base=http://localhost:$VLLM_PORT/v1" )
+else
+    unset MSWEA_API_KEY
+    HARBOR_CMD+=( --agent "$AGENT_IMPORT_PATH"
+                  --model "openai/$SERVED_MODEL_NAME" )
+fi
 log "running harbor: ${HARBOR_CMD[*]}"
 
 # Background progress reporter — harbor's built-in progress bar uses ANSI
