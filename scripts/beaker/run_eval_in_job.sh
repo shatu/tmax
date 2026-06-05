@@ -211,28 +211,23 @@ if [ -x /usr/local/bin/setup_dockerio_mirror ]; then
     /usr/local/bin/setup_dockerio_mirror || log "setup_dockerio_mirror failed (continuing)"
 fi
 if [ -n "${DOCKER_PAT:-}" ]; then
-    log "writing Docker Hub credentials"
-    DOCKERHUB_USERNAME="${DOCKERHUB_USERNAME:-hamishi740}"
-    python3 - <<PY
-import base64, json, os
-username = "$DOCKERHUB_USERNAME"
-pat = os.environ["DOCKER_PAT"]
-auth = base64.b64encode(f"{username}:{pat}".encode()).decode()
-cfg_dir = os.path.expanduser("~/.docker")
-os.makedirs(cfg_dir, exist_ok=True)
-cfg_path = os.path.join(cfg_dir, "config.json")
-cfg = {}
-if os.path.exists(cfg_path):
-    try:
-        cfg = json.load(open(cfg_path))
-    except Exception:
-        cfg = {}
-cfg.setdefault("auths", {})["https://index.docker.io/v1/"] = {"auth": auth}
-json.dump(cfg, open(cfg_path, "w"), indent=2)
-print(f"wrote {cfg_path}")
-PY
+    # Authenticate to Docker Hub so task-image pulls don't hit the
+    # unauthenticated rate cap. We `docker login` to VERIFY the credentials and
+    # HARD-ABORT on failure — no anonymous fallback — so a wrong username/PAT
+    # fails fast and unambiguously here, rather than silently rate-limiting or
+    # erroring on every image pull mid-run. DOCKERHUB_USERNAME must be the
+    # Docker Hub account that owns the DOCKER_PAT secret.
+    DOCKERHUB_USERNAME="${DOCKERHUB_USERNAME:-shashankg209}"
+    log "docker login as '$DOCKERHUB_USERNAME'"
+    if printf '%s' "$DOCKER_PAT" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin docker.io >/dev/null 2>&1; then
+        log "Docker Hub login OK ($DOCKERHUB_USERNAME)"
+    else
+        log "FATAL: Docker Hub login failed for '$DOCKERHUB_USERNAME'. Check DOCKERHUB_USERNAME and the DOCKER_PAT secret. Aborting."
+        exit 1
+    fi
 else
-    log "DOCKER_PAT not set — Docker Hub pulls will be rate-limited (100/6hr)"
+    log "FATAL: DOCKER_PAT not set; refusing to fall back to anonymous pulls. Provide the DOCKER_PAT secret. Aborting."
+    exit 1
 fi
 
 # --- 5. Start vLLM in the background ----------------------------------------
