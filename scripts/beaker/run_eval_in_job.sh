@@ -308,24 +308,32 @@ HARBOR_CMD=( uv run harbor run
              --n-concurrent "$N_CONCURRENT"
              --job-name "$JOB_NAME"
              -k "$N_ATTEMPTS" )
-# AGENT_IMPORT_PATH with a ":" is a module:Class import path (e.g.
-# VanilluxAgent:VanilluxAgent); otherwise it's a harbor built-in agent name
-# (e.g. mini-swe-agent, swe-agent, terminus).
-#   * import-path SWE agents take an explicit api_base agent-kwarg and the
-#     hosted_vllm/ litellm provider.
-#   * built-in agents resolve the endpoint from OPENAI_BASE_URL + --model and
-#     need the openai/ provider (the installed harbor's litellm has no
-#     "hosted_vllm" provider registered). Do NOT set MSWEA_API_KEY: harbor's
-#     mini-swe-agent forwards only that when present and skips OPENAI_API_KEY,
-#     which litellm's openai provider then reports as "Missing credentials".
+# AGENT_IMPORT_PATH with a ":" is a module:Class import path; otherwise it's a
+# harbor built-in agent name (e.g. mini-swe-agent, swe-agent, terminus).
+#
+# Litellm provider prefix (MODEL_PROVIDER, overridable via launch_eval.sh
+# --model-provider). Defaults:
+#   * import-path SWE agents (VanilluxAgent): hosted_vllm/ + an api_base kwarg.
+#   * everything else (built-in agents, and the custom litellm BaseAgent
+#     Vanillux2Agent): openai/ — the installed harbor's litellm has no usable
+#     "hosted_vllm" path, and openai/<served-name> + OPENAI_BASE_URL works.
+#   NOTE Vanillux2Agent: launch with --agent Vanillux2Agent:Vanillux2Agent
+#        --model-provider openai --tool-call-parser qwen3_xml (Qwen3.5 emits
+#        <function=..><parameter=..> XML that the hermes parser drops, which
+#        otherwise loops the agent on format errors).
+# Do NOT set MSWEA_API_KEY for built-in agents: harbor's mini-swe-agent forwards
+# only that when present and skips OPENAI_API_KEY, which litellm then reports as
+# "Missing credentials".
 if [[ "$AGENT_IMPORT_PATH" == *:* ]]; then
+    MODEL_PROVIDER="${MODEL_PROVIDER:-hosted_vllm}"
     HARBOR_CMD+=( --agent-import-path "$AGENT_IMPORT_PATH"
-                  --model "hosted_vllm/$SERVED_MODEL_NAME"
+                  --model "$MODEL_PROVIDER/$SERVED_MODEL_NAME"
                   --agent-kwarg "api_base=http://localhost:$VLLM_PORT/v1" )
 else
+    MODEL_PROVIDER="${MODEL_PROVIDER:-openai}"
     unset MSWEA_API_KEY
     HARBOR_CMD+=( --agent "$AGENT_IMPORT_PATH"
-                  --model "openai/$SERVED_MODEL_NAME" )
+                  --model "$MODEL_PROVIDER/$SERVED_MODEL_NAME" )
 fi
 log "running harbor: ${HARBOR_CMD[*]}"
 

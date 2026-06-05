@@ -38,6 +38,7 @@ DP_SIZE=""
 VLLM_PORT=8008
 VLLM_VERSION="0.19.1"
 VLLM_TOOL_CALL_PARSER="hermes"
+MODEL_PROVIDER=""
 VLLM_LANGUAGE_MODEL_ONLY=0
 MAX_MODEL_LEN=""
 DATASET="terminal-bench@2.0"
@@ -71,7 +72,11 @@ Options:
   --dp N                 data-parallel-size (default: 1)
   --port PORT            vllm port (default: 8008)
   --vllm-version VER     vLLM package version for uvx (default: 0.19.1)
-  --tool-call-parser P   vLLM tool call parser (default: hermes)
+  --tool-call-parser P   vLLM tool call parser (default: hermes; use qwen3_xml
+                         for Qwen3.5 with tool-calling agents like Vanillux2Agent)
+  --model-provider PROV  litellm provider prefix for --model (default: hosted_vllm
+                         for import-path agents, openai otherwise). Use openai for
+                         Vanillux2Agent.
   --language-model-only  pass --language_model_only to vLLM
   --max-model-len LEN    pass --max-model-len to vllm
   --dataset DS           harbor dataset (default: terminal-bench@2.0; also
@@ -109,6 +114,7 @@ while [ $# -gt 0 ]; do
         --port)            VLLM_PORT="$2"; shift 2 ;;
         --vllm-version)    VLLM_VERSION="$2"; shift 2 ;;
         --tool-call-parser) VLLM_TOOL_CALL_PARSER="$2"; shift 2 ;;
+        --model-provider)  MODEL_PROVIDER="$2"; shift 2 ;;
         --language-model-only|--language_model_only) VLLM_LANGUAGE_MODEL_ONLY=1; shift ;;
         --max-model-len)   MAX_MODEL_LEN="$2"; shift 2 ;;
         --dataset)         DATASET="$2"; shift 2 ;;
@@ -189,6 +195,7 @@ GANTRY_CMD=(
     --env "SERVED_MODEL_NAME=${SERVED_MODEL_NAME}"
     --env "VLLM_VERSION=${VLLM_VERSION}"
     --env "VLLM_TOOL_CALL_PARSER=${VLLM_TOOL_CALL_PARSER}"
+    --env "MODEL_PROVIDER=${MODEL_PROVIDER}"
     --env "VLLM_LANGUAGE_MODEL_ONLY=${VLLM_LANGUAGE_MODEL_ONLY}"
     --env "VLLM_PORT=${VLLM_PORT}"
     --env "TP_SIZE=${TP_SIZE}"
