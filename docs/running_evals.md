@@ -389,8 +389,8 @@ Custom agents take `--agent-kwarg key=value` flags.
 
 | Agent | Selector | Summary |
 |---|---|---|
-| **TassieAgent** | `TassieAgent:TassieAgent` | Simple bash-only tool loop (mini-SWE-agent style). The repo default for most direct/Slurm scripts. Kwargs: `max_steps` (default 30), `cost_limit`, `persistent_bash`, `api_base`. |
-| **TassumAgent** | `TassumAgent:TassumAgent` | TassieAgent **+ proactive context summarisation** when free tokens drop below a threshold. Extra kwargs: `enable_summarize` (default False), `max_input_tokens` (default 32768). |
+| **TassieAgent** | `TassieAgent:TassieAgent` | Simple bash-only tool loop. The repo default for most direct/Slurm scripts. Uses **structured litellm tool-calls** (`tools=[bash_tool]`) → needs `qwen3_xml` on Qwen3.5 (see below). Kwargs: `max_steps` (default 30), `cost_limit`, `persistent_bash`, `api_base`. |
+| **TassumAgent** | `TassumAgent:TassumAgent` | TassieAgent **+ proactive context summarisation** when free tokens drop below a threshold. Same structured tool-calls as TassieAgent (→ `qwen3_xml`). Extra kwargs: `enable_summarize` (default False), `max_input_tokens` (default 32768). |
 | **VanilluxAgent** ⚠️ | `VanilluxAgent:VanilluxAgent` | Thin wrapper around upstream **SWE-agent** (Yang et al. 2024) run inside the sandbox: bash + view/edit/submit tools. Tweaks cost/call limits; reads `VANILLUX_CALL_LIMIT` env var. Disables `cache_control` history processor (required for Gemini). Still the `launch_eval.sh` default, but **broken against the pinned harbor 0.6.6** — see warning below. |
 | **Vanillux2Agent** | `Vanillux2Agent:Vanillux2Agent` | Direct-LiteLLM port of the `rl_data` vanillux solver: same prompts/tool schema/truncation as the RL-data generator, but driven through harbor's environment. Works on 0.6.6. Uses **structured** litellm tool-calls → needs the right `--tool-call-parser` for the model and the `openai/` provider (see below). Runs **host-side** (only bash execs enter the sandbox). |
 | **mini-swe-agent** | `mini-swe-agent` (built-in) | Harbor's lightweight SWE agent, installed inside the sandbox. Parses `bash` code blocks from plain text, so it is **independent of the tool-call parser**. Works on 0.6.6; use the `openai/` provider. |
@@ -411,20 +411,25 @@ Custom agents take `--agent-kwarg key=value` flags.
 >
 > | Agent kind | `--model-provider` | `--tool-call-parser` (Qwen3.5) |
 > |---|---|---|
+> | **TassieAgent / TassumAgent / Vanillux2Agent** (repo custom litellm agents, structured tool-calls) | `openai` | **`qwen3_xml`** |
 > | `mini-swe-agent` (text bash blocks) | `openai` | any (`hermes` fine — parser-independent) |
-> | `Vanillux2Agent` (structured tool-calls) | `openai` | **`qwen3_xml`** |
-> | `swe-agent` / `VanilluxAgent` (SWE-agent) | `hosted_vllm` | `hermes` |
+> | `terminus-2` (built-in) | `openai` | `qwen3_xml` (safe default) |
+> | `swe-agent` / `VanilluxAgent` (SWE-agent in sandbox) | `hosted_vllm` | `hermes` |
 >
 > Qwen3.5 emits `<function=name><parameter=…>` XML; with the default `hermes`
-> parser those tool-calls are **silently dropped**, so a structured-tool agent
-> (Vanillux2Agent) loops on "Format error" and gives up with ~0 useful steps.
-> `qwen_xml` is **not** a valid parser name — use `qwen3_xml` (valid names
-> include `hermes, qwen3_coder, qwen3_xml, …`). The installed harbor's litellm
-> has no usable `hosted_vllm` path, so built-in agents and Vanillux2Agent use
-> `openai/<served-name>` (+ `OPENAI_API_BASE` / `OPENAI_API_KEY=dummy`). **Do
-> not set `MSWEA_API_KEY`** for built-in agents — harbor's mini-swe-agent then
-> forwards only that, skips `OPENAI_API_KEY`, and litellm reports "Missing
-> credentials".
+> parser those tool-calls are **silently dropped**, so any structured-tool agent
+> (**TassieAgent, TassumAgent, Vanillux2Agent**) loops on "Format error" and
+> gives up with ~0 useful steps. `qwen_xml` is **not** a valid parser name —
+> use `qwen3_xml` (valid names include `hermes, qwen3_coder, qwen3_xml, …`).
+> For provider: built-in agents and the custom litellm agents use
+> `openai/<served-name>` (+ `OPENAI_API_BASE` / `OPENAI_API_KEY=dummy`) on the
+> Beaker vLLM path — that's the verified combo and what `launch_eval.sh`
+> defaults via `--model-provider`. (The Daytona `run_*.sh` scripts address the
+> same direct-litellm agents as `hosted_vllm/<name>`, which litellm core also
+> supports; the `hosted_vllm` *non*-path is specific to harbor's built-in
+> mini-swe-agent helper, which rejects it.) **Do not set `MSWEA_API_KEY`** for
+> built-in agents — harbor's mini-swe-agent then forwards only that, skips
+> `OPENAI_API_KEY`, and litellm reports "Missing credentials".
 
 > The choice of agent matters for fairness. `VanilluxAgent` uses a
 > *call* limit (`CALL_LIMIT`, default 100) while `TassieAgent` uses a *step*
