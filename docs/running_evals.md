@@ -237,6 +237,16 @@ Prereqs: a running Docker daemon **and** the `docker compose` v2 CLI plugin
 [`beaker-utils/interactive/set_dev_vm.sh`](https://github.com/shatu/beaker-utils)
 installs it). `run_eval_local.sh` installs the plugin if it's missing.
 
+**Docker Hub auth (local).** Task images come from Docker Hub, so the script
+authenticates the same way as the Beaker path: it resolves a PAT from
+`$DOCKER_PAT` (else reads the `DOCKER_PAT_SECRET` beaker secret via the beaker
+CLI, default `shashankg_DOCKER_PAT`), runs `docker login -u $DOCKERHUB_USERNAME`
+(default `shashankg209`), and **hard-aborts on failure — no anonymous fallback**.
+It also neutralizes a broken `credsStore` (e.g. the VS Code dev-containers
+helper, which otherwise makes `docker login` fail to persist and turns every
+pull into `unauthorized`). To use a different account, set `DOCKERHUB_USERNAME`
++ `DOCKER_PAT` (or `DOCKER_PAT_SECRET`).
+
 ---
 
 ## 4. Path B — Slurm on Tillicum (Daytona)

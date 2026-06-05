@@ -124,6 +124,35 @@ docker compose version >/dev/null 2>&1 || {
     chmod +x /root/.docker/cli-plugins/docker-compose
 }
 
+# --- 0b. Docker Hub auth (mirrors scripts/beaker/run_eval_in_job.sh) ---------
+# harbor pulls task images from Docker Hub. Authenticate so pulls don't hit the
+# unauthenticated cap, VERIFY with `docker login`, and HARD-ABORT on failure —
+# no anonymous fallback (deterministic, matching the Beaker path). The PAT comes
+# from $DOCKER_PAT, else is read from the beaker secret via the beaker CLI.
+DOCKERHUB_USERNAME="${DOCKERHUB_USERNAME:-shashankg209}"
+DOCKER_PAT_SECRET="${DOCKER_PAT_SECRET:-shashankg_DOCKER_PAT}"
+AUTH_WORKSPACE="${BEAKER_WORKSPACE:-ai2/general-tool-use}"
+if [ -z "${DOCKER_PAT:-}" ] && command -v beaker >/dev/null 2>&1; then
+    DOCKER_PAT="$(beaker secret read "$DOCKER_PAT_SECRET" --workspace "$AUTH_WORKSPACE" 2>/dev/null || true)"
+fi
+[ -n "${DOCKER_PAT:-}" ] || {
+    echo "FATAL: no Docker Hub PAT. Set DOCKER_PAT, or grant beaker access to secret '$DOCKER_PAT_SECRET' in '$AUTH_WORKSPACE'."; exit 1; }
+# A broken credsStore (e.g. the VS Code dev-containers credential helper) makes
+# `docker login` fail to persist the auth — drop it (keep other keys) so login
+# writes a plain auth entry.
+if [ -f "$HOME/.docker/config.json" ] && grep -q '"credsStore"' "$HOME/.docker/config.json" 2>/dev/null; then
+    log "neutralizing docker credsStore (backup: config.json.bak) so login persists"
+    cp "$HOME/.docker/config.json" "$HOME/.docker/config.json.bak"
+    python3 -c "import json,os;p=os.path.expanduser('~/.docker/config.json');d=json.load(open(p));d.pop('credsStore',None);d.pop('credHelpers',None);json.dump(d,open(p,'w'),indent=2)" \
+        || { echo "FATAL: failed to rewrite ~/.docker/config.json"; exit 1; }
+fi
+log "docker login as '$DOCKERHUB_USERNAME'"
+if printf '%s' "$DOCKER_PAT" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin docker.io >/dev/null 2>&1; then
+    log "Docker Hub login OK ($DOCKERHUB_USERNAME)"
+else
+    echo "FATAL: Docker Hub login failed for '$DOCKERHUB_USERNAME'. Check DOCKERHUB_USERNAME and DOCKER_PAT / secret '$DOCKER_PAT_SECRET'."; exit 1
+fi
+
 log "uv sync"
 uv sync
 
