@@ -235,6 +235,16 @@ fi
 : "${VLLM_TOOL_CALL_PARSER:=hermes}"
 : "${VLLM_PORT:=8008}"
 : "${DP_SIZE:=1}"
+# vLLM reads the VLLM_PORT *env var* to derive its INTERNAL ports (the TP
+# worker rendezvous is VLLM_PORT+1, etc.). Under gantry --host-networking,
+# co-located jobs share the host netns, so a fixed VLLM_PORT makes every job
+# derive the same rendezvous port and collide — TP>1 then dies at startup with
+# "DistNetworkError ... EADDRINUSE: address already in use" / "WorkerProc
+# initialization failed". Keep the OpenAI API server on the explicit
+# --port $API_PORT, but UNSET VLLM_PORT so vLLM picks RANDOM free internal
+# ports (no collision, any TP size).
+API_PORT="$VLLM_PORT"
+unset VLLM_PORT
 VLLM_LOG=/tmp/vllm.log
 VLLM_LOG_TAIL_LINES="${VLLM_LOG_TAIL_LINES:-300}"
 VLLM_CMD=( uvx "vllm==${VLLM_VERSION}" serve "$MODEL_PATH"
@@ -243,7 +253,7 @@ VLLM_CMD=( uvx "vllm==${VLLM_VERSION}" serve "$MODEL_PATH"
            --served-model-name "$SERVED_MODEL_NAME"
            --enable-auto-tool-choice
            --tool-call-parser "$VLLM_TOOL_CALL_PARSER"
-           --port "$VLLM_PORT"
+           --port "$API_PORT"
            --gpu-memory-utilization 0.85
            --tensor-parallel-size "$TP_SIZE"
            --data-parallel-size "$DP_SIZE" )
@@ -265,9 +275,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-log "waiting for vllm on :$VLLM_PORT (up to 30 min)"
+log "waiting for vllm on :$API_PORT (up to 30 min)"
 for _ in $(seq 1 360); do
-    if curl -sf "http://localhost:$VLLM_PORT/v1/models" >/dev/null 2>&1; then
+    if curl -sf "http://localhost:$API_PORT/v1/models" >/dev/null 2>&1; then
         log "vllm ready"
         break
     fi
@@ -279,7 +289,7 @@ for _ in $(seq 1 360); do
     sleep 5
 done
 
-if ! curl -sf "http://localhost:$VLLM_PORT/v1/models" >/dev/null 2>&1; then
+if ! curl -sf "http://localhost:$API_PORT/v1/models" >/dev/null 2>&1; then
     log "vllm did not become ready in 30 min — tail of $VLLM_LOG:"
     tail -"$VLLM_LOG_TAIL_LINES" "$VLLM_LOG" || true
     exit 1
@@ -289,13 +299,13 @@ fi
 : "${N_CONCURRENT:=8}"
 : "${N_ATTEMPTS:=1}"
 export OPENAI_API_KEY="${OPENAI_API_KEY:-dummy}"
-export OPENAI_API_BASE="http://localhost:$VLLM_PORT/v1"
+export OPENAI_API_BASE="http://localhost:$API_PORT/v1"
 # Harbor's SWE-agent adapter copies OPENAI_BASE_URL (litellm convention) —
 # not OPENAI_API_BASE — into the container, and only then does it pass
 # --agent.model.api_base=... to sweagent. Without this, litellm in the
 # container falls back to https://api.openai.com and every trial exits
 # with NotFoundError: Hosted_vllmException on step 1.
-export OPENAI_BASE_URL="http://localhost:$VLLM_PORT/v1"
+export OPENAI_BASE_URL="http://localhost:$API_PORT/v1"
 
 HARBOR_CMD=( uv run harbor run
              --dataset "$DATASET"
@@ -323,7 +333,7 @@ if [[ "$AGENT_IMPORT_PATH" == *:* ]]; then
     MODEL_PROVIDER="${MODEL_PROVIDER:-hosted_vllm}"
     HARBOR_CMD+=( --agent-import-path "$AGENT_IMPORT_PATH"
                   --model "$MODEL_PROVIDER/$SERVED_MODEL_NAME"
-                  --agent-kwarg "api_base=http://localhost:$VLLM_PORT/v1" )
+                  --agent-kwarg "api_base=http://localhost:$API_PORT/v1" )
 else
     MODEL_PROVIDER="${MODEL_PROVIDER:-openai}"
     unset MSWEA_API_KEY
