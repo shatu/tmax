@@ -82,7 +82,7 @@ class Vanillux2Agent(BaseAgent):
         api_base: str | None = None,
         command_timeout: int = 120,
         persistent_bash: bool = True,
-        max_format_errors: int = 5,
+        max_format_errors: int = 64,
         **kwargs: Any,
     ) -> None:
         super().__init__(logs_dir=logs_dir, model_name=model_name, **kwargs)
