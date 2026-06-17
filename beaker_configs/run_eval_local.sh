@@ -46,6 +46,8 @@ DP_SIZE=1
 VLLM_PORT=8008
 VLLM_VERSION="0.19.1"
 VLLM_TOOL_CALL_PARSER="hermes"
+VLLM_REASONING_PARSER=""
+MODEL_PROVIDER=""
 VLLM_LANGUAGE_MODEL_ONLY=0
 MAX_MODEL_LEN=""
 GPU_MEM_UTIL="0.85"
@@ -78,6 +80,8 @@ while [ $# -gt 0 ]; do
         --port)             VLLM_PORT="$2"; shift 2 ;;
         --vllm-version)     VLLM_VERSION="$2"; shift 2 ;;
         --tool-call-parser) VLLM_TOOL_CALL_PARSER="$2"; shift 2 ;;
+        --reasoning-parser) VLLM_REASONING_PARSER="$2"; shift 2 ;;
+        --model-provider)   MODEL_PROVIDER="$2"; shift 2 ;;
         --language-model-only|--language_model_only) VLLM_LANGUAGE_MODEL_ONLY=1; shift ;;
         --max-model-len)    MAX_MODEL_LEN="$2"; shift 2 ;;
         --gpu-mem-util)     GPU_MEM_UTIL="$2"; shift 2 ;;
@@ -177,8 +181,12 @@ else:
 PY
 
 # --- 2. Start vLLM in the background ----------------------------------------
+# Pin fastapi < 0.137: fastapi 0.137 changed the router internals and breaks
+# prometheus-fastapi-instrumentator (which vLLM mounts on every route), so the
+# API server 500s on every request including /v1/models — the readiness probe
+# then never passes. (Same pin as the Beaker run_eval_in_job.sh path.)
 VLLM_LOG=/tmp/vllm_local.log
-VLLM_CMD=( uvx "vllm==${VLLM_VERSION}" serve "$MODEL_PATH"
+VLLM_CMD=( uvx --with "fastapi<0.137" "vllm==${VLLM_VERSION}" serve "$MODEL_PATH"
            --revision "$REVISION"
            --tokenizer-revision "$REVISION"
            --served-model-name "$SERVED_MODEL_NAME"
@@ -189,6 +197,9 @@ VLLM_CMD=( uvx "vllm==${VLLM_VERSION}" serve "$MODEL_PATH"
            --tensor-parallel-size "$TP_SIZE"
            --data-parallel-size "$DP_SIZE" )
 [ -n "$MAX_MODEL_LEN" ] && VLLM_CMD+=( --max-model-len "$MAX_MODEL_LEN" )
+# Reasoning models (e.g. Qwen3) emit <think>...</think>; --reasoning-parser
+# splits that into reasoning_content so tool-calls/content parse cleanly.
+[ -n "$VLLM_REASONING_PARSER" ] && VLLM_CMD+=( --reasoning-parser "$VLLM_REASONING_PARSER" )
 [ "$VLLM_LANGUAGE_MODEL_ONLY" = "1" ] && VLLM_CMD+=( --language_model_only )
 
 log "launching vllm (CUDA_VISIBLE_DEVICES=$GPU_DEVICES): ${VLLM_CMD[*]}"
@@ -250,17 +261,21 @@ HARBOR_CMD=( uv run harbor run
 # An agent value containing ":" is a module:Class import path (e.g.
 # VanilluxAgent:VanilluxAgent, the Beaker default). Otherwise it's a harbor
 # built-in agent name (e.g. mini-swe-agent, swe-agent, terminus).
-#   * import-path SWE agents take an explicit api_base agent-kwarg and use the
-#     hosted_vllm/ litellm provider (Beaker parity).
+#   * import-path SWE agents take an explicit api_base agent-kwarg and default to
+#     the hosted_vllm/ litellm provider (Beaker parity).
 #   * built-in agents resolve the endpoint from OPENAI_BASE_URL + --model and
 #     want the openai/ provider (litellm has no "hosted_vllm" provider in the
 #     installed harbor, so openai/<served-name> is the working spec).
+# Override the prefix per agent with --model-provider (e.g. Vanillux2Agent is an
+# import-path agent but uses its own litellm loop → needs openai/, not hosted_vllm).
 if [[ "$AGENT_IMPORT_PATH" == *:* ]]; then
-    HARBOR_CMD+=( --model "hosted_vllm/$SERVED_MODEL_NAME"
+    MODEL_PROVIDER="${MODEL_PROVIDER:-hosted_vllm}"
+    HARBOR_CMD+=( --model "$MODEL_PROVIDER/$SERVED_MODEL_NAME"
                   --agent-import-path "$AGENT_IMPORT_PATH"
                   --agent-kwarg "api_base=$AGENT_API_BASE" )
 else
-    HARBOR_CMD+=( --model "openai/$SERVED_MODEL_NAME"
+    MODEL_PROVIDER="${MODEL_PROVIDER:-openai}"
+    HARBOR_CMD+=( --model "$MODEL_PROVIDER/$SERVED_MODEL_NAME"
                   --agent "$AGENT_IMPORT_PATH" )
 fi
 if [ -n "$SINGLE_TASK" ]; then

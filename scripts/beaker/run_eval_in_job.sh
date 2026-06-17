@@ -390,6 +390,7 @@ fi
 # --- 5. Start vLLM in the background ----------------------------------------
 : "${VLLM_VERSION:=0.19.1}"
 : "${VLLM_TOOL_CALL_PARSER:=hermes}"
+: "${VLLM_REASONING_PARSER:=}"
 : "${VLLM_PORT:=8008}"
 : "${DP_SIZE:=1}"
 # vLLM reads the VLLM_PORT *env var* to derive its INTERNAL ports (the TP
@@ -423,6 +424,12 @@ VLLM_CMD=( uvx --with "fastapi<0.137"
            --data-parallel-size "$DP_SIZE" )
 if [ -n "${MAX_MODEL_LEN:-}" ]; then
     VLLM_CMD+=( --max-model-len "$MAX_MODEL_LEN" )
+fi
+# Reasoning models (e.g. Qwen3) emit <think>...</think>; --reasoning-parser
+# splits that into reasoning_content so tool-calls/content parse cleanly. Leave
+# empty for non-reasoning models (e.g. Qwen3.5).
+if [ -n "${VLLM_REASONING_PARSER:-}" ]; then
+    VLLM_CMD+=( --reasoning-parser "$VLLM_REASONING_PARSER" )
 fi
 if [ "${VLLM_LANGUAGE_MODEL_ONLY:-0}" = "1" ]; then
     VLLM_CMD+=( --language_model_only )
