@@ -1,8 +1,8 @@
 # Running Evals
 
 This document is the end-to-end guide to running agentic terminal/coding-task
-evaluations in `tmax`. It covers the mental model, the three launch paths
-(Beaker, Slurm, local), the available datasets and agents, how models are
+evaluations in `tmax`. It covers the mental model, the launch paths
+(Beaker and local/direct), the available datasets and agents, how models are
 served and selected, where results land, and how to analyze them.
 
 If you only want the Beaker-against-vLLM recipe, see
@@ -35,7 +35,7 @@ depends on it as a package
 ([`pyproject.toml`](../pyproject.toml)) and adds custom **agents**, **launch
 scripts**, and **analysis tooling** on top. We never modify harbor's source in
 git — instead we patch its installed package at runtime where needed (see
-[§9 Troubleshooting](#9-troubleshooting)).
+[§8 Troubleshooting](#8-resuming-cleaning-and-troubleshooting)).
 
 ### Vocabulary
 
@@ -44,7 +44,7 @@ git — instead we patch its installed package at runtime where needed (see
 | **task** | One benchmark problem: a Dockerfile/environment + instruction + verifier tests. |
 | **trial** | One `(task, attempt)` pair. Lives at `jobs/<job>/<trial_name>/`. |
 | **attempt / `-k`** | How many independent trials to run per task (for pass@k). |
-| **agent** | The scaffold that turns a model into a tool-using loop (e.g. `TassieAgent`). |
+| **agent** | The scaffold that turns a model into a tool-using loop (e.g. `Vanillux2Agent`). |
 | **environment / sandbox** | Where the agent's shell commands actually execute (`--env docker` or `--env daytona`). |
 | **model** | The LLM being graded. Served either by a self-hosted vLLM or a hosted API. |
 | **verifier** | Task-supplied tests that produce a `reward` (typically 0.0 / 1.0). |
@@ -79,23 +79,24 @@ common combinations.
 
 ## 2. Choosing a launch path
 
-There are three ways to launch a run. Pick based on **where you are** and **what
+There are two ways to launch a run. Pick based on **where you are** and **what
 you're evaluating**.
 
 | Path | Script(s) | Sandbox | Typical model | Use when |
 |---|---|---|---|---|
 | **Beaker** | [`beaker_configs/launch_eval.sh`](../beaker_configs/launch_eval.sh) | podman (in-job) | self-hosted vLLM (your checkpoint) | Iterating on a checkpoint at AI2; you want model + sandboxes in one GPU job. |
-| **Slurm (Tillicum/UW)** | [`scripts/slurm/*.slurm`](../scripts/slurm/) | Daytona | vLLM **or** API | Running on the UW HPC cluster; sandboxes offloaded to Daytona. |
-| **Local / direct** | [`scripts/run_*.sh`](../scripts/) | Daytona (default) | API or vLLM | Quick runs from any machine with a Daytona key; **final/reported numbers**. |
+| **Local / direct** | [`beaker_configs/run_eval_local.sh`](../beaker_configs/run_eval_local.sh) or `uv run harbor run ...` | local Docker (default) **or** Daytona | API or vLLM | Quick smoke tests on a dev VM with a real Docker daemon, or any direct harbor run. |
 
 A useful rule of thumb that mirrors how this repo is actually used day to day:
 
-- **Dev loop** → Beaker + podman + in-job vLLM. Fast, self-contained, but the
-  podman path carries a stack of compatibility patches and is therefore
+- **Dev loop on Beaker** → Beaker + podman + in-job vLLM. Fast, self-contained,
+  but the podman path carries a stack of compatibility patches and is therefore
   somewhat brittle.
-- **Final evals** → Daytona. Clean, isolated, reproducible cloud sandboxes that
-  aren't contaminated by container-runtime hacks. This is why "final" runs use
-  Daytona even though it costs money and needs an account.
+- **Dev loop on a VM** → `run_eval_local.sh` against a real Docker daemon, or a
+  direct `uv run harbor run`. Good for quickly smoke-testing an agent + model
+  before committing to a full Beaker job.
+- **Daytona** → clean, isolated cloud sandboxes (harbor `--env daytona`), useful
+  when you have no local container runtime; requires a `DAYTONA_API_KEY`.
 
 ---
 
@@ -122,9 +123,9 @@ inside the container. Results end up at:
 /weka/oe-adapt-default/$USER/tmax-eval/<job-name>/jobs/<job-name>/
 ```
 
-> Note the quickstart uses the **default `VanilluxAgent`, which currently fails
-> to import** (see [§7](#7-agents)). A verified small-scale run on Qwen3.5-4B —
-> the sample dataset on one GPU — looks like:
+> The quickstart uses the **default `Vanillux2Agent`** (see [§6](#6-agents)). A
+> verified small-scale run on Qwen3.5-4B — the sample dataset on one GPU — looks
+> like:
 >
 > ```bash
 > DOCKER_PAT_SECRET=<user>_DOCKER_PAT ./beaker_configs/launch_eval.sh Qwen/Qwen3.5-4B \
@@ -177,8 +178,8 @@ From [`run_eval_in_job.sh`](../scripts/beaker/run_eval_in_job.sh):
 | `--name NAME` | `basename(model_path)` | vLLM `--served-model-name`; drives `JOB_NAME`. |
 | `--gpus N` / `--tp N` / `--dp N` | `8` / gpus / `1` | GPU + parallelism. |
 | `--dataset DS` | `terminal-bench@2.0` | See [§5 Datasets](#5-datasets). |
-| `--agent IMPORT_PATH` | `VanilluxAgent:VanilluxAgent` | `module:Class` (e.g. `Vanillux2Agent:Vanillux2Agent`) **or** a harbor built-in name (`mini-swe-agent`, `swe-agent`, …). ⚠️ the default fails on harbor 0.6.6 — see [§7](#7-agents). |
-| `--model-provider PROV` | per agent type | litellm provider prefix: `hosted_vllm` for import-path SWE agents, `openai` otherwise. Use `openai` for Vanillux2Agent / built-ins. |
+| `--agent IMPORT_PATH` | `Vanillux2Agent:Vanillux2Agent` | `module:Class` (e.g. `Vanillux2Agent:Vanillux2Agent`) **or** a harbor built-in name (`mini-swe-agent`, `swe-agent`, `terminus-2`, `oracle`). See [§6](#6-agents). |
+| `--model-provider PROV` | per agent type | litellm provider prefix: `hosted_vllm` for `swe-agent`, `openai` otherwise. Use `openai` for Vanillux2Agent / built-ins. |
 | `--n-concurrent N` | `8` | Parallel trials. |
 | `--n-attempts N` | `1` | harbor `-k`. |
 | `--n-tasks N` | all | Run only the first N tasks of the dataset (harbor `--n-tasks`). |
@@ -187,6 +188,7 @@ From [`run_eval_in_job.sh`](../scripts/beaker/run_eval_in_job.sh):
 | `--docker-image IMG` / `--image IMG` | `hamishivi/tmax-eval-interactive` | Public Docker image vs. a Beaker image/ID (each clears the other). |
 | `--max-model-len LEN` | unset | vLLM context length. Pass `32768` for Qwen3.5 so the 262k default KV cache fits one GPU and vLLM actually starts. |
 | `--tool-call-parser P` | `hermes` | vLLM tool parser. **Use `qwen3_xml` for Qwen3.5 with structured-tool agents** (Vanillux2Agent); `hermes` silently drops its tool-calls. |
+| `--reasoning-parser P` | none | vLLM reasoning parser. Use `qwen3` for Qwen3 reasoning models so `<think>…</think>` is split out of the visible response. |
 | `--cluster` / `--workspace` / `--priority` / `--budget` | see script | Beaker placement. |
 | `--results-dir DIR` | `/results` (Gantry → weka) | Where to copy `jobs/`. |
 | `--repo-ref REF` | current HEAD SHA | **Must be pushed** to the remote. |
@@ -253,92 +255,44 @@ pull into `unauthorized`). To use a different account, set `DOCKERHUB_USERNAME`
 
 ---
 
-## 4. Path B — Slurm on Tillicum (Daytona)
+## 4. Local / direct harbor runs
 
-For runs on UW's Tillicum HPC cluster, use the Slurm wrappers in
-[`scripts/slurm/`](../scripts/slurm/). These offload sandboxes to Daytona (the
-allocated GPU is effectively unused — Tillicum just requires ≥1 GPU per job).
+Beyond the `run_eval_local.sh` mirror documented in [§3](#3-path-a--beaker-against-a-local-vllm),
+you can invoke `uv run harbor run` directly from any machine with the relevant
+sandbox backend. This is the path used for ad-hoc smoke tests and for evaluating
+locally-generated RL datasets.
 
-```bash
-sbatch scripts/slurm/run_tb2.slurm
-sbatch --export=ALL,MODEL=openai/gpt-4o scripts/slurm/run_tb2.slurm
-```
-
-Available: `run_tb2.slurm`, `run_tblite.slurm`, `run_swebench.slurm`,
-`run_swebench100.slurm`.
-
-**Secrets.** Slurm jobs source `~/.secrets/tmax.env` (chmod 600):
+A direct invocation looks like:
 
 ```bash
-mkdir -p ~/.secrets && chmod 700 ~/.secrets
-cat > ~/.secrets/tmax.env <<'EOF'
-export DAYTONA_API_KEY=...
-export ANTHROPIC_API_KEY=sk-ant-...
-export OPENAI_API_KEY=sk-...
-export OPENAI_API_BASE=http://host:8000/v1   # only for self-hosted vLLM
-EOF
-chmod 600 ~/.secrets/tmax.env
-```
-
-Common overrides (via `--export=ALL,VAR=value`): `MODEL`, `N_CONCURRENT`,
-`MAX_STEPS`, `N_ATTEMPTS`, `JOB_NAME`, `TMAX_DIR`, `SECRETS_FILE`. SBATCH
-defaults: 1 GPU, 8 CPUs, 200 GB RAM, 24 h.
-
----
-
-## 5. Path C — Local / direct harbor runs
-
-The [`scripts/run_*.sh`](../scripts/) family are thin, resumable wrappers around
-`uv run harbor run`. They default to **`--env daytona`** because they're meant
-to run anywhere (including HPC login nodes without Docker), and they're the path
-used for **final, reported numbers**.
-
-Each script:
-- sets sensible defaults overridable by env vars (`MODEL`, `N_CONCURRENT`,
-  `MAX_STEPS`/`CALL_LIMIT`, `JOB_NAME`, …),
-- **resumes** automatically if `jobs/$JOB_NAME/` already exists (via
-  `harbor jobs resume --filter-error-type DaytonaError`),
-- redirects the harbor task cache to scratch on Tillicum (the TB suites pull
-  large LFS blobs that blow the home quota).
-
-| Script | Dataset | Agent | Default model |
-|---|---|---|---|
-| `run_tb2.sh` | terminal-bench@2.0 | TassieAgent | `hosted_vllm/$MODEL_NAME` |
-| `run_tb2_claude.sh` | terminal-bench@2.0 | TassieAgent | claude-sonnet-4 |
-| `run_tb2_openai.sh` | terminal-bench@2.0 | TassieAgent | gpt-4o |
-| `run_tb2_gemini_tassie.sh` | terminal-bench@2.0 | TassieAgent | gemini-3-flash-preview |
-| `run_tb2_gemini_vanillux.sh` | terminal-bench@2.0 | VanilluxAgent | gemini-3-flash-preview |
-| `run_tblite.sh` / `_claude` / `_openai` | openthoughts-tblite@2.0 | Vanillux/Tassie | varies |
-| `run_swebench.sh` / `_claude` / `_openai` | swebench-verified@1.0 | TassieAgent | varies |
-| `run_swebench100_*.sh` | swebench-verified@1.0 (100-task subset) | TassieAgent | varies |
-| `run_rldata_claude.sh` / `_test.sh` | converted RL dataset (local path) | terminus-2 | claude-sonnet-4 |
-
-Example — grade an API model on TB2:
-
-```bash
+# API model against Daytona cloud sandboxes
 export DAYTONA_API_KEY=... ANTHROPIC_API_KEY=...
-bash scripts/run_tb2_claude.sh
+uv run harbor run \
+    --dataset terminal-bench@2.0 \
+    --agent mini-swe-agent \
+    --model anthropic/claude-sonnet-4-5 \
+    --env daytona --n-concurrent 8
+
+# Self-hosted vLLM checkpoint against a local Docker daemon
+source scripts/setup_podman_harbor.sh    # if using podman; skip for real Docker
+uv run harbor run \
+    --dataset terminal-bench-sample@2.0 \
+    --agent Vanillux2Agent:Vanillux2Agent \
+    --model openai/my-checkpoint \
+    --agent-kwarg api_base=http://localhost:8008/v1 \
+    --env docker
 ```
 
-Example — grade a self-hosted vLLM checkpoint (start vLLM separately, then):
-
-```bash
-export DAYTONA_API_KEY=...
-MODEL_NAME=my-checkpoint VLLM_HOST=localhost VLLM_PORT=8008 \
-    bash scripts/run_tb2.sh
-```
-
-### The 100-task SWE-Bench subset
-
-`run_swebench100_*.sh` pin a deterministic 100-task subset listed in
-[`scripts/swebench100_tasks.txt`](../scripts/swebench100_tasks.txt) (seed=42),
-passing each as `--task-name`. Use this for a faster, fixed-cost SWE-Bench
-signal (`-k 5` by default).
+The `--env` flag selects the sandbox backend (`docker` / `daytona`) and the
+`--model` prefix selects the model source (see [§7 Models](#7-models-outputs-and-result-analysis)).
+To restart only the trials that failed with a transient Daytona error, use
+`harbor jobs resume --job-path jobs/<job-name> --filter-error-type DaytonaError`.
 
 ### Evaluating on a generated RL dataset
 
-`run_rldata_*.sh` run the `terminus-2` agent over a locally-generated task set.
-Convert tasks to harbor format first:
+[`scripts/run_rldata_claude.sh`](../scripts/run_rldata_claude.sh) (and
+`run_rldata_claude_test.sh` for a 10-task subset) run the `terminus-2` agent
+over a locally-generated task set. Convert tasks to harbor format first:
 
 ```bash
 uv run python rl_data/scripts/analyze/convert_to_harbor.py \
@@ -352,7 +306,7 @@ use harbor's `--path <dir>` (a local dataset) rather than `--dataset <name>`.
 
 ---
 
-## 6. Datasets
+## 5. Datasets
 
 Selected with `--dataset <name>@<version>` (downloaded/cached by harbor) or
 `--path <dir>` (a local harbor-format dataset).
@@ -366,8 +320,9 @@ Selected with `--dataset <name>@<version>` (downloaded/cached by harbor) or
 | `swebench-verified@1.0` | SWE-Bench Verified (real GitHub issue fixes). |
 | local `--path` | Your own converted task set (e.g. generated RL data). |
 
-Restrict to specific tasks with repeated `--task-name <task>` (this is how the
-SWE-Bench-100 scripts work).
+Restrict to specific tasks with repeated `--task-name <task>` (e.g. to pin a
+fixed subset like the seeds in
+[`scripts/swebench100_tasks.txt`](../scripts/swebench100_tasks.txt)).
 
 > **Where dataset names come from.** Slugs aren't hardcoded in harbor — they
 > resolve against a remote registry
@@ -395,7 +350,7 @@ SWE-Bench-100 scripts work).
 
 ---
 
-## 7. Agents
+## 6. Agents
 
 Agents live in top-level packages and are selected either by harbor's built-in
 name (`--agent <name>`) or by import path (`--agent-import-path module:Class`).
@@ -405,56 +360,40 @@ matrix), see [Agent harnesses](agent_harnesses.md).
 
 | Agent | Selector | Summary |
 |---|---|---|
-| **TassieAgent** | `TassieAgent:TassieAgent` | Simple bash-only tool loop. The repo default for most direct/Slurm scripts. Uses **structured litellm tool-calls** (`tools=[bash_tool]`) → needs `qwen3_xml` on Qwen3.5 (see below). Kwargs: `max_steps` (default 30), `cost_limit`, `persistent_bash`, `api_base`. |
-| **TassumAgent** | `TassumAgent:TassumAgent` | TassieAgent **+ proactive context summarisation** when free tokens drop below a threshold. Same structured tool-calls as TassieAgent (→ `qwen3_xml`). Extra kwargs: `enable_summarize` (default False), `max_input_tokens` (default 32768). |
-| **VanilluxAgent** ⚠️ | `VanilluxAgent:VanilluxAgent` | Thin wrapper around upstream **SWE-agent** (Yang et al. 2024) run inside the sandbox: bash + view/edit/submit tools. Tweaks cost/call limits; reads `VANILLUX_CALL_LIMIT` env var. Disables `cache_control` history processor (required for Gemini). Still the `launch_eval.sh` default, but **broken against the pinned harbor 0.6.6** — see warning below. |
-| **Vanillux2Agent** | `Vanillux2Agent:Vanillux2Agent` | Direct-LiteLLM port of the `rl_data` vanillux solver: same prompts/tool schema/truncation as the RL-data generator, but driven through harbor's environment. Works on 0.6.6. Uses **structured** litellm tool-calls → needs the right `--tool-call-parser` for the model and the `openai/` provider (see below). Runs **host-side** (only bash execs enter the sandbox). |
-| **mini-swe-agent** | `mini-swe-agent` (built-in) | Harbor's lightweight SWE agent, installed inside the sandbox. Parses `bash` code blocks from plain text, so it is **independent of the tool-call parser**. Works on 0.6.6; use the `openai/` provider. |
-| **swe-agent** | `swe-agent` (built-in) | Upstream SWE-agent inside the sandbox (what VanilluxAgent wraps). Uses `hosted_vllm/` + `hermes`. |
-| **terminus-2** | `terminus-2` (built-in) | Harbor's built-in agent, used by the RL-data scripts. |
+| **Vanillux2Agent** (default) | `Vanillux2Agent:Vanillux2Agent` | The `launch_eval.sh` default. Direct-LiteLLM port of the `rl_data` vanillux solver: same prompts/tool schema/truncation as the RL-data generator, but driven through harbor's environment. Uses **structured** litellm tool-calls → needs the right `--tool-call-parser` for the model and the `openai/` provider (see below). Runs **host-side** (only bash execs enter the sandbox). |
+| **mini-swe-agent** | `mini-swe-agent` (built-in) | Harbor's lightweight SWE agent, installed inside the sandbox. Parses `bash` code blocks from plain text, so it is **independent of the tool-call parser**. Use the `openai/` provider. |
+| **swe-agent** | `swe-agent` (built-in) | Upstream SWE-agent (Yang et al. 2024) inside the sandbox: bash + view/edit/submit tools. Uses `hosted_vllm/` + `hermes`. |
+| **terminus-2** | `terminus-2` (built-in) | Harbor's built-in agent, used by the RL-data scripts. Uses the `openai/` provider; `qwen3_xml` is a safe parser default. |
 | **oracle** | `oracle` (built-in) | Runs the task's reference solution; for sanity-checking infra (should score ~1.0). |
-
-> ⚠️ **VanilluxAgent vs. the pinned harbor.** `VanilluxAgent` imports
-> `ExecInput` / overrides `create_run_agent_commands`, symbols that **do not
-> exist in harbor 0.6.6** (the version `uv.lock` pins), nor in any released
-> harbor, nor harbor `main`. Under the repo's `uv sync` it fails at import with
-> `cannot import name 'ExecInput' from 'harbor.agents.installed.base'` — so the
-> **stock `launch_eval.sh` default fails every trial**. Until the harbor pin is
-> bumped to a build exposing those symbols, use `Vanillux2Agent` or
-> `mini-swe-agent`.
 
 > **Tool-call parser & provider must match the agent.**
 >
 > | Agent kind | `--model-provider` | `--tool-call-parser` (Qwen3.5) |
 > |---|---|---|
-> | **TassieAgent / TassumAgent / Vanillux2Agent** (repo custom litellm agents, structured tool-calls) | `openai` | **`qwen3_xml`** |
+> | **Vanillux2Agent** (repo custom litellm agent, structured tool-calls) | `openai` | **`qwen3_xml`** |
 > | `mini-swe-agent` (text bash blocks) | `openai` | any (`hermes` fine — parser-independent) |
 > | `terminus-2` (built-in) | `openai` | `qwen3_xml` (safe default) |
-> | `swe-agent` / `VanilluxAgent` (SWE-agent in sandbox) | `hosted_vllm` | `hermes` |
+> | `swe-agent` (SWE-agent in sandbox) | `hosted_vllm` | `hermes` |
 >
 > Qwen3.5 emits `<function=name><parameter=…>` XML; with the default `hermes`
-> parser those tool-calls are **silently dropped**, so any structured-tool agent
-> (**TassieAgent, TassumAgent, Vanillux2Agent**) loops on "Format error" and
-> gives up with ~0 useful steps. `qwen_xml` is **not** a valid parser name —
-> use `qwen3_xml` (valid names include `hermes, qwen3_coder, qwen3_xml, …`).
-> For provider: built-in agents and the custom litellm agents use
-> `openai/<served-name>` (+ `OPENAI_API_BASE` / `OPENAI_API_KEY=dummy`) on the
-> Beaker vLLM path — that's the verified combo and what `launch_eval.sh`
-> defaults via `--model-provider`. (The Daytona `run_*.sh` scripts address the
-> same direct-litellm agents as `hosted_vllm/<name>`, which litellm core also
-> supports; the `hosted_vllm` *non*-path is specific to harbor's built-in
-> mini-swe-agent helper, which rejects it.) **Do not set `MSWEA_API_KEY`** for
-> built-in agents — harbor's mini-swe-agent then forwards only that, skips
-> `OPENAI_API_KEY`, and litellm reports "Missing credentials".
+> parser those tool-calls are **silently dropped**, so a structured-tool agent
+> like **Vanillux2Agent** loops on "Format error" and gives up with ~0 useful
+> steps. `qwen_xml` is **not** a valid parser name — use `qwen3_xml` (valid
+> names include `hermes, qwen3_coder, qwen3_xml, …`). For provider: built-in
+> agents and `Vanillux2Agent` use `openai/<served-name>` (+ `OPENAI_API_BASE` /
+> `OPENAI_API_KEY=dummy`) on the Beaker vLLM path — that's the verified combo
+> and what `launch_eval.sh` defaults via `--model-provider`. `swe-agent`
+> instead addresses the vLLM as `hosted_vllm/<name>`. **Do not set
+> `MSWEA_API_KEY`** for built-in agents — harbor's mini-swe-agent then forwards
+> only that, skips `OPENAI_API_KEY`, and litellm reports "Missing credentials".
 
-> The choice of agent matters for fairness. `VanilluxAgent` uses a
-> *call* limit (`CALL_LIMIT`, default 100) while `TassieAgent` uses a *step*
-> limit (`MAX_STEPS`, default 50). They are roughly comparable but not
-> identical — keep the harness fixed when comparing models.
+> The choice of agent matters for fairness — keep the harness fixed when
+> comparing models, since different agents use different step/call limits and
+> tool surfaces.
 
 ---
 
-## 8. Models, outputs, and result analysis
+## 7. Models, outputs, and result analysis
 
 ### How `--model` is interpreted
 
@@ -477,7 +416,7 @@ and `OPENAI_BASE_URL`.
 > while built-in agents and `Vanillux2Agent` use `openai/<served-name>` (the
 > installed harbor's litellm has no usable `hosted_vllm` path). `launch_eval.sh`
 > picks the prefix from the agent type; override with `--model-provider`. See
-> the parser/provider table in [§7](#7-agents).
+> the parser/provider table in [§6](#6-agents).
 
 ### Output layout
 
@@ -510,23 +449,6 @@ Reports mean reward ± std/SEM (treating each attempt index as an independent
 run over the task set) and an unbiased **pass@k** for `k ∈ {1, min, max}`
 attempts. See [`scripts/compute_stats.py`](../scripts/compute_stats.py).
 
-### `analyze_tb2_eval.py` — failure narratives
-
-A dependency-free walker that emits `per_trial.jsonl`, `summary.json`, and a
-human-readable `failures.md` classifying every failure (submitted-but-wrong,
-no-submit/early-stop, timeout, etc.):
-
-```bash
-uv run python scripts/analysis/analyze_tb2_eval.py \
-    --job-dir jobs/tb2_gemini \
-    --harbor-cache ~/.cache/harbor \
-    --label "TassieAgent + gemini-3-flash-preview" \
-    --out scripts/analysis/out/tb2_gemini_tassieagent
-```
-
-Example outputs are checked in under
-[`scripts/analysis/out/`](../scripts/analysis/out/).
-
 ### `compare_smoke_harnesses.py` — bash vs vanillux
 
 Compares two harnesses on the same task set (intersection only), reporting
@@ -536,14 +458,15 @@ proxies, and token usage. See
 
 ---
 
-## 9. Resuming, cleaning, and troubleshooting
+## 8. Resuming, cleaning, and troubleshooting
 
 ### Resume
 
-All `run_*.sh` / `*.slurm` scripts auto-resume: if `jobs/$JOB_NAME/` exists with
-a `config.json`, they call `harbor jobs resume --job-path ...
---filter-error-type DaytonaError` (re-running only trials that failed with a
-transient Daytona error). To start fresh, change `JOB_NAME` or delete the dir.
+If `jobs/$JOB_NAME/` exists with a `config.json`, you can resume with
+`harbor jobs resume --job-path jobs/$JOB_NAME --filter-error-type DaytonaError`
+(re-running only trials that failed with a transient Daytona error). The
+`run_rldata_*.sh` wrappers do this automatically. To start fresh, change
+`JOB_NAME` or delete the dir.
 
 ### Clean errored trials
 
@@ -569,8 +492,7 @@ Highlights:
 | `setgroups 65534` | userns too small — confirm `auto:size=65536` in `containers.conf`. |
 | Reward 0 across the board | Likely a real model/agent issue; inspect one trial's `agent/oracle.txt` + `verifier/test-stdout.txt`. |
 | `toomanyrequests` from Docker Hub | Set the `DOCKER_PAT` secret (authenticated pull cap); `--rmi all` is already dropped. |
-| `cannot import name 'ExecInput'` (every trial) | `VanilluxAgent` vs pinned harbor 0.6.6 — use `Vanillux2Agent` or `mini-swe-agent` ([§7](#7-agents)). |
-| Agent loops on "Format error", ~0 progress | Wrong tool parser for the model — pass `--tool-call-parser qwen3_xml` for Qwen3.5 + structured-tool agents. |
+| Agent loops on "Format error", ~0 progress | Wrong tool parser for the model — pass `--tool-call-parser qwen3_xml` for Qwen3.5 + structured-tool agents (e.g. Vanillux2Agent) ([§6](#6-agents)). |
 | litellm `Missing credentials` / `set OPENAI_API_KEY` | `MSWEA_API_KEY` is set (skips `OPENAI_API_KEY`), or wrong provider — use `--model-provider openai`, `OPENAI_API_KEY=dummy`, and unset `MSWEA_API_KEY`. |
 | litellm `Connection error` (local real-Docker) | Agent used `localhost` but is a sibling container — use the dev-VM container's bridge IP (`run_eval_local.sh` handles it). |
 | `'compose' is not a docker command` / `unknown flag: --project-name` (local) | Docker Compose v2 plugin missing — install it (`set_dev_vm.sh` / `run_eval_local.sh` do). |
@@ -578,22 +500,18 @@ Highlights:
 ### Common Daytona-path gotchas
 
 - **Missing key**: `--env daytona` needs `DAYTONA_API_KEY`; the model needs its
-  own `*_API_KEY`. The scripts validate these up front.
-- **Home-quota blowups** on Tillicum: harbor caches tasks under `~/.cache/harbor`;
-  the gemini/vanillux scripts symlink it to scratch. Set `HARBOR_CACHE_TARGET`
-  if your scratch path differs.
-- **Gemini + cache_control crash**: use `VanilluxAgent` (which disables the
-  `cache_control` history processor) — see the docstring in
-  [`VanilluxAgent/agent.py`](../VanilluxAgent/agent.py).
+  own `*_API_KEY`. Validate these up front.
+- **Home-quota blowups**: harbor caches tasks under `~/.cache/harbor`; on
+  quota-constrained machines symlink it to scratch (set `HARBOR_CACHE_TARGET`
+  if your scratch path differs).
 
 ---
 
-## 10. Prerequisites summary
+## 9. Prerequisites summary
 
 | Path | Needs |
 |---|---|
 | Beaker | Beaker access + workspace; `HF_TOKEN` secret; `DOCKER_PAT` secret (recommended); weka mount; a **pushed** git SHA. |
-| Slurm | Tillicum account; `~/.secrets/tmax.env` with `DAYTONA_API_KEY` + model key; project checked out at `TMAX_DIR`. |
 | Local | A Daytona account/key (for `--env daytona`) **or** a local Docker/podman daemon + the `docker compose` v2 CLI plugin (for `--env docker` / `run_eval_local.sh`); the relevant model `*_API_KEY` (or `OPENAI_API_KEY=dummy` for self-hosted vLLM). |
 
 All paths run through `uv` (`uv sync` / `uv run`), Python ≥ 3.12.

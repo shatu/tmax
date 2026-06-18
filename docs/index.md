@@ -9,9 +9,10 @@ fine-tuning, and evaluating terminal/CLI agents.
   *synthesizes* new Terminal/CLI sandbox tasks (containerized scenarios +
   automated verifiers) and solves/scores/decontaminates/uploads them as agentic
   RL/SFT training data.
-- **[SFT](sft.md)** — the `sft/` stack that converts raw agent trajectories into
-  a unified schema, pre-tokenizes them, and trains with DeepSpeed Ulysses
-  sequence parallelism. Consumes the solved trajectories produced by `rl_data/`.
+- **[SFT](sft.md)** — pointer to the SFT (and RL) training stack, which now lives
+  in the vendored open-instruct fork under `training/open-instruct/scripts/tmax/`.
+  Consumes the solved trajectories produced by `rl_data/`. (The old standalone
+  `sft/` pipeline was removed in the master cleanup.)
 - **[Running evals](running_evals.md)** — running Terminal-Bench (Harbor) evals
   of a model, locally and on Beaker.
 
@@ -21,7 +22,7 @@ fine-tuning, and evaluating terminal/CLI agents.
 rl_data/  ──(generate + solve terminal tasks)──►  solved trajectories
    │                                                     │
    │                                                     ▼
-   │                                          sft/  ──(convert → tokenize → train)──►  model
+   │              training/open-instruct/  ──(SFT / RL → train)──►  model
    │                                                     │
    └─────────────────────────────────────────────────►  evals (Terminal-Bench / Harbor)
 ```
