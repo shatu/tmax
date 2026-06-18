@@ -213,17 +213,27 @@ cleanup() {
 }
 trap cleanup EXIT
 
-log "waiting for vllm on :$VLLM_PORT (up to 30 min) — tail $VLLM_LOG"
+# Gate readiness on a real completion: a 200 on /v1/models can precede the
+# engine being able to GENERATE (the first request then fails "model does not
+# exist", notably for the 9B). Probe /v1/chat/completions instead.
+vllm_can_generate() {
+    curl -sf -X POST "http://localhost:$VLLM_PORT/v1/chat/completions" \
+        -H 'Content-Type: application/json' \
+        -d "{\"model\":\"$SERVED_MODEL_NAME\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":1}" \
+        >/dev/null 2>&1
+}
+log "waiting for vllm to serve completions on :$VLLM_PORT (up to 30 min) — tail $VLLM_LOG"
+VLLM_READY=0
 for _ in $(seq 1 360); do
-    if curl -sf "http://localhost:$VLLM_PORT/v1/models" >/dev/null 2>&1; then
-        log "vllm ready"; break
+    if vllm_can_generate; then
+        log "vllm ready (completion probe ok)"; VLLM_READY=1; break
     fi
     if ! kill -0 "$VLLM_PID" 2>/dev/null; then
         log "vllm died — tail of $VLLM_LOG:"; tail -200 "$VLLM_LOG" || true; exit 1
     fi
     sleep 5
 done
-curl -sf "http://localhost:$VLLM_PORT/v1/models" >/dev/null 2>&1 || {
+[ "$VLLM_READY" -eq 1 ] || {
     log "vllm not ready in 30 min — tail of $VLLM_LOG:"; tail -200 "$VLLM_LOG" || true; exit 1
 }
 
