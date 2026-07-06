@@ -33,6 +33,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 REVISION="main"
 SERVED_MODEL_NAME=""
 HARBOR_MODEL_NAME=""
+MODEL_PROVIDER=""
 GPU_COUNT=8
 TP_SIZE=""
 DP_SIZE=""
@@ -149,6 +150,7 @@ while [ $# -gt 0 ]; do
         --revision)        REVISION="$2"; shift 2 ;;
         --name)            SERVED_MODEL_NAME="$2"; shift 2 ;;
         --harbor-model-name) HARBOR_MODEL_NAME="$2"; shift 2 ;;
+        --model-provider)  MODEL_PROVIDER="$2"; shift 2 ;;
         --gpus)            GPU_COUNT="$2"; shift 2 ;;
         --tp)              TP_SIZE="$2"; shift 2 ;;
         --dp)              DP_SIZE="$2"; shift 2 ;;
@@ -195,6 +197,14 @@ done
 
 # --- derive defaults ---------------------------------------------------------
 SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-$(basename "$MODEL_PATH")}"
+# --model-provider is the safe way to pick the litellm provider: it derives the
+# harbor model as <provider>/<served-name>, so it always matches vLLM's
+# --served-model-name. (Setting --harbor-model-name to a mismatched model part
+# yields litellm "model does not exist".) Vanillux2Agent + built-in agents need
+# openai/; only the SWE-agent import path uses hosted_vllm/.
+if [ -n "$MODEL_PROVIDER" ] && [ -z "$HARBOR_MODEL_NAME" ]; then
+    HARBOR_MODEL_NAME="${MODEL_PROVIDER}/${SERVED_MODEL_NAME}"
+fi
 TP_SIZE="${TP_SIZE:-$GPU_COUNT}"
 DP_SIZE="${DP_SIZE:-1}"
 
