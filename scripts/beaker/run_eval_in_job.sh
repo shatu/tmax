@@ -369,7 +369,7 @@ if [ -x /usr/local/bin/setup_dockerio_mirror ]; then
 fi
 if [ -n "${DOCKER_PAT:-}" ]; then
     log "writing Docker Hub credentials"
-    DOCKERHUB_USERNAME="${DOCKERHUB_USERNAME:-hamishi740}"
+    DOCKERHUB_USERNAME="${DOCKERHUB_USERNAME:-shashankg209}"
     python3 - <<PY
 import base64, json, os
 username = "$DOCKERHUB_USERNAME"

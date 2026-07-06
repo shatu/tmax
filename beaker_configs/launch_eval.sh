@@ -255,8 +255,8 @@ GANTRY_CMD=(
     --priority "$PRIORITY"
     --weka "oe-adapt-default:/weka/oe-adapt-default"
     --env-secret HF_TOKEN
-    --env-secret "DOCKER_PAT=${DOCKER_PAT_SECRET:-hamishivi_DOCKER_PAT}"
-    --env-secret "DAYTONA_API_KEY=${DAYTONA_API_KEY_SECRET:-hamishivi_DAYTONA_API_KEY}"
+    --env-secret "DOCKER_PAT=${DOCKER_PAT_SECRET:-shashankg_DOCKER_PAT}"
+    --env "DOCKERHUB_USERNAME=${DOCKERHUB_USERNAME:-shashankg209}"
     --env "MODEL_PATH=${MODEL_PATH}"
     --env "MODEL_REVISION=${REVISION}"
     --env "SERVED_MODEL_NAME=${SERVED_MODEL_NAME}"
@@ -295,6 +295,13 @@ GANTRY_CMD=(
     --propagate-failure
     --no-python
 )
+
+# Only the daytona harbor backend needs a Daytona API key. For --harbor-env
+# docker (the default) the secret is unused, and passing it unconditionally
+# fails on workspaces that don't have it (e.g. no hamishivi_DAYTONA_API_KEY).
+if [ "$HARBOR_ENV" = "daytona" ]; then
+    GANTRY_CMD+=(--env-secret "DAYTONA_API_KEY=${DAYTONA_API_KEY_SECRET:-hamishivi_DAYTONA_API_KEY}")
+fi
 
 if [ -n "$BEAKER_IMAGE" ]; then
     GANTRY_CMD+=(--beaker-image "$BEAKER_IMAGE")
