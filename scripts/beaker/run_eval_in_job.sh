@@ -393,16 +393,17 @@ fi
 : "${VLLM_REASONING_PARSER:=}"
 : "${VLLM_PORT:=8008}"
 : "${DP_SIZE:=1}"
-# vLLM reads the VLLM_PORT *env var* to derive its INTERNAL ports (the TP
-# worker rendezvous is VLLM_PORT+1, etc.). Under gantry --host-networking,
-# co-located jobs share the host netns, so a fixed VLLM_PORT makes every job
-# derive the same rendezvous port and collide — TP>1 then dies at startup with
-# "DistNetworkError ... EADDRINUSE: address already in use" / "WorkerProc
-# initialization failed". Keep the OpenAI API server on the explicit
-# --port $API_PORT, but UNSET VLLM_PORT so vLLM picks RANDOM free internal
-# ports (no collision, any TP size).
-API_PORT="$VLLM_PORT"
+# Under gantry --host-networking, co-located jobs share the host netns, so any
+# FIXED port collides across jobs. Two consequences, both fixed by randomizing:
+#   1. vLLM derives its INTERNAL TP-rendezvous ports from the VLLM_PORT env var
+#      (VLLM_PORT+1, etc.) — a fixed value makes co-located TP>1 jobs collide and
+#      die at startup ("DistNetworkError ... EADDRINUSE"). UNSET it so vLLM picks
+#      random free internal ports.
+#   2. The OpenAI API server port: a fixed 8008 makes a job's harbor reach a
+#      *neighbor's* vLLM (a different served model), so every trial fails with
+#      "model does not exist". Bind the API server to a per-job free high port.
 unset VLLM_PORT
+API_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); p=s.getsockname()[1]; s.close(); print(p)')"
 VLLM_LOG=/tmp/vllm.log
 VLLM_LOG_TAIL_LINES="${VLLM_LOG_TAIL_LINES:-300}"
 # Pin fastapi < 0.137: fastapi 0.137 changed the router internals and breaks
