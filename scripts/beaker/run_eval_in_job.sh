@@ -382,6 +382,19 @@ if [ -n "${DOCKER_PAT:-}" ]; then
         log "FATAL: Docker Hub login failed for '$DOCKERHUB_USERNAME'. Check DOCKERHUB_USERNAME and the DOCKER_PAT secret. Aborting."
         exit 1
     fi
+    # Harbor pulls task images via the podman socket (DOCKER_HOST=.../podman.sock);
+    # podman reads registry creds from containers/auth.json, NOT ~/.docker/config.json,
+    # so a plain `docker login` leaves the podman service pulling ANONYMOUSLY (which
+    # then hits the shared-IP unauthenticated rate cap under --host-networking, even
+    # with a paid account). Authenticate podman's own store too.
+    if command -v podman >/dev/null 2>&1; then
+        if printf '%s' "$DOCKER_PAT" | podman login -u "$DOCKERHUB_USERNAME" --password-stdin docker.io >/dev/null 2>&1; then
+            log "podman Docker Hub login OK ($DOCKERHUB_USERNAME)"
+        else
+            log "FATAL: podman Docker Hub login failed for '$DOCKERHUB_USERNAME'. Aborting."
+            exit 1
+        fi
+    fi
 else
     log "FATAL: DOCKER_PAT not set; refusing to fall back to anonymous pulls. Provide the DOCKER_PAT secret. Aborting."
     exit 1
