@@ -40,6 +40,7 @@ VLLM_PORT=8008
 VLLM_VERSION="0.19.1"
 VLLM_TOOL_CALL_PARSER="hermes"
 VLLM_REASONING_PARSER=""
+MIRROR_URL="${MIRROR_URL:-}"
 MODEL_PROVIDER=""
 VLLM_LANGUAGE_MODEL_ONLY=0
 MAX_MODEL_LEN=""
@@ -97,6 +98,9 @@ Options:
                          for Qwen3.5 with tool-calling agents like Vanillux2Agent)
   --reasoning-parser P   vLLM reasoning parser (default: none; use qwen3 for
                          Qwen3 so <think> blocks are split out of tool-calls)
+  --mirror-url HOST:PORT docker.io pull-through mirror(s) for podman task-image
+                         pulls (comma-sep; e.g. jupiter-cs-aus-137.reviz.ai2.in:5000).
+                         Avoids Docker Hub rate limits under co-located jobs.
   --model-provider PROV  litellm provider prefix for --model (default: hosted_vllm
                          for import-path agents, openai otherwise). Use openai for
                          Vanillux2Agent.
@@ -164,6 +168,7 @@ while [ $# -gt 0 ]; do
         --vllm-version)    VLLM_VERSION="$2"; shift 2 ;;
         --tool-call-parser) VLLM_TOOL_CALL_PARSER="$2"; shift 2 ;;
         --reasoning-parser) VLLM_REASONING_PARSER="$2"; shift 2 ;;
+        --mirror-url)      MIRROR_URL="$2"; shift 2 ;;
         --model-provider)  MODEL_PROVIDER="$2"; shift 2 ;;
         --language-model-only|--language_model_only) VLLM_LANGUAGE_MODEL_ONLY=1; shift ;;
         --max-model-len)   MAX_MODEL_LEN="$2"; shift 2 ;;
@@ -274,6 +279,7 @@ GANTRY_CMD=(
     --env "VLLM_VERSION=${VLLM_VERSION}"
     --env "VLLM_TOOL_CALL_PARSER=${VLLM_TOOL_CALL_PARSER}"
     --env "VLLM_REASONING_PARSER=${VLLM_REASONING_PARSER}"
+    --env "MIRROR_URL=${MIRROR_URL}"
     --env "MODEL_PROVIDER=${MODEL_PROVIDER}"
     --env "VLLM_LANGUAGE_MODEL_ONLY=${VLLM_LANGUAGE_MODEL_ONLY}"
     --env "VLLM_PORT=${VLLM_PORT}"
