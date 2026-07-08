@@ -134,7 +134,7 @@ inside the container. Results end up at:
 >     --tool-call-parser qwen3_xml \
 >     --model-provider openai \
 >     --gpus 1 --dataset terminal-bench-sample@2.0 --max-model-len 32768 \
->     --workspace ai2/general-tool-use
+>     --workspace ai2/oe-agents
 > ```
 >
 > `launch_eval.sh` references an `HF_TOKEN` and a `*_DOCKER_PAT` secret in the
@@ -388,7 +388,7 @@ harbor runs them unchanged from a **local directory**. No harbor upgrade require
      --agent Vanillux2Agent:Vanillux2Agent --model-provider openai \
      --tool-call-parser qwen3_xml --language-model-only \
      --gpus 1 --max-model-len 65536 --n-attempts 5 --cluster ai2/jupiter \
-     --workspace ai2/general-tool-use
+     --workspace ai2/oe-agents
    ```
 
    The directory must live under a weka mount the job has (`launch_eval.sh`

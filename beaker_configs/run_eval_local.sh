@@ -137,7 +137,7 @@ docker compose version >/dev/null 2>&1 || {
 # from $DOCKER_PAT, else is read from the beaker secret via the beaker CLI.
 DOCKERHUB_USERNAME="${DOCKERHUB_USERNAME:-shashankg209}"
 DOCKER_PAT_SECRET="${DOCKER_PAT_SECRET:-shashankg_DOCKER_PAT}"
-AUTH_WORKSPACE="${BEAKER_WORKSPACE:-ai2/general-tool-use}"
+AUTH_WORKSPACE="${BEAKER_WORKSPACE:-ai2/oe-agents}"
 if [ -z "${DOCKER_PAT:-}" ] && command -v beaker >/dev/null 2>&1; then
     DOCKER_PAT="$(beaker secret read "$DOCKER_PAT_SECRET" --workspace "$AUTH_WORKSPACE" 2>/dev/null || true)"
 fi
