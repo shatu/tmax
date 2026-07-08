@@ -158,8 +158,15 @@ From [`run_eval_in_job.sh`](../scripts/beaker/run_eval_in_job.sh):
 5. `source scripts/setup_podman_harbor.sh`: `mknod /dev/net/tun`, create the
    aardvark-dns dir, start `podman system service` on `/tmp/podman.sock`, export
    `DOCKER_HOST`.
-6. Write Docker Hub auth (from the `DOCKER_PAT` beaker secret) so task-image
-   pulls don't hit the unauthenticated rate cap.
+6. Authenticate to Docker Hub for task-image pulls (from the `DOCKER_PAT` beaker
+   secret): both `docker login` **and `podman login`**. The podman login is
+   essential — harbor pulls via the podman socket, and podman reads creds from
+   `containers/auth.json`, *not* `~/.docker/config.json`, so a `docker login`
+   alone leaves pulls anonymous → the shared-IP unauthenticated rate cap
+   (`toomanyrequests`) once jobs co-locate. If `--mirror-url` is set,
+   `setup_dockerio_mirror` also points podman at a docker.io pull-through cache
+   (co-located jobs then pull over the local network; authenticated docker.io is
+   the fallback if the mirror is down).
 7. Launch vLLM in the background (`uvx vllm==$VLLM_VERSION serve ...`) and poll
    `/v1/models` for up to 30 min.
 8. `uv run harbor run --env docker --model hosted_vllm/$SERVED_MODEL_NAME --agent-kwarg api_base=...`.
@@ -178,6 +185,8 @@ From [`run_eval_in_job.sh`](../scripts/beaker/run_eval_in_job.sh):
 | `--name NAME` | `basename(model_path)` | vLLM `--served-model-name`; drives `JOB_NAME`. |
 | `--gpus N` / `--tp N` / `--dp N` | `8` / gpus / `1` | GPU + parallelism. |
 | `--dataset DS` | `terminal-bench@2.0` | See [§5 Datasets](#5-datasets). |
+| `--dataset-path DIR` | unset | Run a local dataset dir via harbor `--path` (overrides `--dataset`). For off-registry sets like [TerminalBench 2.1](#off-registry-datasets-eg-terminalbench-21); dir must be under a mounted weka fs. |
+| `--mirror-url HOST:PORT` | unset | docker.io pull-through mirror(s) for task-image pulls; avoids Docker Hub rate limits under co-located jobs. Falls back to authenticated docker.io if down. |
 | `--agent IMPORT_PATH` | `Vanillux2Agent:Vanillux2Agent` | `module:Class` (e.g. `Vanillux2Agent:Vanillux2Agent`) **or** a harbor built-in name (`mini-swe-agent`, `swe-agent`, `terminus-2`, `oracle`). See [§6](#6-agents). |
 | `--model-provider PROV` | per agent type | litellm provider prefix: `hosted_vllm` for `swe-agent`, `openai` otherwise. Use `openai` for Vanillux2Agent / built-ins. |
 | `--n-concurrent N` | `8` | Parallel trials. |
@@ -318,6 +327,7 @@ Selected with `--dataset <name>@<version>` (downloaded/cached by harbor) or
 | `terminal-bench-pro@1.0` | Harder Terminal-Bench Pro tasks. |
 | `openthoughts-tblite@2.0` | OpenThoughts "TB-lite" lightweight terminal tasks. |
 | `swebench-verified@1.0` | SWE-Bench Verified (real GitHub issue fixes). |
+| `terminal-bench-2-1` (via `--dataset-path`) | TerminalBench 2.1 — 89 revised tasks; off the pinned registry, run from a local dir (see [Off-registry datasets](#off-registry-datasets-eg-terminalbench-21)). |
 | local `--path` | Your own converted task set (e.g. generated RL data). |
 
 Restrict to specific tasks with repeated `--task-name <task>` (e.g. to pin a
@@ -347,6 +357,43 @@ fixed subset like the seeds in
 > ```bash
 > uv run python -c "from harbor import constants; print(constants.DEFAULT_REGISTRY_URL)"
 > ```
+
+### Off-registry datasets (e.g. TerminalBench 2.1)
+
+The pinned harbor (0.6.6) registry only exposes `terminal-bench@2.0`.
+**TerminalBench 2.1** (`terminal-bench/terminal-bench-2-1`, 89 revised tasks)
+exists only on the *current* hub ([hub.harborframework.com](https://hub.harborframework.com)),
+which the pinned harbor can't resolve — but its tasks use the same
+`task.toml`+`environment/` format and prebuilt `alexgshaw/*` images as 2.0, so our
+harbor runs them unchanged from a **local directory**. No harbor upgrade required.
+
+1. **Download once** with a newer harbor as the resolver (the ref is namespaced;
+   a bare `terminal-bench-2-1` 404s). Put it on a weka fs the Beaker jobs mount —
+   `oe-adapt-default` is mounted by default:
+
+   ```bash
+   uvx harbor==0.18.0 datasets download terminal-bench/terminal-bench-2-1 \
+     -o /weka/oe-adapt-default/shashankg/datasets --export
+   # -> /weka/oe-adapt-default/shashankg/datasets/terminal-bench-2-1/<task>/  (89 dirs)
+   ```
+
+2. **Run it** with `--dataset-path <dir>` — a launcher flag on `launch_eval.sh`,
+   `run_eval_in_job.sh`, and `run_eval_local.sh` that makes harbor use `--path`
+   instead of `--dataset`. Everything else (agent, parser, provider,
+   `--language-model-only`, mirror, k, context) is identical to a 2.0 run:
+
+   ```bash
+   ./beaker_configs/launch_eval.sh allenai/tmax-4b \
+     --dataset-path /weka/oe-adapt-default/shashankg/datasets/terminal-bench-2-1 \
+     --agent Vanillux2Agent:Vanillux2Agent --model-provider openai \
+     --tool-call-parser qwen3_xml --language-model-only \
+     --gpus 1 --max-model-len 65536 --n-attempts 5 --cluster ai2/jupiter \
+     --workspace ai2/general-tool-use
+   ```
+
+   The directory must live under a weka mount the job has (`launch_eval.sh`
+   mounts `oe-adapt-default`). To move any existing eval onto 2.1, just swap
+   `--dataset terminal-bench@2.0` for the `--dataset-path` above.
 
 ---
 
