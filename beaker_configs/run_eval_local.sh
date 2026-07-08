@@ -52,6 +52,7 @@ VLLM_LANGUAGE_MODEL_ONLY=0
 MAX_MODEL_LEN=""
 GPU_MEM_UTIL="0.85"
 DATASET="terminal-bench@2.0"
+DATASET_PATH=""            # local dataset/task dir (harbor --path); overrides --dataset when set
 # Default to harbor's built-in mini-swe-agent: it works against the harbor
 # version this repo locks (0.6.6) and drives a litellm openai/ model.
 # NOTE: the Beaker default, VanilluxAgent:VanilluxAgent, imports
@@ -86,6 +87,7 @@ while [ $# -gt 0 ]; do
         --max-model-len)    MAX_MODEL_LEN="$2"; shift 2 ;;
         --gpu-mem-util)     GPU_MEM_UTIL="$2"; shift 2 ;;
         --dataset)          DATASET="$2"; shift 2 ;;
+        --dataset-path)     DATASET_PATH="$2"; shift 2 ;;
         --agent)            AGENT_IMPORT_PATH="$2"; shift 2 ;;
         --n-concurrent)     N_CONCURRENT="$2"; shift 2 ;;
         --n-attempts)       N_ATTEMPTS="$2"; shift 2 ;;
@@ -262,12 +264,17 @@ unset MSWEA_API_KEY
 export OPENAI_BASE_URL="$AGENT_API_BASE"
 
 HARBOR_CMD=( uv run harbor run
-             --dataset "$DATASET"
              --env docker
              --n-concurrent "$N_CONCURRENT"
              --job-name "$JOB_NAME"
              --yes
              -k "$N_ATTEMPTS" )
+# Local dataset dir (harbor --path) overrides the registry --dataset ref.
+if [ -n "$DATASET_PATH" ]; then
+    HARBOR_CMD+=( --path "$DATASET_PATH" )
+else
+    HARBOR_CMD+=( --dataset "$DATASET" )
+fi
 # An agent value containing ":" is a module:Class import path (e.g.
 # VanilluxAgent:VanilluxAgent, the Beaker default). Otherwise it's a harbor
 # built-in agent name (e.g. mini-swe-agent, swe-agent, terminus).

@@ -544,12 +544,20 @@ fi
 : "${HARBOR_MODEL_NAME:=$MODEL_PROVIDER/$SERVED_MODEL_NAME}"
 
 HARBOR_CMD=( uv run harbor run
-             --dataset "$DATASET"
              --model "$HARBOR_MODEL_NAME"
              --env "${HARBOR_ENV:-docker}"
              --n-concurrent "$N_CONCURRENT"
              --job-name "$JOB_NAME"
              -k "$N_ATTEMPTS" )
+# DATASET_PATH (a local dir on a mounted weka fs, harbor --path) overrides the
+# registry --dataset ref. Used for datasets not in harbor 0.6.6's registry
+# (e.g. terminal-bench-2-1, downloaded via a newer harbor). The dir must be
+# under a weka mount the job has (launch_eval mounts oe-adapt-default).
+if [ -n "${DATASET_PATH:-}" ]; then
+    HARBOR_CMD+=( --path "$DATASET_PATH" )
+else
+    HARBOR_CMD+=( --dataset "$DATASET" )
+fi
 if [ -n "${N_TASKS:-}" ]; then
     HARBOR_CMD+=( --n-tasks "$N_TASKS" )
 fi
