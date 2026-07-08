@@ -56,7 +56,7 @@ RESULTS_DIR=""
 CLUSTER="ai2/saturn"
 BUDGET=""
 PRIORITY="urgent"
-BEAKER_WORKSPACE="${BEAKER_WORKSPACE:-ai2/tmax}"
+BEAKER_WORKSPACE="${BEAKER_WORKSPACE:-ai2/oe-agents}"
 BEAKER_IMAGE="${BEAKER_IMAGE:-hamishivi/tmax-eval-interactive}"
 BEAKER_DOCKER_IMAGE="${BEAKER_DOCKER_IMAGE:-}"
 REPO_GIT_URL=""
@@ -120,7 +120,7 @@ Options:
   --cluster CLUSTER      beaker cluster (default: ai2/saturn)
   --budget BUDGET        beaker budget (default: omitted; uses workspace default)
   --priority PRI         beaker priority (default: urgent)
-  --workspace WS         beaker workspace (default: \$BEAKER_WORKSPACE or ai2/tmax)
+  --workspace WS         beaker workspace (default: \$BEAKER_WORKSPACE or ai2/oe-agents)
   --image IMAGE          beaker image name or ID (clears default --docker-image)
   --docker-image IMAGE   public Docker image (default: $BEAKER_DOCKER_IMAGE)
   --beaker-scripts-dataset DS

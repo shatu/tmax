@@ -110,7 +110,7 @@ read).
 | `--cluster CLUSTER` | `ai2/saturn` | |
 | `--budget BUDGET` | `ai2/oe-adapt` | |
 | `--priority PRI` | `high` | |
-| `--workspace WS` | `$BEAKER_WORKSPACE` or `ai2/tmax` | |
+| `--workspace WS` | `$BEAKER_WORKSPACE` or `ai2/oe-agents` | |
 | `--image IMAGE` | `ai2/cuda12.8-dev-ubuntu22.04-torch2.10.0` | Beaker image. |
 | `--repo-url URL` | current `origin` URL | git URL the beaker task clones. |
 | `--repo-ref REF` | current `git rev-parse HEAD` | git ref to check out. **Must be pushed.** |
