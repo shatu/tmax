@@ -470,9 +470,13 @@ vllm_can_generate() {
         -d "{\"model\":\"$SERVED_MODEL_NAME\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":1}" \
         >/dev/null 2>&1
 }
-log "waiting for vllm to serve completions on :$API_PORT (up to 30 min)"
+# Readiness cap: 5s * VLLM_READY_MAX_ITERS. Default 720 = 60 min (large models
+# like the 27B on TP>1 need >30 min for weight-load + torch.compile before the
+# API server binds). Override with VLLM_READY_MAX_ITERS.
+VLLM_READY_MAX_ITERS="${VLLM_READY_MAX_ITERS:-720}"
+log "waiting for vllm to serve completions on :$API_PORT (up to $((VLLM_READY_MAX_ITERS*5/60)) min)"
 VLLM_READY=0
-for _ in $(seq 1 360); do
+for _ in $(seq 1 "$VLLM_READY_MAX_ITERS"); do
     if vllm_can_generate; then
         log "vllm ready (completion probe ok)"
         VLLM_READY=1
