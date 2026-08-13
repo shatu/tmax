@@ -688,7 +688,13 @@ else
     log "job directory $JOB_DIR not found; skipping compute_stats.py"
 fi
 
-# --- 8. Persist results to /weka --------------------------------------------
+# --- 8. Persist results ------------------------------------------------------
+# Always drop metrics.json into /results so Beaker surfaces it in the UI,
+# even when RESULTS_DIR redirects the full copy elsewhere (e.g. weka).
+if [ -f "$JOB_DIR/metrics.json" ] && [ -d /results ]; then
+    cp "$JOB_DIR/metrics.json" /results/metrics.json || true
+    log "metrics also available at /results/metrics.json (Beaker UI)"
+fi
 if [ -n "${RESULTS_DIR:-}" ]; then
     if [ -d "$JOB_DIR" ]; then
         log "copying $JOB_DIR -> $RESULTS_DIR/"
