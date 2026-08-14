@@ -130,7 +130,7 @@ fi
 
 log "patching harbor for podman compat"
 uv run python - <<'PY'
-import pathlib, harbor
+import os, pathlib, harbor
 hdir = pathlib.Path(harbor.__file__).parent
 
 compose = hdir / "environments/docker/docker-compose-base.yaml"
@@ -198,20 +198,32 @@ if "agent_dir.chmod(0o777)" not in text:
     paths_py.write_text(text)
     print("patched paths.py")
 
-# Drop --rmi all from compose-down: harbor deletes the image after every
-# trial, which makes each retry of a tb2 task re-pull from Docker Hub and
-# blows past the unauthenticated pull cap. Keeping images on local podman
-# storage costs ~9 GB total for tb2 (89 unique images) but eliminates the
-# re-pull storm entirely.
-docker_py = hdir / "environments/docker/docker.py"
-text = docker_py.read_text()
-if '["down", "--rmi", "all", "--volumes", "--remove-orphans"]' in text:
-    text = text.replace(
-        '["down", "--rmi", "all", "--volumes", "--remove-orphans"]',
-        '["down", "--volumes", "--remove-orphans"]',
-    )
-    docker_py.write_text(text)
-    print("patched docker.py: dropped --rmi all from compose down")
+# Image retention after each trial (harbor stock = `compose down --rmi all`,
+# i.e. DELETE the task image after every trial).
+#
+# DEFAULT (HARBOR_KEEP_TASK_IMAGES unset/0): keep harbor's stock `--rmi all`.
+#   Required for large per-task-image datasets: swebench-verified is 500 UNIQUE
+#   images averaging ~3 GB uncompressed (~1.5 TB if retained), which fills the
+#   node disk and manifests as podman sandbox resets timing out while Beaker
+#   still reports "running". Re-pulling is cheap now that MIRROR_URL points at a
+#   live intra-cluster pull-through cache, so retention buys little.
+#
+# HARBOR_KEEP_TASK_IMAGES=1: drop `--rmi all` so images persist on podman
+#   storage. This was the old unconditional behaviour, added when there was no
+#   mirror and per-trial re-pulls blew past Docker Hub's unauthenticated cap.
+#   Only sensible for SMALL image sets (tb2 = 89 images / ~9 GB total).
+if os.environ.get("HARBOR_KEEP_TASK_IMAGES", "0") == "1":
+    docker_py = hdir / "environments/docker/docker.py"
+    text = docker_py.read_text()
+    if '["down", "--rmi", "all", "--volumes", "--remove-orphans"]' in text:
+        text = text.replace(
+            '["down", "--rmi", "all", "--volumes", "--remove-orphans"]',
+            '["down", "--volumes", "--remove-orphans"]',
+        )
+        docker_py.write_text(text)
+        print("patched docker.py: dropped --rmi all (HARBOR_KEEP_TASK_IMAGES=1)")
+else:
+    print("docker.py: keeping harbor stock --rmi all (images deleted per trial)")
 
 # Harbor's CLI exposes timeout multipliers but not the exact
 # AgentConfig.override_timeout_sec field. Let launch_eval set
@@ -362,8 +374,9 @@ export DOCKER_HOST="${DOCKER_HOST:-unix:///tmp/podman.sock}"
 #   - if the image ships an internal Docker Hub mirror, use it
 #   - if DOCKER_PAT is set (beaker secret), write the auth config (200/6hr
 #     authenticated cap, or unlimited on a Docker Hub paid account)
-#   - --rmi all is dropped via the docker.py patch below (step 3 already
-#     ran, but the sed below is idempotent and safe to re-run)
+#   - image retention is controlled in step 3 by HARBOR_KEEP_TASK_IMAGES
+#     (default 0 = keep harbor's stock --rmi all; set 1 to persist images,
+#     only sane for small image sets like tb2's 89)
 if [ -x /usr/local/bin/setup_dockerio_mirror ]; then
     /usr/local/bin/setup_dockerio_mirror || log "setup_dockerio_mirror failed (continuing)"
 fi

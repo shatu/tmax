@@ -104,13 +104,23 @@ class Vanillux2Agent(BaseAgent):
     async def setup(self, environment: BaseEnvironment) -> None:
         if not self.persistent_bash:
             return
+        # NOTE: the work here is trivial (milliseconds), but this is the FIRST
+        # exec into a freshly-started container, so it queues behind container
+        # startup + the task-image pull. Under high --n-concurrent on one node
+        # (many containers starting at once, each pulling a multi-GB image —
+        # e.g. swebench-verified's 500 unique ~1.2 GiB images with harbor's
+        # stock `compose down --rmi all`) that contention regularly exceeds a
+        # short timeout. A timeout HERE raises out of setup() and fails the
+        # whole TRIAL (an exception, not reward 0), so a hardcoded 10s was
+        # silently erroring ~45% of trials at --n-concurrent 32 and depressing
+        # pass@k. Use the agent's own command timeout instead.
         await environment.exec(
             command=(
                 f"mkdir -p {_STATE_DIR} && "
                 f"pwd > {_STATE_DIR}/cwd && "
                 f"export -p > {_STATE_DIR}/env"
             ),
-            timeout_sec=10,
+            timeout_sec=self.command_timeout,
         )
 
     async def run(
