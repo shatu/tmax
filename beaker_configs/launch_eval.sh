@@ -117,7 +117,8 @@ Options:
   --job-name NAME        harbor --job-name (default: <served-name>-<dataset>)
   --results-dir DIR      where to copy the harbor jobs/ output
                          (default: /results; persisted by Gantry)
-  --cluster CLUSTER      beaker cluster (default: ai2/saturn)
+  --cluster CLUSTER      beaker cluster(s), comma-separated for multiple
+                         (default: ai2/saturn; e.g. ai2/jupiter,ai2/saturn,ai2/ceres)
   --budget BUDGET        beaker budget (default: omitted; uses workspace default)
   --priority PRI         beaker priority (default: urgent)
   --workspace WS         beaker workspace (default: \$BEAKER_WORKSPACE or ai2/oe-agents)
@@ -268,7 +269,6 @@ GANTRY_CMD=(
     --name "$BEAKER_NAME"
     --description "Harbor eval (${DATASET}) of ${SERVED_MODEL_NAME} (${MODEL_PATH}@${REVISION}) via vLLM"
     --ref "$REPO_GIT_REF"
-    --cluster "$CLUSTER"
     --gpus "$GPU_COUNT"
     --priority "$PRIORITY"
     --weka "oe-adapt-default:/weka/oe-adapt-default"
@@ -316,6 +316,11 @@ GANTRY_CMD=(
     --propagate-failure
     --no-python
 )
+
+# Gantry accepts repeated --cluster flags; CLUSTER may be comma-separated.
+for cluster in ${CLUSTER//,/ }; do
+    GANTRY_CMD+=(--cluster "$cluster")
+done
 
 # The daytona backend needs an API key; only register the secret then, so the
 # default docker path doesn't require a DAYTONA_API_KEY secret in the workspace.
