@@ -326,7 +326,7 @@ Selected with `--dataset <name>@<version>` (downloaded/cached by harbor) or
 | `terminal-bench-sample@2.0` | Tiny sample slice for smoke tests. |
 | `terminal-bench-pro@1.0` | Harder Terminal-Bench Pro tasks. |
 | `openthoughts-tblite@2.0` | OpenThoughts "TB-lite" lightweight terminal tasks. |
-| `swebench-verified@1.0` | SWE-Bench Verified (real GitHub issue fixes). |
+| `swebench-verified@1.0` | SWE-Bench Verified — 500 real GitHub issue fixes. **Verified working 2026-08-14**; launch it with [`launch_swebench_eval.sh`](#swe-bench-verified), not by hand. |
 | `terminal-bench-2-1` (via `--dataset-path`) | TerminalBench 2.1 — 89 revised tasks; off the pinned registry, run from a local dir (see [Off-registry datasets](#off-registry-datasets-eg-terminalbench-21)). |
 | local `--path` | Your own converted task set (e.g. generated RL data). |
 
@@ -345,6 +345,12 @@ fixed subset like the seeds in
 > registry-driven it can change upstream — the `@version` pin guards against
 > content drift but not against a dataset being renamed or removed.
 >
+> **The registry is fetched LIVE, not pinned.** harbor 0.6.6 reads
+> `raw.githubusercontent.com/laude-institute/harbor/main/registry.json` at run
+> time, so it resolves whatever is on `main` today — including
+> `swebench-verified@1.0` (500 tasks, downloads in ~25 s). Do not assume a slug
+> is unavailable just because the harbor pin is old; check the registry.
+>
 > To list every `name version` in the live registry yourself:
 >
 > ```bash
@@ -360,7 +366,9 @@ fixed subset like the seeds in
 
 ### Off-registry datasets (e.g. TerminalBench 2.1)
 
-The pinned harbor (0.6.6) registry only exposes `terminal-bench@2.0`.
+The harbor 0.6.6 registry exposes only `terminal-bench@2.0` *of the TB family*
+(it resolves plenty of other slugs — see the note above; the registry is fetched
+live from `main`, not pinned).
 **TerminalBench 2.1** (`terminal-bench/terminal-bench-2-1`, 89 revised tasks)
 exists only on the *current* hub ([hub.harborframework.com](https://hub.harborframework.com)),
 which the pinned harbor can't resolve — but its tasks use the same
@@ -394,6 +402,54 @@ harbor runs them unchanged from a **local directory**. No harbor upgrade require
    The directory must live under a weka mount the job has (`launch_eval.sh`
    mounts `oe-adapt-default`). To move any existing eval onto 2.1, just swap
    `--dataset terminal-bench@2.0` for the `--dataset-path` above.
+
+### SWE-bench Verified
+
+Runs on the stock harness with **no code changes**. Use the dedicated wrapper —
+it pins the flag combination and preflights the mirror:
+
+```bash
+# full 500-task run, k=5
+./beaker_configs/launch_swebench_eval.sh allenai/tmax-9b --mirror-url auto
+
+# 5-task smoke
+./beaker_configs/launch_swebench_eval.sh allenai/tmax-4b --mirror-url auto \
+    --n-tasks 5 --gpus 1 --n-attempts 1
+```
+
+`--mirror-url auto` derives the *current* mirror node from the Beaker registry
+workload and aborts unless it serves a real swebench manifest. Never hardcode a
+mirror host — they move constantly.
+
+**How it differs from terminal-bench, and why that matters:**
+
+| | terminal-bench 2.0 | swebench-verified 1.0 |
+|---|---|---|
+| Tasks | 89 | 500 |
+| Unique images | 89 (~9 GB total) | **500 (1:1, no sharing)** — ~618 GiB compressed, **~1.5 TB on disk** |
+| Image source | `alexgshaw/*` | `docker.io/swebench/sweb.eval.x86_64.<instance>:latest`, all prebuilt & public — nothing is built locally |
+| Image retention | fine to keep | **must** delete per trial (harbor stock `--rmi all`) or the node fills and wedges |
+
+Consequences baked into the tooling:
+
+* `run_eval_in_job.sh` keeps harbor's stock `compose down --rmi all` by default.
+  The old always-drop behaviour is now opt-in via `HARBOR_KEEP_TASK_IMAGES=1`,
+  and is only sane for small image sets like tb2's 89.
+* Because every trial therefore re-pulls, a **live `MIRROR_URL` matters far more
+  here than on tb2**. podman's fallback to Docker Hub is silent, so a dead mirror
+  shows up as a slow run and a quietly LOW pass@k, not an error.
+* **`--n-concurrent 12`** is validated. At 32, per-node podman/disk contention
+  made ~45% of trials error out. To go faster, shard across jobs rather than
+  raising concurrency on one node.
+* Verification is real SWE-bench grading: the task's `tests/test.sh` writes
+  `/logs/verifier/reward.txt` and a `report.json` with `FAIL_TO_PASS` /
+  `PASS_TO_PASS` / `resolved`.
+
+Reference points: tmax-4b scored pass@1 **0.60** on a 5-task smoke (0 errored
+trials); a tmax-9b k=5 full run tracked ~**0.55** mean solve rate at ~1.4% error
+rate. `scripts/compute_stats.py` is dataset-agnostic and works on the job dir,
+but `scripts/beaker/combined_evals.py` has hardcoded tb21/tblite columns and does
+**not** track swebench yet.
 
 ---
 

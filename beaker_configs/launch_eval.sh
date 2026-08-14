@@ -230,7 +230,7 @@ cat <<EOF
 === Launching tmax eval on Beaker ===
   Model:        ${MODEL_PATH}@${REVISION}
   Served name:  ${SERVED_MODEL_NAME}
-  Harbor model: ${HARBOR_MODEL_NAME:-hosted_vllm/${SERVED_MODEL_NAME}}
+  Harbor model: ${HARBOR_MODEL_NAME:-${MODEL_PROVIDER:-hosted_vllm}/${SERVED_MODEL_NAME}}
   vLLM version: ${VLLM_VERSION}
   Tool parser:  ${VLLM_TOOL_CALL_PARSER}
   Reason parser: ${VLLM_REASONING_PARSER:-<none>}
