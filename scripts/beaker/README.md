@@ -44,6 +44,31 @@ does **not** apply the harbor source patches — those live in the package
 files and need to be reapplied after `uv sync` (see
 [harbor source patches](#harbor-source-patches)).
 
+### SFT solution generation (rl_data pipeline, not harbor)
+
+`beaker_configs/launch_gen_solutions.sh` + `run_gen_solutions_in_job.sh` are a
+sibling pipeline that runs `rl_data.generate_solutions` (the apptainer-based
+SFT warm-start rollouts) instead of harbor. The job downloads a task corpus
+(compact `tasks.zip`) from the HF Hub, installs apptainer, serves a model with
+vLLM on the local GPUs, solves every task at pass@k, and syncs the
+`solutions/*_summary.json` results to the gantry results dataset.
+
+```bash
+# GLM-5.2-FP8 on 8xB300 (ai2/holmes), full TMax-SFT-16.5K corpus
+./beaker_configs/launch_gen_solutions.sh --hardware b300
+
+# smoke test first
+./beaker_configs/launch_gen_solutions.sh --hardware b300 --num-tasks 10
+```
+
+The `--hardware b300` profile follows the recipes.vllm.ai GLM-5.2 B200/B300
+config (FP8 KV cache, TP=8, `VLLM_DEEP_GEMM_WARMUP=skip`), minus MTP
+speculative decoding by default — tool calling + MTP only coexist on vllm
+main, and the solver harness is tool-calling-based (re-enable with
+`--enable-mtp`). GLM-5.2 does not fit on 8xH100 (~743 GB FP8 weights vs
+640 GB HBM; NVFP4 needs Blackwell), so `--hardware h100` (ai2/jupiter) is a
+generic profile for smaller models only and the launcher rejects GLM-5.2 + h100.
+
 ## What the Beaker job does
 
 A single task running:

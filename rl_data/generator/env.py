@@ -46,6 +46,22 @@ def _fakeroot_flags() -> List[str]:
     return ["--fakeroot"]
 
 
+def _userns_flags() -> List[str]:
+    """Return the fakeroot + user-namespace flag list, honouring an env opt-out.
+
+    Setting ``APPTAINER_NO_USERNS=1`` drops both ``--fakeroot`` and
+    ``--userns`` from every apptainer invocation. This is for environments
+    where unprivileged user namespaces are unavailable (e.g. inside some
+    Beaker/containerised jobs) but the process already runs as real root, so
+    neither flag adds anything — with userns blocked they only make apptainer
+    fail at startup. Default off: HPC runs (Slurm, unprivileged users) keep
+    the current fakeroot+userns behaviour.
+    """
+    if os.environ.get("APPTAINER_NO_USERNS", "0") == "1":
+        return []
+    return [*_fakeroot_flags(), "--userns"]
+
+
 class InteractiveContainerEnvironment:
     """Manages interaction with a pre-built Apptainer container using an interactive shell over a PTY."""
 
@@ -455,7 +471,7 @@ class InteractiveContainerEnvironment:
         inner_mount = "/mnt/_agent_home_materialize"
         copy_cmd = [
             "apptainer", "exec",
-            *_fakeroot_flags(), "--userns", "--writable-tmpfs", "--cleanenv",
+            *_userns_flags(), "--writable-tmpfs", "--cleanenv",
             # See _start_instance for the --no-home rationale (R2E Gym bug).
             "--no-home",
             "--bind", f"{dest}:{inner_mount}",
@@ -492,7 +508,7 @@ class InteractiveContainerEnvironment:
 
         exec_cmd = [
             "apptainer", "exec",
-            *_fakeroot_flags(), "--userns", "--writable-tmpfs", "--cleanenv",
+            *_userns_flags(), "--writable-tmpfs", "--cleanenv",
             # See _start_instance for the --no-home rationale (R2E Gym bug).
             "--no-home",
             "--pwd", "/home/user",
@@ -564,8 +580,7 @@ class InteractiveContainerEnvironment:
         self.instance_name = f"agent_{uuid.uuid4().hex[:8]}"
         start_cmd = [
             "apptainer", "instance", "start",
-            *_fakeroot_flags(),
-            "--userns",
+            *_userns_flags(),
             "--writable-tmpfs",
             # Suppress Apptainer's default $HOME auto-mount. Under --fakeroot
             # the host user (UID `osey`) is mapped to UID 0 inside the

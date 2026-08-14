@@ -17,7 +17,7 @@ from tqdm import tqdm
 
 from rl_data import DEFAULT_MODEL
 from rl_data.generate_tasks import _safe_write_text
-from rl_data.generator.env import _fakeroot_flags
+from rl_data.generator.env import _userns_flags
 from rl_data.generator.sample_solutions import run_n_solutions
 from rl_data.generator.vanillux_solver import run_n_solutions_vanillux
 
@@ -233,7 +233,7 @@ def build_and_test(
     proc = subprocess.run(
         [
             "apptainer", "exec",
-            *_fakeroot_flags(), "--userns",
+            *_userns_flags(),
             "--writable-tmpfs", "--cleanenv",
             str(sif_path),
             "pytest", "-q", str(test_file.name),
