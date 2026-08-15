@@ -26,6 +26,7 @@
 #   N_ATTEMPTS               default 1
 #   N_TASKS                  optional harbor --n-tasks limit
 #   INCLUDE_TASK_NAMES       optional newline-separated --include-task-name globs
+#   EXCLUDE_TASK_NAMES       optional newline-separated --exclude-task-name globs
 #   HARBOR_OVERRIDE_CPUS     optional per-task environment CPU override
 #   HARBOR_OVERRIDE_MEMORY_MB
 #                            optional per-task environment memory override
@@ -596,6 +597,16 @@ if [ -n "${INCLUDE_TASK_NAMES:-}" ]; then
         [ -n "$task_glob" ] || continue
         HARBOR_CMD+=( --include-task-name "$task_glob" )
     done <<< "$INCLUDE_TASK_NAMES"
+fi
+# Newline-separated globs from launch_eval --exclude-task-name. Needed for
+# TB3's 4 GPU tasks: harbor 0.21 hard-errors ("Task requires N GPU(s) but
+# EnvironmentType.DOCKER does not support GPU allocation") and ABORTS THE
+# WHOLE JOB when a GPU task is scheduled on the docker env.
+if [ -n "${EXCLUDE_TASK_NAMES:-}" ]; then
+    while IFS= read -r task_glob; do
+        [ -n "$task_glob" ] || continue
+        HARBOR_CMD+=( --exclude-task-name "$task_glob" )
+    done <<< "$EXCLUDE_TASK_NAMES"
 fi
 if [ -n "${HARBOR_OVERRIDE_CPUS:-}" ]; then
     HARBOR_CMD+=( --override-cpus "$HARBOR_OVERRIDE_CPUS" )

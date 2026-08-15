@@ -52,6 +52,7 @@ N_CONCURRENT=8
 N_ATTEMPTS=1
 N_TASKS=""
 INCLUDE_TASK_NAMES=""
+EXCLUDE_TASK_NAMES=""
 JOB_NAME=""
 RESULTS_DIR=""
 CLUSTER="ai2/saturn"
@@ -116,6 +117,7 @@ Options:
   --n-attempts N         harbor -k (default: 1)
   --n-tasks N            harbor --n-tasks limit
   --include-task-name G  harbor --include-task-name glob (can be repeated)
+  --exclude-task-name G  harbor --exclude-task-name glob (can be repeated)
   --job-name NAME        harbor --job-name (default: <served-name>-<dataset>)
   --results-dir DIR      where to copy the harbor jobs/ output
                          (default: /results; persisted by Gantry)
@@ -184,6 +186,7 @@ while [ $# -gt 0 ]; do
         --n-attempts)      N_ATTEMPTS="$2"; shift 2 ;;
         --n-tasks)         N_TASKS="$2"; shift 2 ;;
         --include-task-name) INCLUDE_TASK_NAMES+="${INCLUDE_TASK_NAMES:+$'\n'}$2"; shift 2 ;;
+        --exclude-task-name) EXCLUDE_TASK_NAMES+="${EXCLUDE_TASK_NAMES:+$'\n'}$2"; shift 2 ;;
         --job-name)        JOB_NAME="$2"; shift 2 ;;
         --results-dir)     RESULTS_DIR="$2"; shift 2 ;;
         --cluster)         CLUSTER="$2"; shift 2 ;;
@@ -314,6 +317,7 @@ GANTRY_CMD=(
     --env "N_ATTEMPTS=${N_ATTEMPTS}"
     --env "N_TASKS=${N_TASKS}"
     --env "INCLUDE_TASK_NAMES=${INCLUDE_TASK_NAMES}"
+    --env "EXCLUDE_TASK_NAMES=${EXCLUDE_TASK_NAMES}"
     --env "HARBOR_OVERRIDE_CPUS=${HARBOR_OVERRIDE_CPUS}"
     --env "HARBOR_OVERRIDE_MEMORY_MB=${HARBOR_OVERRIDE_MEMORY_MB}"
     --env "HARBOR_OVERRIDE_STORAGE_MB=${HARBOR_OVERRIDE_STORAGE_MB}"
