@@ -255,16 +255,29 @@ PODMAN_USER="harboruser"
 if ! id "$PODMAN_USER" >/dev/null 2>&1; then
     useradd -m -s /bin/bash "$PODMAN_USER"
 fi
-grep -q "^$PODMAN_USER:" /etc/subuid 2>/dev/null || echo "$PODMAN_USER:200000:65536" >> /etc/subuid
-grep -q "^$PODMAN_USER:" /etc/subgid 2>/dev/null || echo "$PODMAN_USER:200000:65536" >> /etc/subgid
+# Pin the subuid/subgid range to 10000:65536 — the same range the old rootful
+# userns=auto config used successfully, so those uids provably exist in the
+# job container's outer namespace. useradd auto-assigns a huge base (e.g.
+# 11175536) that the outer namespace doesn't map, and newuidmap then dies
+# with "write to uid_map failed: Operation not permitted" (smoke7).
+sed -i "/^$PODMAN_USER:/d" /etc/subuid /etc/subgid 2>/dev/null || true
+echo "$PODMAN_USER:10000:65536" >> /etc/subuid
+echo "$PODMAN_USER:10000:65536" >> /etc/subgid
 PODMAN_UID="$(id -u "$PODMAN_USER")"
 PODMAN_XDG="/run/user/$PODMAN_UID"
 mkdir -p "$PODMAN_XDG"
 chown "$PODMAN_USER:$PODMAN_USER" "$PODMAN_XDG"
 chmod 700 "$PODMAN_XDG"
 # Rootless overlay storage needs fuse-overlayfs + /dev/fuse; without it podman
-# falls back to vfs (slow, disk-hungry) — surface that early.
-[ -e /dev/fuse ] || log "WARNING: /dev/fuse missing — rootless podman will use vfs storage"
+# falls back to vfs (slow, disk-hungry). Try creating the device node (the
+# /dev/net/tun mknod below works in these jobs, so this often does too).
+if [ ! -e /dev/fuse ]; then
+    if mknod /dev/fuse c 10 229 2>/dev/null && chmod 666 /dev/fuse; then
+        log "created /dev/fuse"
+    else
+        log "WARNING: /dev/fuse missing and mknod failed — rootless podman will use vfs storage"
+    fi
+fi
 # /dev/net/tun for pasta's tap device.
 if [ ! -e /dev/net/tun ]; then
     mkdir -p /dev/net && mknod /dev/net/tun c 10 200 && chmod 666 /dev/net/tun
