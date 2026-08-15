@@ -145,17 +145,20 @@ apt-get install -y -qq rsync curl ca-certificates squashfs-tools uidmap
 # runtime images ship CUDA libs but no dev packages ("nvcc: not found").
 # Install NVIDIA's minimal build metapackage (nvcc + cudart headers) matching
 # the CUDA 13.0 runtime when nvcc is missing. gcc comes via build-essential
-# (nvcc needs a host compiler).
-: "${CUDA_BUILD_PKG:=cuda-minimal-build-13-0}"
+# (nvcc needs a host compiler); libcublas-dev supplies cublasLt.h, which
+# cuda-minimal-build omits but FlashInfer's TRT-LLM sources include.
+: "${CUDA_BUILD_PKGS:=cuda-minimal-build-13-0 libcublas-dev-13-0}"
 if ! command -v nvcc >/dev/null 2>&1; then
-    log "nvcc missing — installing ${CUDA_BUILD_PKG} from NVIDIA's apt repo"
-    if ! apt-get install -y -qq "$CUDA_BUILD_PKG" build-essential 2>/dev/null; then
+    log "nvcc missing — installing ${CUDA_BUILD_PKGS} from NVIDIA's apt repo"
+    # shellcheck disable=SC2086
+    if ! apt-get install -y -qq $CUDA_BUILD_PKGS build-essential 2>/dev/null; then
         . /etc/os-release
         _ubu="ubuntu$(echo "$VERSION_ID" | tr -d .)"
         curl -fsSL "https://developer.download.nvidia.com/compute/cuda/repos/${_ubu}/x86_64/cuda-keyring_1.1-1_all.deb" -o /tmp/cuda-keyring.deb
         dpkg -i /tmp/cuda-keyring.deb
         apt-get update -qq || true
-        apt-get install -y -qq "$CUDA_BUILD_PKG" build-essential
+        # shellcheck disable=SC2086
+        apt-get install -y -qq $CUDA_BUILD_PKGS build-essential
     fi
 fi
 _cuda_dir="$(ls -d /usr/local/cuda-13.* 2>/dev/null | sort -V | tail -1 || true)"
