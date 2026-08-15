@@ -143,11 +143,13 @@ apt-get install -y -qq rsync curl ca-certificates squashfs-tools uidmap
 # On Blackwell, vLLM's FlashInfer backend JIT-compiles its TRT-LLM fused-MoE
 # kernels for sm_103a at engine start — that needs a real nvcc, and the ai2
 # runtime images ship CUDA libs but no dev packages ("nvcc: not found").
-# Install NVIDIA's minimal build metapackage (nvcc + cudart headers) matching
-# the CUDA 13.0 runtime when nvcc is missing. gcc comes via build-essential
-# (nvcc needs a host compiler); libcublas-dev supplies cublasLt.h, which
-# cuda-minimal-build omits but FlashInfer's TRT-LLM sources include.
-: "${CUDA_BUILD_PKGS:=cuda-minimal-build-13-0 libcublas-dev-13-0}"
+# Install NVIDIA's build toolchain matching the CUDA 13.0 runtime when nvcc
+# is missing. gcc comes via build-essential (nvcc needs a host compiler).
+# cuda-libraries-dev is the same metapackage the official nvidia/cuda devel
+# images install: it covers ALL the CUDA library dev headers FlashInfer's
+# TRT-LLM sources include (cublasLt.h, curand_kernel.h, nvrtc.h, ...) —
+# piecemeal -dev packages turned into per-run whack-a-mole (runs 3-4).
+: "${CUDA_BUILD_PKGS:=cuda-minimal-build-13-0 cuda-libraries-dev-13-0}"
 if ! command -v nvcc >/dev/null 2>&1; then
     log "nvcc missing — installing ${CUDA_BUILD_PKGS} from NVIDIA's apt repo"
     # shellcheck disable=SC2086
