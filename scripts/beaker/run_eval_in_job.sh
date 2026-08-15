@@ -88,23 +88,25 @@ fi
 # --- 2. Write containers.conf -----------------------------------------------
 log "writing /etc/containers/containers.conf"
 mkdir -p /etc/containers
+# NOTE (TB3 / harbor 0.21 rework): podman now runs ROOTLESS (see step 4).
+# harbor 0.21's compose projects always create bridge networks, and the old
+# rootful config could never support them in a beaker job container:
+#   * netns="host" made podman skip IP allocation ("no static ips provided"),
+#   * dropping it exposed the real wall — rootful netavark must write
+#     net.ipv4 sysctls under /proc/sys, which the job mounts READ-ONLY and
+#     cannot remount (no CAP_SYS_ADMIN).
+# Rootless podman does its networking inside a user-owned netns (pasta for
+# egress), where sysctls and nftables are permitted. Accordingly:
+#   * userns="auto" is gone (rootful-only; rootless containers are already
+#     uid-isolated inside the user's namespace),
+#   * the host-ns shortcuts (ipcns/utsns/cgroupns="host") and the /proc:/proc
+#     volume are gone (rootful-era workarounds; wrong for bridge-netns
+#     containers).
 cat > /etc/containers/containers.conf <<'CONF'
 [containers]
-# NOTE: netns="host" was removed for TB3 (harbor 0.21): it made podman skip
-# static-IP allocation for every container, so joining any named/compose
-# network died in netavark with "failed to parse ipam options: no static ips
-# provided". Compose task networking needs real bridge networks now; the
-# bridge-network preflight below verifies they actually work in this job.
-userns="auto:size=65536"
-ipcns="host"
-utsns="host"
-cgroupns="host"
 cgroups="disabled"
 keyring=false
 log_driver = "k8s-file"
-volumes = [
-        "/proc:/proc",
-]
 default_sysctls = []
 [engine]
 cgroup_manager = "cgroupfs"
@@ -112,10 +114,6 @@ events_logger="file"
 runtime="crun"
 compose_warning_logs=false
 CONF
-
-# Ensure root has a subuid/subgid range big enough for the userns size above.
-grep -q '^root:' /etc/subuid 2>/dev/null || echo 'root:10000:65536' >> /etc/subuid
-grep -q '^root:' /etc/subgid 2>/dev/null || echo 'root:10000:65536' >> /etc/subgid
 
 # --- 2b. Matching netavark/aardvark-dns --------------------------------------
 # The beaker image ships a NEW podman (5.x) next to Ubuntu noble's ANCIENT
@@ -243,11 +241,53 @@ if "HARBOR_AGENT_TIMEOUT_SEC" not in text:
     print("patched jobs.py: added HARBOR_AGENT_TIMEOUT_SEC override")
 PY
 
-# --- 4. Bring podman service up (uses scripts/setup_podman_harbor.sh) -------
-log "starting podman service"
-# shellcheck disable=SC1091
-source scripts/setup_podman_harbor.sh
-export DOCKER_HOST="${DOCKER_HOST:-unix:///tmp/podman.sock}"
+# --- 4. Bring podman service up, ROOTLESS ------------------------------------
+# Rootful podman cannot do bridge networking in a beaker job container:
+# netavark must write /proc/sys/net sysctls, and /proc/sys is a read-only
+# mount that can't be remounted without CAP_SYS_ADMIN (smoke5/smoke6:
+# "set sysctl net/ipv4/conf/podman1/route_localnet: Read-only file system").
+# Rootless podman instead builds bridges inside a user-owned network
+# namespace (egress via pasta) where sysctls/nftables are permitted, which is
+# exactly what harbor 0.21's per-project compose networks + TB3's
+# multi-service tasks need. Root clients (harbor / docker CLI) talk to the
+# rootless service through the unix socket as before.
+PODMAN_USER="harboruser"
+if ! id "$PODMAN_USER" >/dev/null 2>&1; then
+    useradd -m -s /bin/bash "$PODMAN_USER"
+fi
+grep -q "^$PODMAN_USER:" /etc/subuid 2>/dev/null || echo "$PODMAN_USER:200000:65536" >> /etc/subuid
+grep -q "^$PODMAN_USER:" /etc/subgid 2>/dev/null || echo "$PODMAN_USER:200000:65536" >> /etc/subgid
+PODMAN_UID="$(id -u "$PODMAN_USER")"
+PODMAN_XDG="/run/user/$PODMAN_UID"
+mkdir -p "$PODMAN_XDG"
+chown "$PODMAN_USER:$PODMAN_USER" "$PODMAN_XDG"
+chmod 700 "$PODMAN_XDG"
+# Rootless overlay storage needs fuse-overlayfs + /dev/fuse; without it podman
+# falls back to vfs (slow, disk-hungry) — surface that early.
+[ -e /dev/fuse ] || log "WARNING: /dev/fuse missing — rootless podman will use vfs storage"
+# /dev/net/tun for pasta's tap device.
+if [ ! -e /dev/net/tun ]; then
+    mkdir -p /dev/net && mknod /dev/net/tun c 10 200 && chmod 666 /dev/net/tun
+fi
+# Run a podman command as the rootless user.
+pdm() { runuser -u "$PODMAN_USER" -- env XDG_RUNTIME_DIR="$PODMAN_XDG" HOME="/home/$PODMAN_USER" podman "$@"; }
+
+PODMAN_SOCKET=/tmp/podman.sock
+log "starting rootless podman service (user=$PODMAN_USER) at $PODMAN_SOCKET"
+rm -f "$PODMAN_SOCKET"
+runuser -u "$PODMAN_USER" -- env XDG_RUNTIME_DIR="$PODMAN_XDG" HOME="/home/$PODMAN_USER" \
+    nohup podman system service --time=0 "unix://$PODMAN_SOCKET" >/tmp/podman-service.log 2>&1 &
+for _ in $(seq 1 50); do
+    [ -S "$PODMAN_SOCKET" ] && break
+    sleep 0.2
+done
+if [ ! -S "$PODMAN_SOCKET" ]; then
+    log "FATAL: rootless podman service failed to come up — /tmp/podman-service.log:"
+    cat /tmp/podman-service.log || true
+    exit 1
+fi
+export DOCKER_HOST="unix://$PODMAN_SOCKET"
+log "DOCKER_HOST=$DOCKER_HOST ($(pdm --version 2>/dev/null || echo 'podman version unknown'))"
 
 # --- 4b. Podman healthcheck driver -------------------------------------------
 # Podman schedules container healthchecks via systemd transient timers; there
@@ -260,12 +300,12 @@ export DOCKER_HOST="${DOCKER_HOST:-unix:///tmp/podman.sock}"
 log "starting podman healthcheck driver (no systemd => timers never fire)"
 (
     while true; do
-        for cid in $(podman ps -q 2>/dev/null); do
-            status="$(podman inspect "$cid" \
+        for cid in $(pdm ps -q 2>/dev/null); do
+            status="$(pdm inspect "$cid" \
                 --format '{{if .Config.Healthcheck}}{{.State.Healthcheck.Status}}{{end}}' \
                 2>/dev/null || true)"
             case "$status" in
-                starting|unhealthy) podman healthcheck run "$cid" >/dev/null 2>&1 || true ;;
+                starting|unhealthy) pdm healthcheck run "$cid" >/dev/null 2>&1 || true ;;
             esac
         done
         sleep 5
@@ -308,14 +348,12 @@ if [ -n "${DOCKER_PAT:-}" ]; then
     # podman reads registry creds from containers/auth.json, NOT ~/.docker/config.json,
     # so a plain `docker login` leaves the podman service pulling ANONYMOUSLY (which
     # then hits the shared-IP unauthenticated rate cap under --host-networking, even
-    # with a paid account). Authenticate podman's own store too.
-    if command -v podman >/dev/null 2>&1; then
-        if printf '%s' "$DOCKER_PAT" | podman login -u "$DOCKERHUB_USERNAME" --password-stdin docker.io >/dev/null 2>&1; then
-            log "podman Docker Hub login OK ($DOCKERHUB_USERNAME)"
-        else
-            log "FATAL: podman Docker Hub login failed for '$DOCKERHUB_USERNAME'. Aborting."
-            exit 1
-        fi
+    # with a paid account). Authenticate the ROOTLESS podman user's own store too.
+    if printf '%s' "$DOCKER_PAT" | pdm login -u "$DOCKERHUB_USERNAME" --password-stdin docker.io >/dev/null 2>&1; then
+        log "podman Docker Hub login OK ($DOCKERHUB_USERNAME, rootless)"
+    else
+        log "FATAL: podman Docker Hub login failed for '$DOCKERHUB_USERNAME'. Aborting."
+        exit 1
     fi
 else
     log "FATAL: DOCKER_PAT not set; refusing to fall back to anonymous pulls. Provide the DOCKER_PAT secret. Aborting."
@@ -350,24 +388,30 @@ if mount -o remount,rw /proc/sys 2>/dev/null || mount -o remount,bind,rw /proc/s
 else
     log "WARNING: could not remount /proc/sys rw — netavark bridge sysctls may fail (probe decides)"
 fi
-mkdir -p /run/containers/networks/aardvark-dns
-PODMAN_RUNROOT="$(podman info --format '{{.Store.RunRoot}}' 2>/dev/null || true)"
-if [ -n "$PODMAN_RUNROOT" ]; then
-    mkdir -p "$PODMAN_RUNROOT/networks/aardvark-dns"
-fi
-podman network rm -f hb-netprobe >/dev/null 2>&1 || true
-podman network create hb-netprobe >/dev/null
-if podman run --rm --network hb-netprobe docker.io/library/busybox:latest true >/dev/null 2>&1; then
-    log "bridge-network preflight OK"
+pdm network rm -f hb-netprobe >/dev/null 2>&1 || true
+pdm network create hb-netprobe >/dev/null
+if pdm run --rm --network hb-netprobe docker.io/library/busybox:latest true >/dev/null 2>&1; then
+    log "bridge-network preflight OK (rootless)"
 else
     log "FATAL: podman cannot run a container on a bridge network — every trial would error."
     log "podman info follows for diagnosis:"
-    podman info 2>&1 | sed -n '1,80p' || true
-    ls -la /run/containers/networks 2>&1 || true
-    podman run --rm --network hb-netprobe docker.io/library/busybox:latest true || true
+    pdm info 2>&1 | sed -n '1,120p' || true
+    pdm run --rm --network hb-netprobe docker.io/library/busybox:latest true || true
     exit 1
 fi
-podman network rm -f hb-netprobe >/dev/null 2>&1 || true
+pdm network rm -f hb-netprobe >/dev/null 2>&1 || true
+# The rootless bridge must also reach the network: TB3 tasks pip/npm/apt
+# install at build AND run time. Verify egress through pasta before betting
+# the run on it.
+pdm network create hb-netprobe2 >/dev/null
+if pdm run --rm --network hb-netprobe2 docker.io/library/busybox:latest \
+        sh -c 'wget -q -T 15 -O /dev/null http://archive.ubuntu.com/ubuntu/'; then
+    log "bridge egress preflight OK"
+else
+    log "FATAL: containers on a bridge network have no internet egress (pasta)."
+    exit 1
+fi
+pdm network rm -f hb-netprobe2 >/dev/null 2>&1 || true
 
 # --- 5. Start vLLM in the background ----------------------------------------
 : "${VLLM_VERSION:=0.19.1}"
