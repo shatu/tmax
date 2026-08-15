@@ -57,6 +57,12 @@
 #                            persisted by gantry as the result dataset)
 #   SYNC_INTERVAL            seconds between periodic result syncs (default: 300)
 #   APPTAINER_VERSION        apptainer release to install (default: 1.4.4)
+#   APPTAINER_FLAVOR         plain | suid (default: plain). suid also installs
+#                            the setuid starter so builds don't need userns
+#                            mappings (escape hatch for AppArmor-restricted hosts).
+#   SIF_CACHE_DIR            base-SIF cache dir. Default: a weka path if
+#                            /weka/oe-adapt-default is mounted. Seed it with
+#                            prebuilt SIFs to skip in-job builds entirely.
 #   HF_CACHE_DIR             HF_HOME override. Default: a weka path if
 #                            /weka/oe-adapt-default is mounted (so the ~700 GB
 #                            GLM download survives across jobs), else ~/.cache.
@@ -172,13 +178,23 @@ fi
 nvcc --version 2>/dev/null | grep release || log "WARN: nvcc still unavailable — FlashInfer JIT will fail"
 
 # --- 2. Apptainer -------------------------------------------------------------
+: "${APPTAINER_FLAVOR:=plain}"   # plain | suid
 if ! command -v apptainer >/dev/null 2>&1; then
-    log "installing apptainer ${APPTAINER_VERSION}"
+    log "installing apptainer ${APPTAINER_VERSION} (${APPTAINER_FLAVOR})"
     _arch="$(dpkg --print-architecture)"
     curl -fsSL \
         "https://github.com/apptainer/apptainer/releases/download/v${APPTAINER_VERSION}/apptainer_${APPTAINER_VERSION}_${_arch}.deb" \
         -o /tmp/apptainer.deb
     apt-get install -y -qq /tmp/apptainer.deb
+    if [ "$APPTAINER_FLAVOR" = "suid" ]; then
+        # The setuid starter runs builds/%post with direct privileged
+        # operations instead of user-namespace mappings — escape hatch for
+        # hosts where userns mapping writes are denied (AppArmor etc.).
+        curl -fsSL \
+            "https://github.com/apptainer/apptainer/releases/download/v${APPTAINER_VERSION}/apptainer-suid_${APPTAINER_VERSION}_${_arch}.deb" \
+            -o /tmp/apptainer-suid.deb
+        apt-get install -y -qq /tmp/apptainer-suid.deb
+    fi
 fi
 apptainer --version
 
@@ -187,19 +203,24 @@ apptainer --version
 grep -q '^root:' /etc/subuid 2>/dev/null || echo 'root:100000:65536' >> /etc/subuid
 grep -q '^root:' /etc/subgid 2>/dev/null || echo 'root:100000:65536' >> /etc/subgid
 
-# Preflight: apptainer needs user namespaces — not just for --fakeroot/
-# --userns at run time, but internally for `apptainer build` %post in
-# non-setuid mode, where there is no opt-out. The launcher requests them via
-# BEAKER_ALLOW_SUBCONTAINERS=1; also try flipping the sysctl in case the
-# host default is off but the job is privileged enough to change it.
-if ! unshare -U true 2>/dev/null; then
+# Preflight: apptainer needs WORKING user namespaces — creation AND uid/gid
+# mapping writes (run 6 failed on the latter: "Could not write info to
+# setgroups: Permission denied" during build %post, with plain creation
+# fine). `unshare -U -r` exercises both. The launcher requests privileges
+# via BEAKER_ALLOW_SUBCONTAINERS=1; also try the sysctls in case the host
+# blocks userns (Debian clone knob) or restricts mappings (Ubuntu 23.10+
+# AppArmor knob) and the job is privileged enough to flip them.
+if ! unshare -U -r true 2>/dev/null; then
     sysctl -w kernel.unprivileged_userns_clone=1 2>/dev/null \
         || echo 1 > /proc/sys/kernel/unprivileged_userns_clone 2>/dev/null \
         || true
+    sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null \
+        || echo 0 > /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null \
+        || true
 fi
-if ! unshare -U true 2>/dev/null; then
-    log "user namespaces unavailable — dropping run-time userns flags (APPTAINER_NO_USERNS=1)"
-    log "WARNING: 'apptainer build' needs userns internally and has no opt-out — base-SIF builds will fail. Relaunch with BEAKER_ALLOW_SUBCONTAINERS=1 (launcher now sets it)."
+if ! unshare -U -r true 2>/dev/null; then
+    log "userns mappings unavailable — dropping run-time userns flags (APPTAINER_NO_USERNS=1)"
+    log "WARNING: 'apptainer build' %post needs working userns mappings (no opt-out). Base-SIF builds will fail unless the SIF cache is seeded or APPTAINER_FLAVOR=suid is set."
     export APPTAINER_NO_USERNS=1
 fi
 
@@ -304,6 +325,29 @@ log "launching vllm: ${VLLM_CMD[*]}"
 "${VLLM_CMD[@]}" >"$VLLM_LOG" 2>&1 &
 VLLM_PID=$!
 
+# --- 5b. Base-SIF cache on weka -------------------------------------------------
+# Base SIFs otherwise rebuild from scratch every job (~15-40 min, and
+# impossible where userns mappings are blocked). Seed rl_data/containers from
+# a weka cache before the solver, and write back whatever the job built.
+# Seeding the cache out-of-band with already-built SIFs (e.g. scp'd from the
+# GPFS cluster's rl_data/containers/) skips in-job builds entirely.
+if [ -z "${SIF_CACHE_DIR:-}" ] && [ -d /weka/oe-adapt-default ]; then
+    SIF_CACHE_DIR="/weka/oe-adapt-default/${USER:-$(whoami)}/tmax_base_sifs"
+fi
+if [ -n "${SIF_CACHE_DIR:-}" ]; then
+    mkdir -p "$SIF_CACHE_DIR"
+    _n_cached="$(find "$SIF_CACHE_DIR" -maxdepth 1 -name '*.sif' | wc -l)"
+    if [ "$_n_cached" -gt 0 ]; then
+        log "seeding rl_data/containers with $_n_cached cached base SIF(s) from $SIF_CACHE_DIR"
+        rsync -a "$SIF_CACHE_DIR"/*.sif rl_data/containers/
+    fi
+fi
+sync_sifs() {
+    if [ -n "${SIF_CACHE_DIR:-}" ]; then
+        rsync -a rl_data/containers/*.sif "$SIF_CACHE_DIR/" 2>/dev/null || true
+    fi
+}
+
 # --- 6. Result sync (periodic + on exit) ---------------------------------------
 mkdir -p "$RESULTS_DIR"
 sync_results() {
@@ -320,6 +364,7 @@ cleanup() {
     wait "$VLLM_PID" 2>/dev/null || true
     log "cleanup: final result sync -> $RESULTS_DIR"
     sync_results
+    sync_sifs
     tail -n "$VLLM_LOG_TAIL_LINES" "$VLLM_LOG" > "$RESULTS_DIR/vllm_tail.log" 2>/dev/null || true
 }
 trap cleanup EXIT

@@ -296,6 +296,12 @@ GANTRY_CMD=(
     --env "SAMPLE_SIZE=${SAMPLE_SIZE}"
     --env "SAMPLE_SEED=${SAMPLE_SEED}"
     --env "FORCE_RERUN=${FORCE_RERUN}"
+    # apptainer knobs, settable from the caller's environment:
+    #   APPTAINER_FLAVOR=suid  -> also install the setuid starter (builds
+    #                             without userns mappings)
+    #   SIF_CACHE_DIR=<path>   -> override the weka base-SIF cache location
+    --env "APPTAINER_FLAVOR=${APPTAINER_FLAVOR:-plain}"
+    --env "SIF_CACHE_DIR=${SIF_CACHE_DIR:-}"
     # Run the task with the privileges nested containers need (user
     # namespaces for apptainer build/%post). Same setting the harbor/podman
     # eval pipeline relies on; without it holmes blocks userns creation.
