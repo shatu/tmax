@@ -344,7 +344,12 @@ if [ -n "${SIF_CACHE_DIR:-}" ]; then
 fi
 sync_sifs() {
     if [ -n "${SIF_CACHE_DIR:-}" ]; then
-        rsync -a rl_data/containers/*.sif "$SIF_CACHE_DIR/" 2>/dev/null || true
+        # Only copy SIFs untouched for 2+ min: rsyncing one mid-build would
+        # land a truncated image in the cache, and later jobs would seed it,
+        # skip the build, and fail at runtime. (Remedy for a bad cache entry:
+        # delete the .sif from $SIF_CACHE_DIR and let the next job rebuild.)
+        find rl_data/containers -maxdepth 1 -name '*.sif' -mmin +2 -print0 2>/dev/null \
+            | xargs -0 -r -I{} rsync -a {} "$SIF_CACHE_DIR/" || true
     fi
 }
 
@@ -373,6 +378,9 @@ trap cleanup EXIT
     while true; do
         sleep "$SYNC_INTERVAL"
         sync_results
+        # Freshly built base SIFs reach the weka cache within one interval,
+        # so a preempted job never loses completed builds.
+        sync_sifs
         # Count only THIS run's summaries — the published corpus ships with
         # summaries from other models in the same solutions/ dirs.
         n_done="$(find "$TASKS_DIR" -name "hosted_vllm_${SERVED_MODEL_NAME}_summary.json" 2>/dev/null | wc -l)"
