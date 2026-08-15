@@ -19,7 +19,7 @@ from typing import Any
 
 import litellm
 from harbor.agents.base import BaseAgent
-from harbor.environments.base import BaseEnvironment
+from harbor.environments.base import BaseEnvironment, ExecResult
 from harbor.models.agent.context import AgentContext
 
 from rl_data.generator.sample_solutions import (
@@ -338,10 +338,28 @@ class Vanillux2Agent(BaseAgent):
     async def _execute_bash(
         self, command: str, environment: BaseEnvironment
     ) -> Any:
-        return await environment.exec(
-            command=self._wrap_command(command),
-            timeout_sec=self.command_timeout,
-        )
+        try:
+            return await environment.exec(
+                command=self._wrap_command(command),
+                timeout_sec=self.command_timeout,
+            )
+        except RuntimeError as exc:
+            # harbor's docker environment RAISES on exec timeout (bare
+            # RuntimeError, docker.py). Long-running commands are normal on
+            # long-horizon tasks (TB3 training/build steps routinely exceed
+            # command_timeout), so surface the timeout to the model as an
+            # observation instead of erroring the whole TRIAL.
+            if "timed out" not in str(exc).lower():
+                raise
+            return ExecResult(
+                stdout="",
+                stderr=(
+                    f"Command timed out after {self.command_timeout} seconds "
+                    "and was killed. Long-running commands must be run in the "
+                    "background (e.g. `nohup cmd > log 2>&1 &`) and polled."
+                ),
+                return_code=124,
+            )
 
     @staticmethod
     def _format_tool_result(result: Any) -> str:
