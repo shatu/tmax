@@ -598,6 +598,13 @@ if [ -n "${INCLUDE_TASK_NAMES:-}" ]; then
         HARBOR_CMD+=( --include-task-name "$task_glob" )
     done <<< "$INCLUDE_TASK_NAMES"
 fi
+# Retry exception-errored trials (NOT reward-0 ones) — absorbs transient
+# flakes: anonymous github API 403s during builds, mirror hiccups, and
+# host-netns port collisions (the colliding neighbour is usually gone by the
+# retry).
+if [ -n "${HARBOR_MAX_RETRIES:-}" ]; then
+    HARBOR_CMD+=( --max-retries "$HARBOR_MAX_RETRIES" )
+fi
 # Newline-separated globs from launch_eval --exclude-task-name. Needed for
 # TB3's 4 GPU tasks: harbor 0.21 hard-errors ("Task requires N GPU(s) but
 # EnvironmentType.DOCKER does not support GPU allocation") and ABORTS THE
