@@ -346,12 +346,34 @@ log "starting podman healthcheck driver (no systemd => timers never fire)"
 (
     while true; do
         for cid in $(pdm ps -q 2>/dev/null); do
-            status="$(pdm inspect "$cid" \
-                --format '{{if .Config.Healthcheck}}{{.State.Healthcheck.Status}}{{end}}' \
+            line="$(pdm inspect "$cid" --format \
+                '{{if .Config.Healthcheck}}{{.State.Healthcheck.Status}}|{{.State.StartedAt}}|{{.Config.Healthcheck.StartPeriod}}{{end}}' \
                 2>/dev/null || true)"
-            case "$status" in
-                starting|unhealthy) pdm healthcheck run "$cid" >/dev/null 2>&1 || true ;;
+            [ -n "$line" ] || continue
+            status="${line%%|*}"; rest="${line#*|}"
+            started_at="${rest%%|*}"; sp_raw="${rest#*|}"
+            case "$status" in starting|unhealthy) ;; *) continue ;; esac
+            # RESPECT start_period: a manually-driven probe that fails while
+            # the service is still booting increments podman's failing streak
+            # and flips the container to "unhealthy" immediately — compose
+            # `up --wait` then bails on whichever service was slowest to bind
+            # (observed on heat-pump-warranty/freight-dispatch even when
+            # trials ran serially). Only drive checks once start_period has
+            # elapsed since the container started. StartPeriod renders as a
+            # Go duration ("30s", "1m30s") or nanoseconds depending on
+            # version; over-waiting is safe (containers just stay "starting").
+            case "$sp_raw" in
+                ''|0|0s)      sp_s=0 ;;
+                *[mh]*)       sp_s=180 ;;
+                *s)           sp_s="${sp_raw%s}"; sp_s="${sp_s%%.*}" ;;
+                *[!0-9]*)     sp_s=60 ;;
+                *)            sp_s=$(( sp_raw / 1000000000 )) ;;
             esac
+            started_s="$(date -d "$started_at" +%s 2>/dev/null || echo 0)"
+            if [ "$started_s" -gt 0 ] && [ $(( $(date +%s) - started_s )) -lt "${sp_s:-0}" ]; then
+                continue
+            fi
+            pdm healthcheck run "$cid" >/dev/null 2>&1 || true
         done
         sleep 5
     done

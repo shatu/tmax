@@ -173,12 +173,28 @@ if docker --version 2>/dev/null | grep -qi podman && command -v podman >/dev/nul
     (
         while true; do
             for cid in $(podman ps -q 2>/dev/null); do
-                status="$(podman inspect "$cid" \
-                    --format '{{if .Config.Healthcheck}}{{.State.Healthcheck.Status}}{{end}}' \
+                line="$(podman inspect "$cid" --format \
+                    '{{if .Config.Healthcheck}}{{.State.Healthcheck.Status}}|{{.State.StartedAt}}|{{.Config.Healthcheck.StartPeriod}}{{end}}' \
                     2>/dev/null || true)"
-                case "$status" in
-                    starting|unhealthy) podman healthcheck run "$cid" >/dev/null 2>&1 || true ;;
+                [ -n "$line" ] || continue
+                status="${line%%|*}"; rest="${line#*|}"
+                started_at="${rest%%|*}"; sp_raw="${rest#*|}"
+                case "$status" in starting|unhealthy) ;; *) continue ;; esac
+                # Respect start_period: a driven probe failing during boot
+                # marks the container unhealthy immediately and compose
+                # `up --wait` bails. Only drive once start_period elapsed.
+                case "$sp_raw" in
+                    ''|0|0s)      sp_s=0 ;;
+                    *[mh]*)       sp_s=180 ;;
+                    *s)           sp_s="${sp_raw%s}"; sp_s="${sp_s%%.*}" ;;
+                    *[!0-9]*)     sp_s=60 ;;
+                    *)            sp_s=$(( sp_raw / 1000000000 )) ;;
                 esac
+                started_s="$(date -d "$started_at" +%s 2>/dev/null || echo 0)"
+                if [ "$started_s" -gt 0 ] && [ $(( $(date +%s) - started_s )) -lt "${sp_s:-0}" ]; then
+                    continue
+                fi
+                podman healthcheck run "$cid" >/dev/null 2>&1 || true
             done
             sleep 5
         done
