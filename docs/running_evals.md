@@ -403,6 +403,53 @@ harbor runs them unchanged from a **local directory**. No harbor upgrade require
    mounts `oe-adapt-default`). To move any existing eval onto 2.1, just swap
    `--dataset terminal-bench@2.0` for the `--dataset-path` above.
 
+### Terminal-Bench 3.0 (harbor ≥ 0.21 — this branch)
+
+**TB3 required a real harbor upgrade** (`shashankg/tb3` branch pins
+`harbor>=0.21.0`), unlike 2.1 which ran on the pinned 0.6.6 from a local path.
+TB3's 74 tasks are a different format generation:
+
+- every task declares `[verifier] environment_mode = "separate"` (verifier runs
+  in its own container; 7 tasks ship a dedicated `[verifier.environment]` whose
+  deps are NOT in the task image — 0.6.6's shared-mode verification would
+  silently mis-grade these);
+- images are **built locally** from each task's `environment/Dockerfile`
+  (no prebuilt `alexgshaw/*` pulls; base images still come from docker.io);
+- 12 tasks are **multi-service** (`environment/docker-compose.yaml`, up to 7
+  services) — these need stock compose networking, so the old unconditional
+  `network_mode: host` patch is now opt-in (`HARBOR_NETWORK_MODE_HOST=1`, only
+  for in-container agents like mini-swe-agent; Vanillux2Agent runs host-side);
+- 4 tasks request GPUs (`exam-pdf-eval`, `fp8-rmsnorm-gemm`, `jax-speedrun-gpu`,
+  `math-eval-grader`) — under podman-in-job these are expected to error unless
+  GPU passthrough is wired up; budget for ~4 errored trials or exclude them.
+
+harbor 0.21 also dropped all bind mounts from the docker environment (logs and
+artifacts move via upload/download), which obsoleted the verifier/oracle/paths
+chmod patches, and changed per-trial image cleanup from `--rmi all` to
+`--rmi local` (built task images are deleted after every trial; set
+`HARBOR_KEEP_TASK_IMAGES=1` to retain them — worthwhile at k>1 to skip
+rebuilds).
+
+1. **Download once** (the hub ref is `terminal-bench/terminal-bench@latest`):
+
+   ```bash
+   uvx harbor==0.21.0 datasets download terminal-bench/terminal-bench@latest \
+     -o /weka/oe-adapt-default/shashankg/datasets --export
+   mv /weka/oe-adapt-default/shashankg/datasets/terminal-bench \
+      /weka/oe-adapt-default/shashankg/datasets/terminal-bench-3-0   # 74 dirs
+   ```
+
+2. **Run it** via `--dataset-path`, same flags as any tmax Qwen3.5 eval:
+
+   ```bash
+   ./beaker_configs/launch_eval.sh allenai/tmax-9b \
+     --dataset-path /weka/oe-adapt-default/shashankg/datasets/terminal-bench-3-0 \
+     --agent Vanillux2Agent:Vanillux2Agent --model-provider openai \
+     --tool-call-parser qwen3_xml --language-model-only \
+     --gpus 1 --max-model-len 65536 --n-attempts 1 \
+     --cluster ai2/saturn --workspace ai2/oe-agents
+   ```
+
 ### SWE-bench Verified
 
 Runs on the stock harness with **no code changes**. Use the dedicated wrapper —

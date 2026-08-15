@@ -162,24 +162,48 @@ fi
 log "uv sync"
 uv sync
 
-# --- 1. Patch harbor compose: network_mode: host ----------------------------
-# Only patch needed for rootful Docker. Lets the in-container SWE-agent reach
-# the host's vLLM at localhost:$VLLM_PORT.
-log "patching harbor docker-compose-base.yaml (network_mode: host)"
+# --- 1. Optionally patch harbor compose: network_mode: host ------------------
+# harbor 0.21 split the old docker-compose-base.yaml into -build/-prebuilt
+# templates (and dropped all bind mounts — logs move via upload/download, so
+# the old chmod/:U patches are gone entirely).
+#
+# network_mode: host is only needed for agents that run INSIDE the task
+# container and call vLLM (mini-swe-agent, swe-agent). Vanillux2Agent runs
+# host-side, and TB3's multi-service tasks REQUIRE stock compose networking
+# (a host-netns "main" can't resolve sibling services by compose DNS).
+# Default: 1 for built-in (in-container) agents, 0 for import-path agents.
+# Override with HARBOR_NETWORK_MODE_HOST=0/1.
+if [[ "$AGENT_IMPORT_PATH" == *:* ]]; then
+    HARBOR_NETWORK_MODE_HOST="${HARBOR_NETWORK_MODE_HOST:-0}"
+else
+    HARBOR_NETWORK_MODE_HOST="${HARBOR_NETWORK_MODE_HOST:-1}"
+fi
+export HARBOR_NETWORK_MODE_HOST
+log "harbor compose templates (HARBOR_NETWORK_MODE_HOST=$HARBOR_NETWORK_MODE_HOST)"
 uv run python - <<'PY'
-import pathlib, harbor
+import os, pathlib, harbor
 hdir = pathlib.Path(harbor.__file__).parent
-compose = hdir / "environments/docker/docker-compose-base.yaml"
-text = compose.read_text()
-if "network_mode: host" not in text:
-    text = text.replace(
-        "  main:\n    volumes:",
-        "  main:\n    network_mode: host\n    volumes:",
-    )
-    compose.write_text(text)
-    print("patched: added network_mode: host")
+if os.environ.get("HARBOR_NETWORK_MODE_HOST", "0") == "1":
+    for name in ("docker-compose-build.yaml", "docker-compose-prebuilt.yaml"):
+        compose = hdir / "environments/docker" / name
+        text = compose.read_text()
+        if "network_mode: host" not in text:
+            assert "  main:\n" in text, f"anchor missing in {name}"
+            text = text.replace("  main:\n", "  main:\n    network_mode: host\n", 1)
+            compose.write_text(text)
+            print(f"patched {name}: main runs with network_mode: host")
+        else:
+            print(f"{name}: already patched")
 else:
-    print("already patched")
+    # Un-patch if a previous run left the host-netns line behind: uv hardlinks
+    # site-packages to its wheel cache, so in-place patches SURVIVE uv sync.
+    for name in ("docker-compose-build.yaml", "docker-compose-prebuilt.yaml"):
+        compose = hdir / "environments/docker" / name
+        text = compose.read_text()
+        if "    network_mode: host\n" in text:
+            compose.write_text(text.replace("    network_mode: host\n", "", 1))
+            print(f"un-patched {name}: removed stale network_mode: host")
+    print("stock compose networking (Vanillux2Agent runs host-side)")
 PY
 
 # --- 2. Start vLLM in the background ----------------------------------------

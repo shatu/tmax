@@ -25,6 +25,7 @@
 #   N_CONCURRENT             default 8
 #   N_ATTEMPTS               default 1
 #   N_TASKS                  optional harbor --n-tasks limit
+#   INCLUDE_TASK_NAMES       optional newline-separated --include-task-name globs
 #   HARBOR_OVERRIDE_CPUS     optional per-task environment CPU override
 #   HARBOR_OVERRIDE_MEMORY_MB
 #                            optional per-task environment memory override
@@ -128,234 +129,85 @@ if [ -n "${EXTRA_UV_PIP_INSTALLS:-}" ]; then
     uv pip install ${EXTRA_UV_PIP_INSTALLS}
 fi
 
-log "patching harbor for podman compat"
+log "patching harbor for podman compat (harbor 0.21.x)"
 uv run python - <<'PY'
 import os, pathlib, harbor
 hdir = pathlib.Path(harbor.__file__).parent
 
-compose = hdir / "environments/docker/docker-compose-base.yaml"
-text = compose.read_text()
-if "network_mode: host" not in text:
-    text = text.replace(
-        "  main:\n    volumes:",
-        "  main:\n    network_mode: host\n    volumes:",
-    )
-    for host, env in (
-        ("HOST_VERIFIER_LOGS_PATH", "ENV_VERIFIER_LOGS_PATH"),
-        ("HOST_AGENT_LOGS_PATH", "ENV_AGENT_LOGS_PATH"),
-        ("HOST_ARTIFACTS_PATH", "ENV_ARTIFACTS_PATH"),
-    ):
-        text = text.replace(
-            f"${{{host}}}:${{{env}}}",
-            f"${{{host}}}:${{{env}}}:U",
-        )
-    compose.write_text(text)
-    print("patched docker-compose-base.yaml")
+# NOTE (harbor 0.21 upgrade, TB3): the old 0.6.6-era patches are gone on
+# purpose:
+#   * verifier/oracle/paths chmod + compose ":U" bind-mount patches — obsolete.
+#     0.21's docker environment has NO bind mounts; agent/verifier logs and
+#     artifacts move via upload/download over the API, and TrialPaths already
+#     chmods its dirs (models/trial/paths.py:chmod_dir).
+#   * mini-swe-agent step_limit + openhands install patches — dropped in the
+#     upgrade (anchors changed upstream). Re-derive from git history if a
+#     mini-swe/openhands run is ever needed on this branch.
 
-oracle = hdir / "agents/oracle.py"
-text = oracle.read_text()
-if "host_oracle_path.chmod(0o666)" not in text:
-    text = text.replace(
-        "if environment.is_mounted:\n            host_oracle_path.touch()",
-        "if environment.is_mounted:\n"
-        "            host_oracle_path.touch()\n"
-        "            host_oracle_path.chmod(0o666)\n"
-        "            host_oracle_path.parent.chmod(0o777)",
-    )
-    oracle.write_text(text)
-    print("patched oracle.py")
-
-verifier = hdir / "verifier/verifier.py"
-text = verifier.read_text()
-if "test_stdout_path.chmod(0o666)" not in text:
-    text = text.replace(
-        "self._trial_paths.test_stdout_path.touch()",
-        "self._trial_paths.test_stdout_path.touch()\n"
-        "        self._trial_paths.test_stdout_path.chmod(0o666)\n"
-        "        self._trial_paths.test_stdout_path.parent.chmod(0o777)",
-    )
-    verifier.write_text(text)
-    print("patched verifier.py")
-
-# Make agent_dir / verifier_dir / artifacts_dir world-writable on the host so
-# user-namespaced container writes (anything that doesn't go through a
-# pre-touched harbor file: SWE-agent's *.traj, swe-agent.txt, etc.) don't
-# silently fail with permission-denied on the bind mount.
-paths_py = hdir / "models/trial/paths.py"
-text = paths_py.read_text()
-if "agent_dir.chmod(0o777)" not in text:
-    text = text.replace(
-        "self.agent_dir.mkdir(parents=True, exist_ok=True)\n"
-        "        self.verifier_dir.mkdir(parents=True, exist_ok=True)\n"
-        "        self.artifacts_dir.mkdir(parents=True, exist_ok=True)",
-        "self.agent_dir.mkdir(parents=True, exist_ok=True)\n"
-        "        self.verifier_dir.mkdir(parents=True, exist_ok=True)\n"
-        "        self.artifacts_dir.mkdir(parents=True, exist_ok=True)\n"
-        "        self.agent_dir.chmod(0o777)\n"
-        "        self.verifier_dir.chmod(0o777)\n"
-        "        self.artifacts_dir.chmod(0o777)",
-    )
-    paths_py.write_text(text)
-    print("patched paths.py")
-
-# Image retention after each trial (harbor stock = `compose down --rmi all`,
-# i.e. DELETE the task image after every trial).
-#
-# DEFAULT (HARBOR_KEEP_TASK_IMAGES unset/0): keep harbor's stock `--rmi all`.
-#   Required for large per-task-image datasets: swebench-verified is 500 UNIQUE
-#   images averaging ~3 GB uncompressed (~1.5 TB if retained), which fills the
-#   node disk and manifests as podman sandbox resets timing out while Beaker
-#   still reports "running". Re-pulling is cheap now that MIRROR_URL points at a
-#   live intra-cluster pull-through cache, so retention buys little.
-#
-# HARBOR_KEEP_TASK_IMAGES=1: drop `--rmi all` so images persist on podman
-#   storage. This was the old unconditional behaviour, added when there was no
-#   mirror and per-trial re-pulls blew past Docker Hub's unauthenticated cap.
-#   Only sensible for SMALL image sets (tb2 = 89 images / ~9 GB total).
-if os.environ.get("HARBOR_KEEP_TASK_IMAGES", "0") == "1":
-    docker_py = hdir / "environments/docker/docker.py"
-    text = docker_py.read_text()
-    if '["down", "--rmi", "all", "--volumes", "--remove-orphans"]' in text:
-        text = text.replace(
-            '["down", "--rmi", "all", "--volumes", "--remove-orphans"]',
-            '["down", "--volumes", "--remove-orphans"]',
-        )
-        docker_py.write_text(text)
-        print("patched docker.py: dropped --rmi all (HARBOR_KEEP_TASK_IMAGES=1)")
+# (1) OPTIONAL network_mode: host on the generated "main" service.
+# Vanillux2Agent runs HOST-side (only bash execs enter the container), so task
+# containers never need to reach vLLM and stock compose networking is correct —
+# and REQUIRED for TB3's multi-service tasks (a host-netns "main" cannot
+# resolve sibling services like "db" by compose DNS). Set
+# HARBOR_NETWORK_MODE_HOST=1 only for agents that run INSIDE the task
+# container and call vLLM at localhost (mini-swe-agent, swe-agent).
+if os.environ.get("HARBOR_NETWORK_MODE_HOST", "0") == "1":
+    for name in ("docker-compose-build.yaml", "docker-compose-prebuilt.yaml"):
+        compose = hdir / "environments/docker" / name
+        text = compose.read_text()
+        if "network_mode: host" not in text:
+            assert "  main:\n" in text, f"anchor missing in {name}"
+            text = text.replace("  main:\n", "  main:\n    network_mode: host\n", 1)
+            compose.write_text(text)
+            print(f"patched {name}: main runs with network_mode: host")
 else:
-    print("docker.py: keeping harbor stock --rmi all (images deleted per trial)")
+    print("compose templates: stock networking (HARBOR_NETWORK_MODE_HOST!=1)")
 
-# Harbor's CLI exposes timeout multipliers but not the exact
-# AgentConfig.override_timeout_sec field. Let launch_eval set
-# HARBOR_AGENT_TIMEOUT_SEC for evals that need a uniform wall-clock cap.
+# (2) Image retention after each trial. harbor 0.21 stock is
+# `compose down --rmi local` (removes the locally-built task image after every
+# trial; prebuilt/tagged images survive).
+#
+# DEFAULT (HARBOR_KEEP_TASK_IMAGES unset/0): keep harbor's stock behaviour.
+#   Required for large per-task-image datasets (swebench-verified ~1.5 TB
+#   retained would wedge the node).
+#
+# HARBOR_KEEP_TASK_IMAGES=1: drop `--rmi local` so built images persist in
+#   podman storage. Sensible for small sets (tb2 = 89 images / ~9 GB); for
+#   TB3's 74 locally-BUILT images it also skips a full rebuild on every
+#   attempt (relevant at k>1 — at k=1 each task builds once either way).
+docker_py = hdir / "environments/docker/docker.py"
+text = docker_py.read_text()
+_rmi = '["down", "--rmi", "local", "--volumes", "--remove-orphans"]'
+if os.environ.get("HARBOR_KEEP_TASK_IMAGES", "0") == "1":
+    if _rmi in text:
+        text = text.replace(_rmi, '["down", "--volumes", "--remove-orphans"]')
+        docker_py.write_text(text)
+        print("patched docker.py: dropped --rmi local (HARBOR_KEEP_TASK_IMAGES=1)")
+    else:
+        assert '"--rmi"' not in text, "docker.py --rmi anchor changed; fix the patch"
+        print("docker.py: already patched")
+else:
+    print("docker.py: keeping harbor stock --rmi local (built images deleted per trial)")
+
+# (3) Exact per-task agent timeout override. Harbor's CLI exposes timeout
+# MULTIPLIERS but not AgentConfig.override_timeout_sec; let launch_eval set
+# HARBOR_AGENT_TIMEOUT_SEC for evals needing a uniform wall-clock cap.
 jobs_py = hdir / "cli/jobs.py"
 text = jobs_py.read_text()
 if "HARBOR_AGENT_TIMEOUT_SEC" not in text:
+    anchor = "    if n_concurrent_agents is not None:\n"
+    assert anchor in text, "cli/jobs.py anchor changed; fix the HARBOR_AGENT_TIMEOUT_SEC patch"
     text = text.replace(
-        "    if environment_type is not None:\n",
+        anchor,
         "    harbor_agent_timeout_sec = __import__(\"os\").environ.get(\"HARBOR_AGENT_TIMEOUT_SEC\")\n"
         "    if harbor_agent_timeout_sec:\n"
         "        for agent in config.agents:\n"
         "            agent.override_timeout_sec = float(harbor_agent_timeout_sec)\n\n"
-        "    if environment_type is not None:\n",
+        + anchor,
+        1,
     )
     jobs_py.write_text(text)
     print("patched jobs.py: added HARBOR_AGENT_TIMEOUT_SEC override")
-
-# Let launch_eval pass Mini SWE config overrides without replacing the entire
-# mini-swe-agent YAML. Passing a bare config_file with only agent.step_limit
-# replaces required templates, so use the CLI's dotted override form instead.
-mini_swe_py = hdir / "agents/installed/mini_swe_agent.py"
-text = mini_swe_py.read_text()
-if "self._step_limit = step_limit" not in text:
-    text = text.replace(
-        "        config_file: str | None = None,\n"
-        "        *args,\n",
-        "        config_file: str | None = None,\n"
-        "        step_limit: int | None = None,\n"
-        "        *args,\n",
-    )
-    text = text.replace(
-        "        self._reasoning_effort = reasoning_effort\n"
-        "        self._config_yaml: str | None = None\n",
-        "        self._reasoning_effort = reasoning_effort\n"
-        "        self._step_limit = step_limit\n"
-        "        self._config_yaml: str | None = None\n",
-    )
-    text = text.replace(
-        "        if self._reasoning_effort:\n"
-        "            config_flags += f\"-c model.model_kwargs.extra_body.reasoning_effort={shlex.quote(self._reasoning_effort)} \"\n",
-        "        if self._reasoning_effort:\n"
-        "            config_flags += f\"-c model.model_kwargs.extra_body.reasoning_effort={shlex.quote(self._reasoning_effort)} \"\n"
-        "        if self._step_limit is not None:\n"
-        "            config_flags += f\"-c agent.step_limit={int(self._step_limit)} \"\n",
-    )
-    mini_swe_py.write_text(text)
-    print("patched mini_swe_agent.py: added step_limit override")
-
-# The mini-swe-agent CLI treats any `-c ...` as the complete config spec list;
-# a dotted-only override like `-c agent.step_limit=64` does not layer on top of
-# the packaged `mini.yaml`. Build a full config from the installed `mini.yaml`
-# inside the task container whenever step_limit is requested.
-text = mini_swe_py.read_text()
-if "MSWEA_FULL_CONFIG_EOF_" not in text:
-    text = text.replace(
-        "        if self._reasoning_effort:\n"
-        "            config_flags += f\"-c model.model_kwargs.extra_body.reasoning_effort={shlex.quote(self._reasoning_effort)} \"\n"
-        "        if self._step_limit is not None:\n"
-        "            config_flags += f\"-c agent.step_limit={int(self._step_limit)} \"\n",
-        "        if self._reasoning_effort:\n"
-        "            config_flags += f\"-c model.model_kwargs.extra_body.reasoning_effort={shlex.quote(self._reasoning_effort)} \"\n"
-        "        if self._step_limit is not None:\n"
-        "            config_path = \"/tmp/mswea-config/step-limit.yaml\"\n"
-        "            write_config_cmd = (\n"
-        "                \"mkdir -p /tmp/mswea-config\\n\"\n"
-        "                \". \\\"$HOME/.local/bin/env\\\"\\n\"\n"
-        "                \"MSWEA_BIN=$(readlink -f $(command -v mini-swe-agent))\\n\"\n"
-        "                \"MSWEA_PY=$(dirname \\\"$MSWEA_BIN\\\")/python\\n\"\n"
-        "                \"\\\"$MSWEA_PY\\\" - <<'MSWEA_FULL_CONFIG_EOF'\\n\"\n"
-        "                \"import importlib.util, pathlib, yaml\\n\"\n"
-        "                \"spec = importlib.util.find_spec('minisweagent')\\n\"\n"
-        "                \"base = pathlib.Path(spec.origin).parent / 'config' / 'mini.yaml'\\n\"\n"
-        "                \"cfg = yaml.safe_load(base.read_text())\\n\"\n"
-        "                f\"cfg.setdefault('agent', {{}})['step_limit'] = {int(self._step_limit)}\\n\"\n"
-        "                \"pathlib.Path('/tmp/mswea-config/step-limit.yaml').write_text(yaml.safe_dump(cfg, sort_keys=False))\\n\"\n"
-        "                \"MSWEA_FULL_CONFIG_EOF\\n\"\n"
-        "            )\n"
-        "            await self.exec_as_agent(environment, command=write_config_cmd, env=env)\n"
-        "            config_flags += f\"-c {config_path} \"\n",
-    )
-    mini_swe_py.write_text(text)
-    print("patched mini_swe_agent.py: materialize full step_limit config")
-
-# OpenHands' setup currently chains package installation with
-# `python -m openhands.core.main --version`. The latter can fail independently
-# of installation and Harbor truncates the useful tail, so do a lightweight
-# import/version probe instead and let the actual run command surface runtime
-# issues.
-openhands_py = hdir / "agents/installed/openhands.py"
-text = openhands_py.read_text()
-old = 'f"{install_cmd} && "\n                "/opt/openhands-venv/bin/python -m openhands.core.main --version"'
-new = 'f"{install_cmd} && "\n                "/opt/openhands-venv/bin/python -c \\"import openhands; print(getattr(openhands, \\\\\\"__version__\\\\\\", \\\\\\"openhands-installed\\\\\\"))\\""'
-if old in text and "openhands-installed" not in text:
-    text = text.replace(old, new)
-    openhands_py.write_text(text)
-    print("patched openhands.py: use import-based install check")
-
-text = openhands_py.read_text()
-if "uv pip install openhands " not in text:
-    text = text.replace(
-        'install_cmd = "uv pip install openhands-ai"',
-        'install_cmd = "uv pip install openhands "',
-    )
-    openhands_py.write_text(text)
-    print("patched openhands.py: install openhands CLI package")
-
-text = openhands_py.read_text()
-if '"--headless",' not in text:
-    text = text.replace(
-        '"/opt/openhands-venv/bin/python -m openhands.core.main",',
-        '"/opt/openhands-venv/bin/openhands",',
-    )
-    text = text.replace(
-        '            f"--task={escaped_instruction}",',
-        '            "--headless",\n'
-        '            f"-t={escaped_instruction}",',
-    )
-    openhands_py.write_text(text)
-    print("patched openhands.py: use headless CLI entrypoint")
-
-text = openhands_py.read_text()
-if '"--override-with-envs",' not in text:
-    text = text.replace(
-        '            "--headless",\n'
-        '            f"-t={escaped_instruction}",',
-        '            "--headless",\n'
-        '            "--override-with-envs",\n'
-        '            f"-t={escaped_instruction}",',
-    )
-    openhands_py.write_text(text)
-    print("patched openhands.py: apply env settings in headless mode")
 PY
 
 # --- 4. Bring podman service up (uses scripts/setup_podman_harbor.sh) -------
@@ -577,6 +429,13 @@ else
 fi
 if [ -n "${N_TASKS:-}" ]; then
     HARBOR_CMD+=( --n-tasks "$N_TASKS" )
+fi
+# Newline-separated globs from launch_eval --include-task-name.
+if [ -n "${INCLUDE_TASK_NAMES:-}" ]; then
+    while IFS= read -r task_glob; do
+        [ -n "$task_glob" ] || continue
+        HARBOR_CMD+=( --include-task-name "$task_glob" )
+    done <<< "$INCLUDE_TASK_NAMES"
 fi
 if [ -n "${HARBOR_OVERRIDE_CPUS:-}" ]; then
     HARBOR_CMD+=( --override-cpus "$HARBOR_OVERRIDE_CPUS" )

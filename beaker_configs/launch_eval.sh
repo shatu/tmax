@@ -51,6 +51,7 @@ AGENT_IMPORT_PATH="Vanillux2Agent:Vanillux2Agent"
 N_CONCURRENT=8
 N_ATTEMPTS=1
 N_TASKS=""
+INCLUDE_TASK_NAMES=""
 JOB_NAME=""
 RESULTS_DIR=""
 CLUSTER="ai2/saturn"
@@ -114,6 +115,7 @@ Options:
   --n-concurrent N       harbor --n-concurrent (default: 8)
   --n-attempts N         harbor -k (default: 1)
   --n-tasks N            harbor --n-tasks limit
+  --include-task-name G  harbor --include-task-name glob (can be repeated)
   --job-name NAME        harbor --job-name (default: <served-name>-<dataset>)
   --results-dir DIR      where to copy the harbor jobs/ output
                          (default: /results; persisted by Gantry)
@@ -181,6 +183,7 @@ while [ $# -gt 0 ]; do
         --n-concurrent)    N_CONCURRENT="$2"; shift 2 ;;
         --n-attempts)      N_ATTEMPTS="$2"; shift 2 ;;
         --n-tasks)         N_TASKS="$2"; shift 2 ;;
+        --include-task-name) INCLUDE_TASK_NAMES+="${INCLUDE_TASK_NAMES:+$'\n'}$2"; shift 2 ;;
         --job-name)        JOB_NAME="$2"; shift 2 ;;
         --results-dir)     RESULTS_DIR="$2"; shift 2 ;;
         --cluster)         CLUSTER="$2"; shift 2 ;;
@@ -212,6 +215,17 @@ while [ $# -gt 0 ]; do
 done
 
 # --- derive defaults ---------------------------------------------------------
+# network_mode: host for the generated compose "main" service: needed by agents
+# that run INSIDE the task container and call vLLM at localhost (built-in
+# mini-swe-agent / swe-agent); wrong for host-side agents (Vanillux2Agent) and
+# breaks multi-service tasks (e.g. TB3). Default by agent type; override with
+# HARBOR_NETWORK_MODE_HOST=0/1 in the environment.
+if [[ "$AGENT_IMPORT_PATH" == *:* ]]; then
+    HARBOR_NETWORK_MODE_HOST="${HARBOR_NETWORK_MODE_HOST:-0}"
+else
+    HARBOR_NETWORK_MODE_HOST="${HARBOR_NETWORK_MODE_HOST:-1}"
+fi
+
 SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-$(basename "$MODEL_PATH")}"
 TP_SIZE="${TP_SIZE:-$GPU_COUNT}"
 DP_SIZE="${DP_SIZE:-1}"
@@ -299,6 +313,7 @@ GANTRY_CMD=(
     --env "N_CONCURRENT=${N_CONCURRENT}"
     --env "N_ATTEMPTS=${N_ATTEMPTS}"
     --env "N_TASKS=${N_TASKS}"
+    --env "INCLUDE_TASK_NAMES=${INCLUDE_TASK_NAMES}"
     --env "HARBOR_OVERRIDE_CPUS=${HARBOR_OVERRIDE_CPUS}"
     --env "HARBOR_OVERRIDE_MEMORY_MB=${HARBOR_OVERRIDE_MEMORY_MB}"
     --env "HARBOR_OVERRIDE_STORAGE_MB=${HARBOR_OVERRIDE_STORAGE_MB}"
@@ -309,6 +324,8 @@ GANTRY_CMD=(
     --env "HARBOR_AGENT_SETUP_TIMEOUT_MULTIPLIER=${HARBOR_AGENT_SETUP_TIMEOUT_MULTIPLIER}"
     --env "HARBOR_ENVIRONMENT_BUILD_TIMEOUT_MULTIPLIER=${HARBOR_ENVIRONMENT_BUILD_TIMEOUT_MULTIPLIER}"
     --env "HARBOR_AGENT_TIMEOUT_SEC=${HARBOR_AGENT_TIMEOUT_SEC}"
+    --env "HARBOR_NETWORK_MODE_HOST=${HARBOR_NETWORK_MODE_HOST}"
+    --env "HARBOR_KEEP_TASK_IMAGES=${HARBOR_KEEP_TASK_IMAGES:-0}"
     --env "JOB_NAME=${JOB_NAME}"
     --env BEAKER_ALLOW_SUBCONTAINERS=1
     --env BEAKER_SKIP_DOCKER_SOCKET=1
