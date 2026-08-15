@@ -68,6 +68,7 @@ SAMPLE_SIZE=0
 SAMPLE_SEED=0
 FORCE_RERUN=0
 JOB_NAME=""
+MIN_RUNTIME=""
 PRIORITY="high"
 BUDGET="ai2/oe-omai"
 HF_TOKEN_SECRET_NAME="pradeepd_HF_TOKEN"
@@ -122,6 +123,9 @@ Options:
   --sample-seed N        subset seed (default: 0)
   --force-rerun          re-run tasks that already have a summary for this model
   --job-name NAME        beaker experiment name (default: gen-sol-<served-name>)
+  --min-runtime DUR      minimum guaranteed runtime before the job can be
+                         preempted, e.g. '1h', '30m' (default: server default,
+                         i.e. preemptible at any time)
   --priority PRI         beaker priority (default: urgent)
   --budget BUDGET        beaker budget (default: workspace default)
   --workspace WS         beaker workspace (default: \$BEAKER_WORKSPACE or ai2/tmax)
@@ -167,6 +171,7 @@ while [ $# -gt 0 ]; do
         --sample-seed)       SAMPLE_SEED="$2"; shift 2 ;;
         --force-rerun)       FORCE_RERUN=1; shift ;;
         --job-name)          JOB_NAME="$2"; shift 2 ;;
+        --min-runtime)       MIN_RUNTIME="$2"; shift 2 ;;
         --priority)          PRIORITY="$2"; shift 2 ;;
         --budget)            BUDGET="$2"; shift 2 ;;
         --workspace)         BEAKER_WORKSPACE="$2"; shift 2 ;;
@@ -309,6 +314,9 @@ else
 fi
 if [ -n "$BUDGET" ]; then
     GANTRY_CMD+=(--budget "$BUDGET")
+fi
+if [ -n "$MIN_RUNTIME" ]; then
+    GANTRY_CMD+=(--min-runtime "$MIN_RUNTIME")
 fi
 
 GANTRY_CMD+=(--upload "$REPO_ROOT/scripts/beaker:/uploaded-beaker-scripts")
