@@ -333,8 +333,22 @@ fi
 # a real bridge network and fail fast with diagnostics instead of erroring all
 # trials.
 log "bridge-network preflight (netavark/aardvark-dns)"
-if ! ls /usr/libexec/podman/aardvark-dns >/dev/null 2>&1 && ! command -v aardvark-dns >/dev/null 2>&1; then
+if ! ls /usr/libexec/podman/aardvark-dns >/dev/null 2>&1 && ! command -v aardvark-dns >/dev/null 2>&1 \
+        && [ ! -x /usr/local/lib/podman/aardvark-dns ]; then
     apt-get install -y -qq aardvark-dns 2>/dev/null || log "aardvark-dns install failed (continuing; probe decides)"
+fi
+# netavark bridge setup must write interface sysctls and program NAT rules.
+# The beaker job container mounts /proc/sys READ-ONLY (smoke5: "set sysctl
+# net/ipv4/conf/podman1/route_localnet: Read-only file system") and ships no
+# nft binary ("unable to execute \"nft\""). Remount /proc/sys rw (the job has
+# CAP_NET_ADMIN — it can already create bridges) and install nftables.
+if ! command -v nft >/dev/null 2>&1; then
+    apt-get install -y -qq nftables >/dev/null 2>&1 || log "WARNING: nftables install failed"
+fi
+if mount -o remount,rw /proc/sys 2>/dev/null || mount -o remount,bind,rw /proc/sys 2>/dev/null; then
+    log "remounted /proc/sys read-write"
+else
+    log "WARNING: could not remount /proc/sys rw — netavark bridge sysctls may fail (probe decides)"
 fi
 mkdir -p /run/containers/networks/aardvark-dns
 PODMAN_RUNROOT="$(podman info --format '{{.Store.RunRoot}}' 2>/dev/null || true)"
