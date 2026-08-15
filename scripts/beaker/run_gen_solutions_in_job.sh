@@ -187,12 +187,19 @@ apptainer --version
 grep -q '^root:' /etc/subuid 2>/dev/null || echo 'root:100000:65536' >> /etc/subuid
 grep -q '^root:' /etc/subgid 2>/dev/null || echo 'root:100000:65536' >> /etc/subgid
 
-# Preflight: apptainer's --fakeroot/--userns flags need unprivileged user
-# namespaces. Where the kernel/runtime blocks them (as on holmes Beaker jobs),
-# drop both flags via the env.py opt-out — we run as real root inside the job
-# container, so they add nothing anyway.
+# Preflight: apptainer needs user namespaces — not just for --fakeroot/
+# --userns at run time, but internally for `apptainer build` %post in
+# non-setuid mode, where there is no opt-out. The launcher requests them via
+# BEAKER_ALLOW_SUBCONTAINERS=1; also try flipping the sysctl in case the
+# host default is off but the job is privileged enough to change it.
 if ! unshare -U true 2>/dev/null; then
-    log "user namespaces unavailable — running apptainer as plain root (APPTAINER_NO_USERNS=1)"
+    sysctl -w kernel.unprivileged_userns_clone=1 2>/dev/null \
+        || echo 1 > /proc/sys/kernel/unprivileged_userns_clone 2>/dev/null \
+        || true
+fi
+if ! unshare -U true 2>/dev/null; then
+    log "user namespaces unavailable — dropping run-time userns flags (APPTAINER_NO_USERNS=1)"
+    log "WARNING: 'apptainer build' needs userns internally and has no opt-out — base-SIF builds will fail. Relaunch with BEAKER_ALLOW_SUBCONTAINERS=1 (launcher now sets it)."
     export APPTAINER_NO_USERNS=1
 fi
 

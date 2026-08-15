@@ -296,6 +296,11 @@ GANTRY_CMD=(
     --env "SAMPLE_SIZE=${SAMPLE_SIZE}"
     --env "SAMPLE_SEED=${SAMPLE_SEED}"
     --env "FORCE_RERUN=${FORCE_RERUN}"
+    # Run the task with the privileges nested containers need (user
+    # namespaces for apptainer build/%post). Same setting the harbor/podman
+    # eval pipeline relies on; without it holmes blocks userns creation.
+    --env BEAKER_ALLOW_SUBCONTAINERS=1
+    --env BEAKER_SKIP_DOCKER_SOCKET=1
     --host-networking
     --propagate-failure
     --no-python
