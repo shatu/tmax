@@ -102,16 +102,16 @@ mkdir -p /etc/containers
 # TB2-era proven mechanism), and harbor is patched (step 3) to force
 # network_mode: host on every compose service with extra_hosts aliases
 # (service-name -> 127.0.0.1) standing in for compose DNS.
-# userns="auto" was dropped (2026-08-15): harbor 0.21 moves files with
-# `podman cp`-style API uploads, which create files owned by uids OUTSIDE an
-# auto userns's mapping — verifier scripts that chmod their own /logs/verifier
-# (ks-solver-cpp, ontology-kg-querying) then die with "Operation not
-# permitted" before writing reward.txt. Without a userns, container root is
-# the job container's root: uploads match, chmod works, and setpriv-to-nobody
-# verifiers still work under real CAP_SETUID.
+# userns="auto" is LOAD-BEARING: without a user namespace, crun cannot
+# perform container-setup mounts in this CAP_SYS_ADMIN-less job ("crun: mount
+# mqueue to dev/mqueue: Operation not permitted") — containers don't start at
+# all. The side effect that compose-cp uploads land owned by unmapped uids
+# (breaking verifiers that chmod /logs/verifier) is fixed in the harbor patch
+# below by uploading via tar-through-exec instead of compose cp.
 cat > /etc/containers/containers.conf <<'CONF'
 [containers]
 netns="host"
+userns="auto:size=65536"
 ipcns="host"
 utsns="host"
 cgroupns="host"
@@ -129,6 +129,9 @@ runtime="crun"
 compose_warning_logs=false
 CONF
 
+# Root subuid/subgid range for userns=auto.
+grep -q '^root:' /etc/subuid 2>/dev/null || echo 'root:10000:65536' >> /etc/subuid
+grep -q '^root:' /etc/subgid 2>/dev/null || echo 'root:10000:65536' >> /etc/subgid
 
 # --- 2b. Matching netavark/aardvark-dns --------------------------------------
 # The beaker image ships a NEW podman (5.x) next to Ubuntu noble's ANCIENT
@@ -350,7 +353,58 @@ if os.environ.get("HARBOR_HOST_NETWORK_OVERLAY", "1") == "1":
 else:
     print("docker.py: hostnet overlay disabled (HARBOR_HOST_NETWORK_OVERLAY=0)")
 
-# (5) Docker platform detection fallback. podman's docker-compat shim has no
+# (5) Tar-first uploads. `docker compose cp` into a userns=auto container
+# writes files owned by uids OUTSIDE the container's mapping — verifier
+# scripts that chmod their own /logs/verifier (ks-solver-cpp,
+# ontology-kg-querying; hardening + `set -e`) then die with "Operation not
+# permitted" before writing reward.txt. Harbor already ships a
+# tar-through-exec fallback that extracts as CONTAINER root (correct mapped
+# ownership) — make it the primary upload path.
+du_py = hdir / "environments/docker/docker_unix.py"
+text = du_py.read_text()
+if "tar-first uploads" not in text:
+    old_uf = (
+        "    async def upload_file(self, source_path: Path | str, target_path: str) -> None:\n"
+        "        try:\n"
+        "            await self._env._run_docker_compose_command(\n"
+        "                [\"cp\", str(source_path), f\"{MAIN_SERVICE_NAME}:{target_path}\"],\n"
+        "                check=True,\n"
+        "            )\n"
+        "        except RuntimeError as cp_error:\n"
+        "            await self._fallback_to_tar(\n"
+        "                cp_error, lambda: self._upload_file_with_tar(source_path, target_path)\n"
+        "            )\n"
+    )
+    new_uf = (
+        "    async def upload_file(self, source_path: Path | str, target_path: str) -> None:\n"
+        "        # tar-first uploads: compose cp writes uids outside the userns mapping.\n"
+        "        await self._upload_file_with_tar(source_path, target_path)\n"
+    )
+    assert old_uf in text, "docker_unix.py upload_file anchor changed; fix the tar-first patch"
+    text = text.replace(old_uf, new_uf, 1)
+    old_ud = (
+        "    async def upload_dir(self, source_dir: Path | str, target_dir: str) -> None:\n"
+        "        try:\n"
+        "            await self._env._run_docker_compose_command(\n"
+        "                [\"cp\", f\"{source_dir}/.\", f\"{MAIN_SERVICE_NAME}:{target_dir}\"],\n"
+        "                check=True,\n"
+        "            )\n"
+        "        except RuntimeError as cp_error:\n"
+        "            await self._fallback_to_tar(\n"
+        "                cp_error, lambda: self._upload_dir_with_tar(source_dir, target_dir)\n"
+        "            )\n"
+    )
+    new_ud = (
+        "    async def upload_dir(self, source_dir: Path | str, target_dir: str) -> None:\n"
+        "        # tar-first uploads: compose cp writes uids outside the userns mapping.\n"
+        "        await self._upload_dir_with_tar(source_dir, target_dir)\n"
+    )
+    assert old_ud in text, "docker_unix.py upload_dir anchor changed; fix the tar-first patch"
+    text = text.replace(old_ud, new_ud, 1)
+    du_py.write_text(text)
+    print("patched docker_unix.py: tar-first uploads (userns-safe ownership)")
+
+# (6) Docker platform detection fallback. podman's docker-compat shim has no
 # {{.Server.Arch}} template field, so harbor's default_docker_platform()
 # raises "Failed to detect Docker platform" — which errors every trial whose
 # task ships its own [verifier.environment] (batched-eval-parity,
