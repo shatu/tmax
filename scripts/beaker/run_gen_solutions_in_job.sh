@@ -60,8 +60,9 @@
 #   APPTAINER_FLAVOR         plain | suid (default: plain). suid also installs
 #                            the setuid starter so builds don't need userns
 #                            mappings (escape hatch for AppArmor-restricted hosts).
-#   SIF_CACHE_DIR            base-SIF cache dir. Default: a weka path if
-#                            /weka/oe-adapt-default is mounted. Seed it with
+#   SIF_CACHE_DIR            base-SIF cache dir. Default:
+#                            /weka/oe-adapt-default/pradeepd/tmax_base_sifs
+#                            when that weka mount is present. Seed it with
 #                            prebuilt SIFs to skip in-job builds entirely.
 #   HF_CACHE_DIR             HF_HOME override. Default: a weka path if
 #                            /weka/oe-adapt-default is mounted (so the ~700 GB
@@ -332,7 +333,7 @@ VLLM_PID=$!
 # Seeding the cache out-of-band with already-built SIFs (e.g. scp'd from the
 # GPFS cluster's rl_data/containers/) skips in-job builds entirely.
 if [ -z "${SIF_CACHE_DIR:-}" ] && [ -d /weka/oe-adapt-default ]; then
-    SIF_CACHE_DIR="/weka/oe-adapt-default/${USER:-$(whoami)}/tmax_base_sifs"
+    SIF_CACHE_DIR="/weka/oe-adapt-default/pradeepd/tmax_base_sifs"
 fi
 if [ -n "${SIF_CACHE_DIR:-}" ]; then
     mkdir -p "$SIF_CACHE_DIR"
