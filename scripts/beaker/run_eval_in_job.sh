@@ -102,10 +102,16 @@ mkdir -p /etc/containers
 # TB2-era proven mechanism), and harbor is patched (step 3) to force
 # network_mode: host on every compose service with extra_hosts aliases
 # (service-name -> 127.0.0.1) standing in for compose DNS.
+# userns="auto" was dropped (2026-08-15): harbor 0.21 moves files with
+# `podman cp`-style API uploads, which create files owned by uids OUTSIDE an
+# auto userns's mapping — verifier scripts that chmod their own /logs/verifier
+# (ks-solver-cpp, ontology-kg-querying) then die with "Operation not
+# permitted" before writing reward.txt. Without a userns, container root is
+# the job container's root: uploads match, chmod works, and setpriv-to-nobody
+# verifiers still work under real CAP_SETUID.
 cat > /etc/containers/containers.conf <<'CONF'
 [containers]
 netns="host"
-userns="auto:size=65536"
 ipcns="host"
 utsns="host"
 cgroupns="host"
@@ -123,9 +129,6 @@ runtime="crun"
 compose_warning_logs=false
 CONF
 
-# Root subuid/subgid range for userns=auto.
-grep -q '^root:' /etc/subuid 2>/dev/null || echo 'root:10000:65536' >> /etc/subuid
-grep -q '^root:' /etc/subgid 2>/dev/null || echo 'root:10000:65536' >> /etc/subgid
 
 # --- 2b. Matching netavark/aardvark-dns --------------------------------------
 # The beaker image ships a NEW podman (5.x) next to Ubuntu noble's ANCIENT
@@ -346,6 +349,37 @@ if os.environ.get("HARBOR_HOST_NETWORK_OVERLAY", "1") == "1":
         print("docker.py: hostnet overlay already patched")
 else:
     print("docker.py: hostnet overlay disabled (HARBOR_HOST_NETWORK_OVERLAY=0)")
+
+# (5) Docker platform detection fallback. podman's docker-compat shim has no
+# {{.Server.Arch}} template field, so harbor's default_docker_platform()
+# raises "Failed to detect Docker platform" — which errors every trial whose
+# task ships its own [verifier.environment] (batched-eval-parity,
+# lake-temp-glm, ...). Fall back to deriving the platform locally.
+utils_py = hdir / "environments/docker/utils.py"
+text = utils_py.read_text()
+if "podman-compat platform fallback" not in text:
+    old = (
+        "    stdout, stderr = await process.communicate()\n"
+        "    if process.returncode != 0:\n"
+        "        raise RuntimeError(\n"
+        "            f\"Failed to detect Docker platform: {stderr.decode(errors='replace')}\"\n"
+        "        )\n"
+    )
+    assert old in text, "utils.py anchor changed; fix the platform fallback patch"
+    new = (
+        "    stdout, stderr = await process.communicate()\n"
+        "    if process.returncode != 0:\n"
+        "        # podman-compat platform fallback: podman's docker shim has no\n"
+        "        # {{.Server.Arch}} template field; derive the platform locally.\n"
+        "        import platform as _plat\n"
+        "        _arch = {\"x86_64\": \"amd64\", \"aarch64\": \"arm64\"}.get(\n"
+        "            _plat.machine(), _plat.machine()\n"
+        "        )\n"
+        "        return f\"{_plat.system().lower()}/{_arch}\"\n"
+    )
+    text = text.replace(old, new, 1)
+    utils_py.write_text(text)
+    print("patched utils.py: podman-compat platform fallback")
 PY
 
 # --- 4. Bring podman service up (uses scripts/setup_podman_harbor.sh) -------
