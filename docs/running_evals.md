@@ -416,9 +416,22 @@ TB3's 74 tasks are a different format generation:
 - images are **built locally** from each task's `environment/Dockerfile`
   (no prebuilt `alexgshaw/*` pulls; base images still come from docker.io);
 - 12 tasks are **multi-service** (`environment/docker-compose.yaml`, up to 7
-  services) — these need stock compose networking, so the old unconditional
-  `network_mode: host` patch is now opt-in (`HARBOR_NETWORK_MODE_HOST=1`, only
-  for in-container agents like mini-swe-agent; Vanillux2Agent runs host-side);
+  services). **Locally** (dev VM podman/docker) they run on stock compose
+  bridge networks. **On Beaker they cannot**: the job container has only
+  docker-default caps, `/proc/sys` is a locked read-only mount (netavark's
+  sysctl writes fail; no namespace trick undoes a locked mount), `/proc` is
+  masked (fresh proc mounts are kernel-blocked by the fully-visible rule),
+  and no-new-privileges kills the setuid helpers rootless podman needs —
+  proven across smokes 3–9 plus a diagnostics job. `run_eval_in_job.sh`
+  therefore patches harbor to append a compose overlay forcing
+  `network_mode: host` on **every** service with `extra_hosts` aliases
+  (`service → 127.0.0.1`) standing in for compose DNS
+  (`HARBOR_HOST_NETWORK_OVERLAY=0` disables), plus a background driver that
+  runs `podman healthcheck run` (no systemd → healthcheck timers never fire,
+  so `service_healthy` waits would hang forever). Known deviations:
+  concurrent trials share the job netns (rare port collisions between
+  multi-service trials → errored trials, re-runnable), and the 2
+  `allow_internet=false` tasks get internet;
 - 4 tasks request GPUs (`exam-pdf-eval`, `fp8-rmsnorm-gemm`, `jax-speedrun-gpu`,
   `math-eval-grader`) — under podman-in-job these are expected to error unless
   GPU passthrough is wired up; budget for ~4 errored trials or exclude them.
