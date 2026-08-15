@@ -120,6 +120,7 @@ Options:
   --include-task-name G  harbor --include-task-name glob (can be repeated)
   --exclude-task-name G  harbor --exclude-task-name glob (can be repeated)
   --max-retries N        harbor --max-retries for exception-errored trials
+  --no-trial-mounts      disable trial bind mounts (verifiers that chmod /logs)
   --job-name NAME        harbor --job-name (default: <served-name>-<dataset>)
   --results-dir DIR      where to copy the harbor jobs/ output
                          (default: /results; persisted by Gantry)
@@ -190,6 +191,7 @@ while [ $# -gt 0 ]; do
         --include-task-name) INCLUDE_TASK_NAMES+="${INCLUDE_TASK_NAMES:+$'\n'}$2"; shift 2 ;;
         --exclude-task-name) EXCLUDE_TASK_NAMES+="${EXCLUDE_TASK_NAMES:+$'\n'}$2"; shift 2 ;;
         --max-retries)     HARBOR_MAX_RETRIES="$2"; shift 2 ;;
+        --no-trial-mounts) HARBOR_NO_TRIAL_MOUNTS=1; shift ;;
         --job-name)        JOB_NAME="$2"; shift 2 ;;
         --results-dir)     RESULTS_DIR="$2"; shift 2 ;;
         --cluster)         CLUSTER="$2"; shift 2 ;;
@@ -322,6 +324,8 @@ GANTRY_CMD=(
     --env "INCLUDE_TASK_NAMES=${INCLUDE_TASK_NAMES}"
     --env "EXCLUDE_TASK_NAMES=${EXCLUDE_TASK_NAMES}"
     --env "HARBOR_MAX_RETRIES=${HARBOR_MAX_RETRIES}"
+    --env "HARBOR_NO_TRIAL_MOUNTS=${HARBOR_NO_TRIAL_MOUNTS:-0}"
+    --env "HARBOR_DISABLE_EGRESS_CONTROL=${HARBOR_DISABLE_EGRESS_CONTROL:-1}"
     --env "HARBOR_OVERRIDE_CPUS=${HARBOR_OVERRIDE_CPUS}"
     --env "HARBOR_OVERRIDE_MEMORY_MB=${HARBOR_OVERRIDE_MEMORY_MB}"
     --env "HARBOR_OVERRIDE_STORAGE_MB=${HARBOR_OVERRIDE_STORAGE_MB}"

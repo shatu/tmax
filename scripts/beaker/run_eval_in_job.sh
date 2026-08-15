@@ -404,7 +404,65 @@ if "tar-first uploads" not in text:
     du_py.write_text(text)
     print("patched docker_unix.py: tar-first uploads (userns-safe ownership)")
 
-# (6) Docker platform detection fallback. podman's docker-compat shim has no
+# (6) Disable harbor's egress control (default on for this pipeline).
+# allow_internet=false tasks (batched-eval-parity, lake-temp-glm) make harbor
+# build an egress-control sidecar and put services on its network namespace —
+# which requires the bridge networking this job container cannot do (locked
+# ro /proc/sys), so the sidecar build/start errors the trial. Forcing egress
+# control off runs those tasks WITH internet — a documented deviation, better
+# than an errored trial. Set HARBOR_DISABLE_EGRESS_CONTROL=0 to keep stock.
+if os.environ.get("HARBOR_DISABLE_EGRESS_CONTROL", "1") == "1":
+    docker_py = hdir / "environments/docker/docker.py"
+    text = docker_py.read_text()
+    if "egress control disabled by run_eval_in_job" not in text:
+        old_eg = (
+            "        self._enable_egress_control = (\n"
+            "            not self._is_windows_container\n"
+        )
+        assert old_eg in text, "docker.py egress anchor changed; fix the egress-disable patch"
+        text = text.replace(
+            old_eg,
+            "        # egress control disabled by run_eval_in_job (no bridges in-job)\n"
+            "        self._enable_egress_control = False and (\n"
+            "            not self._is_windows_container\n",
+            1,
+        )
+        docker_py.write_text(text)
+        print("patched docker.py: egress control disabled")
+
+# (7) OPTIONAL: no trial bind mounts (HARBOR_NO_TRIAL_MOUNTS=1). The trial
+# bind-mounts host log dirs into containers; under userns=auto those dirs are
+# owned by an UNMAPPED uid, so verifier scripts that chmod /logs/verifier
+# (ks-solver-cpp, ontology-kg-querying) fail with EPERM no matter the mode
+# bits. With mounts off, harbor's remote-env path takes over: dirs are plain
+# container dirs (mkdir'd by container root — chmod works) and logs/rewards
+# are downloaded after each phase. Off by default (mounts are fine for tasks
+# that don't chmod their log dirs).
+if os.environ.get("HARBOR_NO_TRIAL_MOUNTS", "0") == "1":
+    docker_py = hdir / "environments/docker/docker.py"
+    text = docker_py.read_text()
+    if "trial mounts disabled by run_eval_in_job" not in text:
+        old_cap = "            windows=True,\n            mounted=True,\n"
+        assert old_cap in text, "docker.py capabilities anchor changed; fix the no-mounts patch"
+        text = text.replace(
+            old_cap,
+            "            windows=True,\n            mounted=False,  # trial mounts disabled by run_eval_in_job\n",
+            1,
+        )
+        old_wm = "        self._mounts_compose_path = self._write_mounts_compose_file()\n"
+        assert old_wm in text, "docker.py mounts-write anchor changed; fix the no-mounts patch"
+        text = text.replace(
+            old_wm,
+            "        self._mounts = []  # trial mounts disabled by run_eval_in_job\n"
+            + old_wm,
+            1,
+        )
+        docker_py.write_text(text)
+        print("patched docker.py: trial bind mounts disabled (HARBOR_NO_TRIAL_MOUNTS=1)")
+else:
+    print("docker.py: trial bind mounts kept (HARBOR_NO_TRIAL_MOUNTS!=1)")
+
+# (8) Docker platform detection fallback. podman's docker-compat shim has no
 # {{.Server.Arch}} template field, so harbor's default_docker_platform()
 # raises "Failed to detect Docker platform" — which errors every trial whose
 # task ships its own [verifier.environment] (batched-eval-parity,
