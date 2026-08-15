@@ -162,6 +162,30 @@ fi
 log "uv sync"
 uv sync
 
+# --- 0c. Podman healthcheck driver (podman-backed docker only) ---------------
+# Podman runs container healthchecks off systemd transient timers; without
+# systemd they never fire, so healthchecked containers stay "starting" forever
+# and `compose up --wait` / depends_on: service_healthy hang (all 12 TB3
+# multi-service tasks). Drive the checks manually in the background.
+HEALTHCHECK_DRIVER_PID=""
+if docker --version 2>/dev/null | grep -qi podman && command -v podman >/dev/null 2>&1; then
+    log "starting podman healthcheck driver (no systemd => timers never fire)"
+    (
+        while true; do
+            for cid in $(podman ps -q 2>/dev/null); do
+                status="$(podman inspect "$cid" \
+                    --format '{{if .Config.Healthcheck}}{{.State.Healthcheck.Status}}{{end}}' \
+                    2>/dev/null || true)"
+                case "$status" in
+                    starting|unhealthy) podman healthcheck run "$cid" >/dev/null 2>&1 || true ;;
+                esac
+            done
+            sleep 5
+        done
+    ) &
+    HEALTHCHECK_DRIVER_PID=$!
+fi
+
 # --- 1. Optionally patch harbor compose: network_mode: host ------------------
 # harbor 0.21 split the old docker-compose-base.yaml into -build/-prebuilt
 # templates (and dropped all bind mounts — logs move via upload/download, so
@@ -236,6 +260,9 @@ cleanup() {
     log "cleanup: killing vllm pid $VLLM_PID"
     kill "$VLLM_PID" 2>/dev/null || true
     wait "$VLLM_PID" 2>/dev/null || true
+    if [ -n "${HEALTHCHECK_DRIVER_PID:-}" ]; then
+        kill "$HEALTHCHECK_DRIVER_PID" 2>/dev/null || true
+    fi
 }
 trap cleanup EXIT
 

@@ -216,6 +216,30 @@ log "starting podman service"
 source scripts/setup_podman_harbor.sh
 export DOCKER_HOST="${DOCKER_HOST:-unix:///tmp/podman.sock}"
 
+# --- 4b. Podman healthcheck driver -------------------------------------------
+# Podman schedules container healthchecks via systemd transient timers; there
+# is no systemd inside the beaker job container, so containers with a
+# healthcheck stay "starting" FOREVER and `docker compose up --wait` /
+# `depends_on: condition: service_healthy` hang until harbor's environment
+# build timeout kills the trial (all 12 TB3 multi-service tasks do this).
+# Drive the checks ourselves: run `podman healthcheck run` on every running
+# container whose health status isn't "healthy" yet, forever.
+log "starting podman healthcheck driver (no systemd => timers never fire)"
+(
+    while true; do
+        for cid in $(podman ps -q 2>/dev/null); do
+            status="$(podman inspect "$cid" \
+                --format '{{if .Config.Healthcheck}}{{.State.Healthcheck.Status}}{{end}}' \
+                2>/dev/null || true)"
+            case "$status" in
+                starting|unhealthy) podman healthcheck run "$cid" >/dev/null 2>&1 || true ;;
+            esac
+        done
+        sleep 5
+    done
+) &
+HEALTHCHECK_DRIVER_PID=$!
+
 # --- 4a. Docker Hub auth + mirror -------------------------------------------
 # tb2 task images live on Docker Hub; on a 267-trial run, harbor's
 # `compose down --rmi all` deletes each image after a trial, so the next
@@ -322,6 +346,9 @@ cleanup() {
     log "cleanup: killing vllm pid $VLLM_PID"
     kill "$VLLM_PID" 2>/dev/null || true
     wait "$VLLM_PID" 2>/dev/null || true
+    if [ -n "${HEALTHCHECK_DRIVER_PID:-}" ]; then
+        kill "$HEALTHCHECK_DRIVER_PID" 2>/dev/null || true
+    fi
 }
 trap cleanup EXIT
 
