@@ -255,14 +255,31 @@ PODMAN_USER="harboruser"
 if ! id "$PODMAN_USER" >/dev/null 2>&1; then
     useradd -m -s /bin/bash "$PODMAN_USER"
 fi
-# Pin the subuid/subgid range to 10000:65536 — the same range the old rootful
-# userns=auto config used successfully, so those uids provably exist in the
-# job container's outer namespace. useradd auto-assigns a huge base (e.g.
-# 11175536) that the outer namespace doesn't map, and newuidmap then dies
-# with "write to uid_map failed: Operation not permitted" (smoke7).
+# Subordinate ranges must fit INSIDE the job container's own (likely
+# 65536-uid) namespace: useradd's auto base (11175536, smoke7) and even
+# 10000:65536 (10000+65536 > 65536, smoke8) run off the end, and newuidmap
+# dies with "write to uid_map failed: Operation not permitted". Grant
+# harboruser every outer uid EXCEPT its own (0..uid-1 and uid+1..65535):
+# rootless podman maps container-0 -> harboruser and the two ranges cover
+# container uids 1..65535 exactly — including 65534, so nobody/setpriv
+# verifiers keep working.
+PODMAN_UID_TMP="$(id -u "$PODMAN_USER")"
+PODMAN_GID_TMP="$(id -g "$PODMAN_USER")"
 sed -i "/^$PODMAN_USER:/d" /etc/subuid /etc/subgid 2>/dev/null || true
-echo "$PODMAN_USER:10000:65536" >> /etc/subuid
-echo "$PODMAN_USER:10000:65536" >> /etc/subgid
+{
+    echo "$PODMAN_USER:0:$PODMAN_UID_TMP"
+    echo "$PODMAN_USER:$((PODMAN_UID_TMP + 1)):$((65536 - PODMAN_UID_TMP - 1))"
+} >> /etc/subuid
+{
+    echo "$PODMAN_USER:0:$PODMAN_GID_TMP"
+    echo "$PODMAN_USER:$((PODMAN_GID_TMP + 1)):$((65536 - PODMAN_GID_TMP - 1))"
+} >> /etc/subgid
+# Diagnostics for the next failure mode (e.g. a nosuid mount would break the
+# setuid newuidmap/newgidmap helpers regardless of ranges):
+log "userns diagnostics"
+cat /proc/self/uid_map 2>/dev/null || true
+ls -l /usr/bin/newuidmap /usr/bin/newgidmap 2>/dev/null || true
+findmnt -no TARGET,OPTIONS /usr 2>/dev/null || findmnt -no TARGET,OPTIONS / 2>/dev/null || true
 PODMAN_UID="$(id -u "$PODMAN_USER")"
 PODMAN_XDG="/run/user/$PODMAN_UID"
 mkdir -p "$PODMAN_XDG"
