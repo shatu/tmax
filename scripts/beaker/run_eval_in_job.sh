@@ -268,26 +268,50 @@ if os.environ.get("HARBOR_HOST_NETWORK_OVERLAY", "1") == "1":
         method = '''
     def _hostnet_overlay_path(self, paths):
         """Overlay forcing every service onto the host netns (see run_eval_in_job.sh)."""
+        import json as _json
+        import shlex as _shlex
         import tempfile
 
         services = {"main"}
+        healthchecks = {}
         for p in paths:
             try:
                 doc = yaml.safe_load(Path(p).read_text())
             except Exception:
                 continue
             if isinstance(doc, dict) and isinstance(doc.get("services"), dict):
-                services.update(doc["services"].keys())
+                for name, svc in doc["services"].items():
+                    services.add(name)
+                    test = ((svc or {}).get("healthcheck") or {}).get("test")
+                    # podman's docker-compat API WORD-SPLITS exec-form
+                    # healthcheck argv (["CMD","python3","-c","a b"] is stored
+                    # as [...,"a","b"]), so any check whose argument contains
+                    # spaces always fails. CMD-SHELL's single string survives
+                    # the join/split round-trip (single-space scripts), so
+                    # rewrite exec-form checks to an equivalent CMD-SHELL.
+                    if (
+                        isinstance(test, list)
+                        and test
+                        and test[0] == "CMD"
+                        and any(" " in str(a) for a in test[1:])
+                    ):
+                        healthchecks[name] = _shlex.join(str(a) for a in test[1:])
         aliases = "".join(
             f'      - "{s}:127.0.0.1"\\n' for s in sorted(services)
         )
-        blocks = "".join(
-            f"  {s}:\\n"
-            f"    network_mode: host\\n"
-            f"    networks: !reset null\\n"
-            f"    extra_hosts:\\n{aliases}"
-            for s in sorted(services)
-        )
+        blocks = ""
+        for s in sorted(services):
+            blocks += (
+                f"  {s}:\\n"
+                f"    network_mode: host\\n"
+                f"    networks: !reset null\\n"
+                f"    extra_hosts:\\n{aliases}"
+            )
+            if s in healthchecks:
+                blocks += (
+                    "    healthcheck:\\n"
+                    f"      test: [\\"CMD-SHELL\\", {_json.dumps(healthchecks[s])}]\\n"
+                )
         content = "networks: !reset {}\\nservices:\\n" + blocks
         f = tempfile.NamedTemporaryFile(
             "w", suffix="-hostnet-overlay.yaml", delete=False
