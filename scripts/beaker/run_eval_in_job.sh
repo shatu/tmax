@@ -441,6 +441,40 @@ if os.environ.get("HARBOR_DISABLE_EGRESS_CONTROL", "1") == "1":
         )
         docker_py.write_text(text)
         print("patched docker.py: egress control disabled")
+    # With egress control off, capabilities.disable_internet is False and
+    # harbor REJECTS allow_internet=false tasks outright
+    # ("network_mode='no-network' is not supported"). Downgrade to a warning:
+    # those tasks run WITH internet (documented deviation) instead of erroring.
+    base_py = hdir / "environments/base.py"
+    text = base_py.read_text()
+    if "no-network downgraded by run_eval_in_job" not in text:
+        old_nn = (
+            "        if (\n"
+            "            network_policy.network_mode == NetworkMode.NO_NETWORK\n"
+            "            and not self.capabilities.disable_internet\n"
+            "        ):\n"
+            "            raise ValueError(\n"
+            "                f\"network_mode='no-network' is not supported by {self.type()} \"\n"
+            "                \"environment. Environment providers must enforce the requested \"\n"
+            "                \"network policy or reject the task.\"\n"
+            "            )\n"
+        )
+        assert old_nn in text, "base.py no-network anchor changed; fix the downgrade patch"
+        text = text.replace(
+            old_nn,
+            "        if (\n"
+            "            network_policy.network_mode == NetworkMode.NO_NETWORK\n"
+            "            and not self.capabilities.disable_internet\n"
+            "        ):\n"
+            "            # no-network downgraded by run_eval_in_job: egress control\n"
+            "            # cannot work in this job container; run WITH internet.\n"
+            "            self.logger.warning(\n"
+            "                \"no-network policy not enforceable here; task runs WITH internet\"\n"
+            "            )\n",
+            1,
+        )
+        base_py.write_text(text)
+        print("patched base.py: no-network policy downgraded to warning")
 
 # (7) OPTIONAL: no trial bind mounts (HARBOR_NO_TRIAL_MOUNTS=1). The trial
 # bind-mounts host log dirs into containers; under userns=auto those dirs are
