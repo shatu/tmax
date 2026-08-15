@@ -117,6 +117,35 @@ CONF
 grep -q '^root:' /etc/subuid 2>/dev/null || echo 'root:10000:65536' >> /etc/subuid
 grep -q '^root:' /etc/subgid 2>/dev/null || echo 'root:10000:65536' >> /etc/subgid
 
+# --- 2b. Matching netavark/aardvark-dns --------------------------------------
+# The beaker image ships a NEW podman (5.x) next to Ubuntu noble's ANCIENT
+# netavark/aardvark-dns 1.4 debs. podman 5.x changed the netavark IPAM
+# contract (>= 1.6 required), so every bridge/compose network dies with
+# "IPAM error: failed to get ips ..." + "failed to parse ipam options: no
+# static ips provided" + a misleading aardvark-dns-directory IO error. Every
+# harbor 0.21 compose project creates a network, so this errors 100% of
+# trials. Install matching static release binaries when the found netavark is
+# too old, and point podman at them.
+NETAVARK_MIN_VER="1.6"
+NETAVARK_PIN="v2.1.0"
+netavark_bin="$(ls /usr/local/lib/podman/netavark /usr/lib/podman/netavark /usr/libexec/podman/netavark 2>/dev/null | head -1 || true)"
+netavark_ver="$("${netavark_bin:-false}" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1 || true)"
+if [ -z "$netavark_ver" ] || [ "$(printf '%s\n' "$netavark_ver" "$NETAVARK_MIN_VER" | sort -V | head -1)" != "$NETAVARK_MIN_VER" ]; then
+    log "netavark ${netavark_ver:-<none>} too old for podman $(podman --version 2>/dev/null || echo '?') — installing static $NETAVARK_PIN"
+    mkdir -p /usr/local/lib/podman
+    curl -fsSL "https://github.com/containers/netavark/releases/download/$NETAVARK_PIN/netavark.gz" \
+        | gunzip > /usr/local/lib/podman/netavark
+    curl -fsSL "https://github.com/containers/aardvark-dns/releases/download/$NETAVARK_PIN/aardvark-dns.gz" \
+        | gunzip > /usr/local/lib/podman/aardvark-dns
+    chmod +x /usr/local/lib/podman/netavark /usr/local/lib/podman/aardvark-dns
+    /usr/local/lib/podman/netavark --version
+    # containers.conf: force podman onto the new binaries (searched before the
+    # distro paths). Insert into the existing [engine] table (TOML forbids a
+    # duplicate [engine]) and add a [network] table.
+    sed -i '/^\[engine\]/a network_cmd_path = "/usr/local/lib/podman/netavark"\nhelper_binaries_dir = ["/usr/local/lib/podman", "/usr/local/libexec/podman", "/usr/lib/podman", "/usr/libexec/podman"]' /etc/containers/containers.conf
+    printf '\n[network]\nnetwork_backend = "netavark"\n' >> /etc/containers/containers.conf
+fi
+
 log "running uv sync"
 if ! command -v uv >/dev/null 2>&1; then
     curl -LsSf https://astral.sh/uv/install.sh | sh
