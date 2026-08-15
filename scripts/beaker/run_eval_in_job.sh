@@ -88,25 +88,32 @@ fi
 # --- 2. Write containers.conf -----------------------------------------------
 log "writing /etc/containers/containers.conf"
 mkdir -p /etc/containers
-# NOTE (TB3 / harbor 0.21 rework): podman now runs ROOTLESS (see step 4).
-# harbor 0.21's compose projects always create bridge networks, and the old
-# rootful config could never support them in a beaker job container:
-#   * netns="host" made podman skip IP allocation ("no static ips provided"),
-#   * dropping it exposed the real wall — rootful netavark must write
-#     net.ipv4 sysctls under /proc/sys, which the job mounts READ-ONLY and
-#     cannot remount (no CAP_SYS_ADMIN).
-# Rootless podman does its networking inside a user-owned netns (pasta for
-# egress), where sysctls and nftables are permitted. Accordingly:
-#   * userns="auto" is gone (rootful-only; rootless containers are already
-#     uid-isolated inside the user's namespace),
-#   * the host-ns shortcuts (ipcns/utsns/cgroupns="host") and the /proc:/proc
-#     volume are gone (rootful-era workarounds; wrong for bridge-netns
-#     containers).
+# NOTE (TB3 / harbor 0.21): bridge/compose networking is IMPOSSIBLE in a
+# beaker job container — proven empirically (smokes 3-9 + a diagnostics job):
+#   * the job has only the plain docker default caps (no NET_ADMIN/SYS_ADMIN),
+#   * /proc/sys is a LOCKED read-only mount (netavark's sysctl writes fail,
+#     and no user/mount-namespace trick can undo a locked mount),
+#   * /proc has tmpfs-masked paths, so fresh proc mounts inside a userns are
+#     kernel-blocked ("fully visible" rule),
+#   * no-new-privileges blocks the setuid newuidmap/newgidmap helpers, so
+#     multi-uid ROOTLESS podman can't start either.
+# So every container runs on the HOST network namespace (netns="host", the
+# TB2-era proven mechanism), and harbor is patched (step 3) to force
+# network_mode: host on every compose service with extra_hosts aliases
+# (service-name -> 127.0.0.1) standing in for compose DNS.
 cat > /etc/containers/containers.conf <<'CONF'
 [containers]
+netns="host"
+userns="auto:size=65536"
+ipcns="host"
+utsns="host"
+cgroupns="host"
 cgroups="disabled"
 keyring=false
 log_driver = "k8s-file"
+volumes = [
+        "/proc:/proc",
+]
 default_sysctls = []
 [engine]
 cgroup_manager = "cgroupfs"
@@ -114,6 +121,10 @@ events_logger="file"
 runtime="crun"
 compose_warning_logs=false
 CONF
+
+# Root subuid/subgid range for userns=auto.
+grep -q '^root:' /etc/subuid 2>/dev/null || echo 'root:10000:65536' >> /etc/subuid
+grep -q '^root:' /etc/subgid 2>/dev/null || echo 'root:10000:65536' >> /etc/subgid
 
 # --- 2b. Matching netavark/aardvark-dns --------------------------------------
 # The beaker image ships a NEW podman (5.x) next to Ubuntu noble's ANCIENT
@@ -239,85 +250,88 @@ if "HARBOR_AGENT_TIMEOUT_SEC" not in text:
     )
     jobs_py.write_text(text)
     print("patched jobs.py: added HARBOR_AGENT_TIMEOUT_SEC override")
+
+# (4) Host-network compose overlay. Bridge/compose networking is IMPOSSIBLE
+# in the beaker job container (locked ro /proc/sys, masked /proc, docker
+# default caps only — see the containers.conf note in this script). Append a
+# generated overlay as the LAST compose file that forces network_mode: host
+# on EVERY service (main + task-authored) and clears all networks (compose
+# `!reset`), with extra_hosts aliases (service-name -> 127.0.0.1) standing in
+# for compose DNS — TB3 multi-service tasks address each other as
+# http://<service>:<port> on distinct ports. HARBOR_HOST_NETWORK_OVERLAY=0
+# disables (e.g. for environments with working bridges).
+if os.environ.get("HARBOR_HOST_NETWORK_OVERLAY", "1") == "1":
+    docker_py = hdir / "environments/docker/docker.py"
+    text = docker_py.read_text()
+    if "_hostnet_overlay_path" not in text:
+        method = '''
+    def _hostnet_overlay_path(self, paths):
+        """Overlay forcing every service onto the host netns (see run_eval_in_job.sh)."""
+        import tempfile
+
+        services = {"main"}
+        for p in paths:
+            try:
+                doc = yaml.safe_load(Path(p).read_text())
+            except Exception:
+                continue
+            if isinstance(doc, dict) and isinstance(doc.get("services"), dict):
+                services.update(doc["services"].keys())
+        aliases = "".join(
+            f'      - "{s}:127.0.0.1"\\n' for s in sorted(services)
+        )
+        blocks = "".join(
+            f"  {s}:\\n"
+            f"    network_mode: host\\n"
+            f"    networks: !reset null\\n"
+            f"    extra_hosts:\\n{aliases}"
+            for s in sorted(services)
+        )
+        content = "networks: !reset {}\\nservices:\\n" + blocks
+        f = tempfile.NamedTemporaryFile(
+            "w", suffix="-hostnet-overlay.yaml", delete=False
+        )
+        f.write(content)
+        f.close()
+        return Path(f.name)
+
+'''
+        anchor = "    def _egress_controlled_service_names(self"
+        assert anchor in text, "docker.py anchor changed; fix the hostnet overlay patch"
+        text = text.replace(anchor, method + anchor, 1)
+        ret_anchor = (
+            "        if self._enable_egress_control:\n"
+            "            paths.append(self._DOCKER_COMPOSE_EGRESS_CONTROL_PATH)\n"
+            "            if self._egress_control_services_compose_path:\n"
+            "                paths.append(self._egress_control_services_compose_path)\n"
+            "\n"
+            "        return paths"
+        )
+        assert ret_anchor in text, "docker.py return anchor changed; fix the hostnet overlay patch"
+        text = text.replace(
+            ret_anchor,
+            ret_anchor[: -len("        return paths")]
+            + "        paths.append(self._hostnet_overlay_path(paths))\n"
+            + "        return paths",
+            1,
+        )
+        docker_py.write_text(text)
+        print("patched docker.py: host-network compose overlay on every service")
+    else:
+        print("docker.py: hostnet overlay already patched")
+else:
+    print("docker.py: hostnet overlay disabled (HARBOR_HOST_NETWORK_OVERLAY=0)")
 PY
 
-# --- 4. Bring podman service up, ROOTLESS ------------------------------------
-# Rootful podman cannot do bridge networking in a beaker job container:
-# netavark must write /proc/sys/net sysctls, and /proc/sys is a read-only
-# mount that can't be remounted without CAP_SYS_ADMIN (smoke5/smoke6:
-# "set sysctl net/ipv4/conf/podman1/route_localnet: Read-only file system").
-# Rootless podman instead builds bridges inside a user-owned network
-# namespace (egress via pasta) where sysctls/nftables are permitted, which is
-# exactly what harbor 0.21's per-project compose networks + TB3's
-# multi-service tasks need. Root clients (harbor / docker CLI) talk to the
-# rootless service through the unix socket as before.
-PODMAN_USER="harboruser"
-if ! id "$PODMAN_USER" >/dev/null 2>&1; then
-    useradd -m -s /bin/bash "$PODMAN_USER"
-fi
-# Subordinate ranges must fit INSIDE the job container's own (likely
-# 65536-uid) namespace: useradd's auto base (11175536, smoke7) and even
-# 10000:65536 (10000+65536 > 65536, smoke8) run off the end, and newuidmap
-# dies with "write to uid_map failed: Operation not permitted". Grant
-# harboruser every outer uid EXCEPT its own (0..uid-1 and uid+1..65535):
-# rootless podman maps container-0 -> harboruser and the two ranges cover
-# container uids 1..65535 exactly — including 65534, so nobody/setpriv
-# verifiers keep working.
-PODMAN_UID_TMP="$(id -u "$PODMAN_USER")"
-PODMAN_GID_TMP="$(id -g "$PODMAN_USER")"
-sed -i "/^$PODMAN_USER:/d" /etc/subuid /etc/subgid 2>/dev/null || true
-{
-    echo "$PODMAN_USER:0:$PODMAN_UID_TMP"
-    echo "$PODMAN_USER:$((PODMAN_UID_TMP + 1)):$((65536 - PODMAN_UID_TMP - 1))"
-} >> /etc/subuid
-{
-    echo "$PODMAN_USER:0:$PODMAN_GID_TMP"
-    echo "$PODMAN_USER:$((PODMAN_GID_TMP + 1)):$((65536 - PODMAN_GID_TMP - 1))"
-} >> /etc/subgid
-# Diagnostics for the next failure mode (e.g. a nosuid mount would break the
-# setuid newuidmap/newgidmap helpers regardless of ranges):
-log "userns diagnostics"
-cat /proc/self/uid_map 2>/dev/null || true
-ls -l /usr/bin/newuidmap /usr/bin/newgidmap 2>/dev/null || true
-findmnt -no TARGET,OPTIONS /usr 2>/dev/null || findmnt -no TARGET,OPTIONS / 2>/dev/null || true
-PODMAN_UID="$(id -u "$PODMAN_USER")"
-PODMAN_XDG="/run/user/$PODMAN_UID"
-mkdir -p "$PODMAN_XDG"
-chown "$PODMAN_USER:$PODMAN_USER" "$PODMAN_XDG"
-chmod 700 "$PODMAN_XDG"
-# Rootless overlay storage needs fuse-overlayfs + /dev/fuse; without it podman
-# falls back to vfs (slow, disk-hungry). Try creating the device node (the
-# /dev/net/tun mknod below works in these jobs, so this often does too).
-if [ ! -e /dev/fuse ]; then
-    if mknod /dev/fuse c 10 229 2>/dev/null && chmod 666 /dev/fuse; then
-        log "created /dev/fuse"
-    else
-        log "WARNING: /dev/fuse missing and mknod failed — rootless podman will use vfs storage"
-    fi
-fi
-# /dev/net/tun for pasta's tap device.
-if [ ! -e /dev/net/tun ]; then
-    mkdir -p /dev/net && mknod /dev/net/tun c 10 200 && chmod 666 /dev/net/tun
-fi
-# Run a podman command as the rootless user.
-pdm() { runuser -u "$PODMAN_USER" -- env XDG_RUNTIME_DIR="$PODMAN_XDG" HOME="/home/$PODMAN_USER" podman "$@"; }
-
-PODMAN_SOCKET=/tmp/podman.sock
-log "starting rootless podman service (user=$PODMAN_USER) at $PODMAN_SOCKET"
-rm -f "$PODMAN_SOCKET"
-runuser -u "$PODMAN_USER" -- env XDG_RUNTIME_DIR="$PODMAN_XDG" HOME="/home/$PODMAN_USER" \
-    nohup podman system service --time=0 "unix://$PODMAN_SOCKET" >/tmp/podman-service.log 2>&1 &
-for _ in $(seq 1 50); do
-    [ -S "$PODMAN_SOCKET" ] && break
-    sleep 0.2
-done
-if [ ! -S "$PODMAN_SOCKET" ]; then
-    log "FATAL: rootless podman service failed to come up — /tmp/podman-service.log:"
-    cat /tmp/podman-service.log || true
-    exit 1
-fi
-export DOCKER_HOST="unix://$PODMAN_SOCKET"
-log "DOCKER_HOST=$DOCKER_HOST ($(pdm --version 2>/dev/null || echo 'podman version unknown'))"
+# --- 4. Bring podman service up (uses scripts/setup_podman_harbor.sh) -------
+# ROOTFUL, host-netns podman — the only container networking that works in a
+# beaker job container (see the containers.conf note above; rootless podman is
+# blocked by no-new-privileges killing the setuid newuidmap helper).
+log "starting podman service"
+# shellcheck disable=SC1091
+source scripts/setup_podman_harbor.sh
+export DOCKER_HOST="${DOCKER_HOST:-unix:///tmp/podman.sock}"
+pdm() { podman "$@"; }
 
 # --- 4b. Podman healthcheck driver -------------------------------------------
 # Podman schedules container healthchecks via systemd transient timers; there
@@ -390,58 +404,23 @@ else
     exit 1
 fi
 
-# --- 4c. Bridge-network preflight --------------------------------------------
-# Compose creates a per-project bridge network for EVERY task (and TB3's
-# multi-service tasks rely on inter-service DNS on it), so podman's
-# netavark/aardvark-dns stack must actually work inside this job container.
-# Historically it didn't ("netavark: IO error: failed to create aardvark-dns
-# directory") and the old pipeline papered over it with an unconditional
-# network_mode: host — which TB3 can't use. Create every candidate runtime dir
-# (the path depends on podman's runroot), then PROBE with a real container on
-# a real bridge network and fail fast with diagnostics instead of erroring all
-# trials.
-log "bridge-network preflight (netavark/aardvark-dns)"
-if ! ls /usr/libexec/podman/aardvark-dns >/dev/null 2>&1 && ! command -v aardvark-dns >/dev/null 2>&1 \
-        && [ ! -x /usr/local/lib/podman/aardvark-dns ]; then
-    apt-get install -y -qq aardvark-dns 2>/dev/null || log "aardvark-dns install failed (continuing; probe decides)"
-fi
-# netavark bridge setup must write interface sysctls and program NAT rules.
-# The beaker job container mounts /proc/sys READ-ONLY (smoke5: "set sysctl
-# net/ipv4/conf/podman1/route_localnet: Read-only file system") and ships no
-# nft binary ("unable to execute \"nft\""). Remount /proc/sys rw (the job has
-# CAP_NET_ADMIN — it can already create bridges) and install nftables.
-if ! command -v nft >/dev/null 2>&1; then
-    apt-get install -y -qq nftables >/dev/null 2>&1 || log "WARNING: nftables install failed"
-fi
-if mount -o remount,rw /proc/sys 2>/dev/null || mount -o remount,bind,rw /proc/sys 2>/dev/null; then
-    log "remounted /proc/sys read-write"
+# --- 4c. Container preflight --------------------------------------------------
+# Every service (main + task-authored) runs with network_mode: host via the
+# harbor overlay patch above — bridge networking is impossible in this job
+# container (locked ro /proc/sys, docker default caps; smokes 3-9). Probe that
+# a host-netns container runs AND has internet egress before anything heavy
+# starts, failing fast with diagnostics instead of erroring all trials.
+log "host-network container preflight"
+if pdm run --rm --network host docker.io/library/busybox:latest \
+        sh -c 'wget -q -T 15 -O /dev/null http://archive.ubuntu.com/ubuntu/'; then
+    log "host-network preflight OK (container ran, egress works)"
 else
-    log "WARNING: could not remount /proc/sys rw — netavark bridge sysctls may fail (probe decides)"
-fi
-pdm network rm -f hb-netprobe >/dev/null 2>&1 || true
-pdm network create hb-netprobe >/dev/null
-if pdm run --rm --network hb-netprobe docker.io/library/busybox:latest true >/dev/null 2>&1; then
-    log "bridge-network preflight OK (rootless)"
-else
-    log "FATAL: podman cannot run a container on a bridge network — every trial would error."
+    log "FATAL: cannot run a host-network container with egress — every trial would error."
     log "podman info follows for diagnosis:"
     pdm info 2>&1 | sed -n '1,120p' || true
-    pdm run --rm --network hb-netprobe docker.io/library/busybox:latest true || true
+    pdm run --rm --network host docker.io/library/busybox:latest sh -c 'wget -q -T 15 -O /dev/null http://archive.ubuntu.com/ubuntu/' || true
     exit 1
 fi
-pdm network rm -f hb-netprobe >/dev/null 2>&1 || true
-# The rootless bridge must also reach the network: TB3 tasks pip/npm/apt
-# install at build AND run time. Verify egress through pasta before betting
-# the run on it.
-pdm network create hb-netprobe2 >/dev/null
-if pdm run --rm --network hb-netprobe2 docker.io/library/busybox:latest \
-        sh -c 'wget -q -T 15 -O /dev/null http://archive.ubuntu.com/ubuntu/'; then
-    log "bridge egress preflight OK"
-else
-    log "FATAL: containers on a bridge network have no internet egress (pasta)."
-    exit 1
-fi
-pdm network rm -f hb-netprobe2 >/dev/null 2>&1 || true
 
 # --- 5. Start vLLM in the background ----------------------------------------
 : "${VLLM_VERSION:=0.19.1}"
