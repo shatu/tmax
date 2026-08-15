@@ -27,7 +27,7 @@
 #                            only work together on vllm main, and our solver
 #                            harness is tool-calling-based.
 #   VLLM_EXTRA_ARGS          free-form extra args appended to vllm serve
-#   VLLM_READY_TIMEOUT       seconds to wait for /v1/models (default: 3600 —
+#   VLLM_READY_TIMEOUT       seconds to wait for /v1/models (default: 5400 —
 #                            a ~700 GB checkpoint takes a while to load)
 #
 #   -- task corpus --
@@ -74,7 +74,7 @@ log() { printf '\n=== [%s] %s ===\n' "$(date -u +%H:%M:%S)" "$*"; }
 : "${MAX_MODEL_LEN:=131072}"
 : "${VLLM_MAX_NUM_SEQS:=32}"
 : "${VLLM_ENABLE_MTP:=0}"
-: "${VLLM_READY_TIMEOUT:=3600}"
+: "${VLLM_READY_TIMEOUT:=5400}"
 : "${TASKS_HF_DATASET:=allenai/TMax-SFT-16.5K}"
 : "${TASKS_DIR_NAME:=tasks_sft_16.5k}"
 : "${NUM_SOLUTIONS:=8}"
