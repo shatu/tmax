@@ -90,7 +90,11 @@ log "writing /etc/containers/containers.conf"
 mkdir -p /etc/containers
 cat > /etc/containers/containers.conf <<'CONF'
 [containers]
-netns="host"
+# NOTE: netns="host" was removed for TB3 (harbor 0.21): it made podman skip
+# static-IP allocation for every container, so joining any named/compose
+# network died in netavark with "failed to parse ipam options: no static ips
+# provided". Compose task networking needs real bridge networks now; the
+# bridge-network preflight below verifies they actually work in this job.
 userns="auto:size=65536"
 ipcns="host"
 utsns="host"
