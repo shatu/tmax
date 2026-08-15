@@ -108,12 +108,16 @@ mkdir -p /etc/containers
 # all. The side effect that compose-cp uploads land owned by unmapped uids
 # (breaking verifiers that chmod /logs/verifier) is fixed in the harbor patch
 # below by uploading via tar-through-exec instead of compose cp.
+# ipcns/utsns "host" (rootful-era shortcuts) were dropped: podman REJECTS
+# containers that set shm_size under a host IPC namespace ("cannot set
+# shmsize when running in the {host} IPC Namespace" — legacy-utility-triage,
+# medical-claims-processing), and compose services setting `hostname` would
+# hit the UTS equivalent. Private ipc/uts namespaces work fine under
+# userns=auto.
 cat > /etc/containers/containers.conf <<'CONF'
 [containers]
 netns="host"
 userns="auto:size=65536"
-ipcns="host"
-utsns="host"
 cgroupns="host"
 cgroups="disabled"
 keyring=false
@@ -280,6 +284,7 @@ if os.environ.get("HARBOR_HOST_NETWORK_OVERLAY", "1") == "1":
 
         services = {"main"}
         healthchecks = {}
+        checked_services = set()
         for p in paths:
             try:
                 doc = yaml.safe_load(Path(p).read_text())
@@ -289,6 +294,8 @@ if os.environ.get("HARBOR_HOST_NETWORK_OVERLAY", "1") == "1":
                 for name, svc in doc["services"].items():
                     services.add(name)
                     test = ((svc or {}).get("healthcheck") or {}).get("test")
+                    if test:
+                        checked_services.add(name)
                     # podman's docker-compat API WORD-SPLITS exec-form
                     # healthcheck argv (["CMD","python3","-c","a b"] is stored
                     # as [...,"a","b"]), so any check whose argument contains
@@ -313,11 +320,16 @@ if os.environ.get("HARBOR_HOST_NETWORK_OVERLAY", "1") == "1":
                 f"    networks: !reset null\\n"
                 f"    extra_hosts:\\n{aliases}"
             )
-            if s in healthchecks:
-                blocks += (
-                    "    healthcheck:\\n"
-                    f"      test: [\\"CMD-SHELL\\", {_json.dumps(healthchecks[s])}]\\n"
-                )
+            if s in checked_services:
+                # The healthcheck DRIVER polls every 5s regardless of the
+                # task's configured interval, so a slow-booting service
+                # (erp's odoo setup takes minutes) burns its retries budget
+                # early and flips unhealthy. Effectively remove the unhealthy
+                # trip-wire; harbor's environment build timeout still bounds
+                # a genuinely-dead service.
+                blocks += "    healthcheck:\\n      retries: 999\\n"
+                if s in healthchecks:
+                    blocks += f"      test: [\\"CMD-SHELL\\", {_json.dumps(healthchecks[s])}]\\n"
         content = "networks: !reset {}\\nservices:\\n" + blocks
         f = tempfile.NamedTemporaryFile(
             "w", suffix="-hostnet-overlay.yaml", delete=False
