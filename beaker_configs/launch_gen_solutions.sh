@@ -69,6 +69,7 @@ SAMPLE_SEED=0
 FORCE_RERUN=0
 JOB_NAME=""
 MIN_RUNTIME=""
+APPTAINER_FLAVOR="${APPTAINER_FLAVOR:-}"   # default derived from HARDWARE below
 PRIORITY="high"
 BUDGET="ai2/oe-omai"
 HF_TOKEN_SECRET_NAME="pradeepd_HF_TOKEN"
@@ -126,6 +127,9 @@ Options:
   --min-runtime DUR      minimum guaranteed runtime before the job can be
                          preempted, e.g. '1h', '30m' (default: server default,
                          i.e. preemptible at any time)
+  --apptainer-flavor F   plain | suid (default: suid on b300, plain on h100).
+                         suid installs the setuid starter so base-SIF builds
+                         work where userns mappings are blocked (holmes).
   --priority PRI         beaker priority (default: urgent)
   --budget BUDGET        beaker budget (default: workspace default)
   --workspace WS         beaker workspace (default: \$BEAKER_WORKSPACE or ai2/tmax)
@@ -172,6 +176,7 @@ while [ $# -gt 0 ]; do
         --force-rerun)       FORCE_RERUN=1; shift ;;
         --job-name)          JOB_NAME="$2"; shift 2 ;;
         --min-runtime)       MIN_RUNTIME="$2"; shift 2 ;;
+        --apptainer-flavor)  APPTAINER_FLAVOR="$2"; shift 2 ;;
         --priority)          PRIORITY="$2"; shift 2 ;;
         --budget)            BUDGET="$2"; shift 2 ;;
         --workspace)         BEAKER_WORKSPACE="$2"; shift 2 ;;
@@ -197,6 +202,17 @@ if [ -z "$BEAKER_IMAGE" ] && [ -z "$BEAKER_DOCKER_IMAGE" ]; then
     case "$HARDWARE" in
         b300) BEAKER_IMAGE="ai2/cuda13.0-ubuntu22.04-torch2.11.0" ;;
         h100) BEAKER_IMAGE="ai2/cuda12.8-dev-ubuntu22.04-torch2.10.0" ;;
+    esac
+fi
+
+# Per-hardware apptainer flavor default: holmes (b300) denies userns mapping
+# writes, and 'apptainer build' %post cannot run without them in the plain
+# (non-setuid) flavor — runs 5-6 proved base-SIF builds fail there. The suid
+# starter sidesteps userns entirely, so it's the working default on b300.
+if [ -z "$APPTAINER_FLAVOR" ]; then
+    case "$HARDWARE" in
+        b300) APPTAINER_FLAVOR="suid" ;;
+        *)    APPTAINER_FLAVOR="plain" ;;
     esac
 fi
 
@@ -243,6 +259,7 @@ cat <<EOF
                 num_tasks=${NUM_TASKS} start_at=${START_AT} sample_size=${SAMPLE_SIZE} force_rerun=${FORCE_RERUN}
   Weka:         ${WEKA_MOUNT}
   Image:        ${BEAKER_IMAGE:+beaker:${BEAKER_IMAGE}}${BEAKER_DOCKER_IMAGE:+docker:${BEAKER_DOCKER_IMAGE}}
+  Apptainer:    flavor=${APPTAINER_FLAVOR}  sif_cache=${SIF_CACHE_DIR:-<in-job default>}
   Job:          ${BEAKER_NAME}  workspace=${BEAKER_WORKSPACE}  priority=${PRIORITY}
   Repo ref:     ${REPO_GIT_REF}
 EOF
@@ -296,11 +313,7 @@ GANTRY_CMD=(
     --env "SAMPLE_SIZE=${SAMPLE_SIZE}"
     --env "SAMPLE_SEED=${SAMPLE_SEED}"
     --env "FORCE_RERUN=${FORCE_RERUN}"
-    # apptainer knobs, settable from the caller's environment:
-    #   APPTAINER_FLAVOR=suid  -> also install the setuid starter (builds
-    #                             without userns mappings)
-    #   SIF_CACHE_DIR=<path>   -> override the weka base-SIF cache location
-    --env "APPTAINER_FLAVOR=${APPTAINER_FLAVOR:-plain}"
+    --env "APPTAINER_FLAVOR=${APPTAINER_FLAVOR}"
     --env "SIF_CACHE_DIR=${SIF_CACHE_DIR:-}"
     # Run the task with the privileges nested containers need (user
     # namespaces for apptainer build/%post). Same setting the harbor/podman
