@@ -289,6 +289,39 @@ else
     exit 1
 fi
 
+# --- 4c. Bridge-network preflight --------------------------------------------
+# Compose creates a per-project bridge network for EVERY task (and TB3's
+# multi-service tasks rely on inter-service DNS on it), so podman's
+# netavark/aardvark-dns stack must actually work inside this job container.
+# Historically it didn't ("netavark: IO error: failed to create aardvark-dns
+# directory") and the old pipeline papered over it with an unconditional
+# network_mode: host — which TB3 can't use. Create every candidate runtime dir
+# (the path depends on podman's runroot), then PROBE with a real container on
+# a real bridge network and fail fast with diagnostics instead of erroring all
+# trials.
+log "bridge-network preflight (netavark/aardvark-dns)"
+if ! ls /usr/libexec/podman/aardvark-dns >/dev/null 2>&1 && ! command -v aardvark-dns >/dev/null 2>&1; then
+    apt-get install -y -qq aardvark-dns 2>/dev/null || log "aardvark-dns install failed (continuing; probe decides)"
+fi
+mkdir -p /run/containers/networks/aardvark-dns
+PODMAN_RUNROOT="$(podman info --format '{{.Store.RunRoot}}' 2>/dev/null || true)"
+if [ -n "$PODMAN_RUNROOT" ]; then
+    mkdir -p "$PODMAN_RUNROOT/networks/aardvark-dns"
+fi
+podman network rm -f hb-netprobe >/dev/null 2>&1 || true
+podman network create hb-netprobe >/dev/null
+if podman run --rm --network hb-netprobe docker.io/library/busybox:latest true >/dev/null 2>&1; then
+    log "bridge-network preflight OK"
+else
+    log "FATAL: podman cannot run a container on a bridge network — every trial would error."
+    log "podman info follows for diagnosis:"
+    podman info 2>&1 | sed -n '1,80p' || true
+    ls -la /run/containers/networks 2>&1 || true
+    podman run --rm --network hb-netprobe docker.io/library/busybox:latest true || true
+    exit 1
+fi
+podman network rm -f hb-netprobe >/dev/null 2>&1 || true
+
 # --- 5. Start vLLM in the background ----------------------------------------
 : "${VLLM_VERSION:=0.19.1}"
 : "${VLLM_TOOL_CALL_PARSER:=hermes}"
