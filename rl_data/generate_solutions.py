@@ -84,6 +84,18 @@ class SolutionConfig:
     #: Directory containing pre-built base SIFs (base_{domain}.sif). When set, per-task SIFs
     #: are not needed; the env uses a shared base + task-specific delta script.
     base_sifs_dir: Optional[str] = None
+    #: Container runtime for task environments. ``"apptainer"`` (default) is the
+    #: HPC/Slurm path; ``"podman"`` targets hosts where apptainer cannot run at
+    #: all (AI2 Beaker — userns mappings and the suid starter are both blocked).
+    #: Podman always uses shared base images (``localhost/tmax/base_<domain>``,
+    #: prefix overridable via $TMAX_IMAGE_PREFIX) + the per-task setup delta;
+    #: per-task images are never built. See generator/env.py
+    #: (PodmanContainerEnvironment) and rl_data/containers/docker/.
+    container_runtime: str = "apptainer"
+    #: Directory of ``podman save`` tarballs (``base_<domain>.tar``) used to
+    #: seed missing base images before falling back to ``podman build`` from
+    #: rl_data/containers/docker/. Freshly built images are saved back here.
+    image_cache_dir: Optional[str] = None
     #: Random-sample at most this many tasks from ``tasks_dir`` (0 = disabled;
     #: use ``num_tasks``/``start_at`` for sequential sampling instead).
     #: Applied **after** ``filter_solved`` and ``use_parquet`` so the random
@@ -257,7 +269,12 @@ def process_task(task_dir: str, cfg: SolutionConfig):
     task_json_path = task_dir / "task.json"
     solutions_dir = task_dir / "solutions"
 
-    if not cfg.base_sifs_dir:
+    if cfg.container_runtime == "podman":
+        # Base-image mode only; images were ensured in the pre-build phase.
+        if not def_path.exists():
+            print(f"[{task_dir.name}] No def file found, skipping.")
+            return "no def"
+    elif not cfg.base_sifs_dir:
         print(f"{task_dir} sif_path: {sif_path}")
         if not sif_path.exists():
             if not def_path.exists():
@@ -418,6 +435,23 @@ def parse_args(argv: Optional[List[str]] = None) -> SolutionConfig:
              "are skipped; the env uses a shared base SIF + task-specific delta script.",
     )
     ap.add_argument(
+        "--container-runtime",
+        type=str,
+        default="apptainer",
+        choices=["apptainer", "podman"],
+        help="Container runtime for task environments. 'apptainer' (default) is the "
+             "HPC/Slurm path. 'podman' targets hosts where apptainer cannot run "
+             "(AI2 Beaker); always uses shared base images + per-task setup deltas.",
+    )
+    ap.add_argument(
+        "--image-cache-dir",
+        type=str,
+        default=None,
+        metavar="DIR",
+        help="podman only: directory of `podman save` tarballs (base_<domain>.tar) to "
+             "seed missing base images from; freshly built images are saved back here.",
+    )
+    ap.add_argument(
         "--sample-size",
         type=int,
         default=0,
@@ -510,8 +544,87 @@ def _prepull_base_images(def_paths: list[Path]) -> None:
     print()
 
 
+def _ensure_podman_base_images(cfg: SolutionConfig) -> None:
+    """Make sure every shared base image exists in podman's local storage.
+
+    Per domain, in order: already present → ``podman load`` from
+    ``cfg.image_cache_dir/base_<domain>.tar`` → ``podman build`` from the
+    committed context in rl_data/containers/docker/. Freshly built images
+    are saved back to the cache dir (atomically, via a .partial rename) so
+    the build happens at most once across jobs sharing the cache.
+    """
+    from rl_data.generator.apptainer_def_gen import BASE_IMAGES
+    from rl_data.generator.env import PodmanContainerEnvironment
+
+    prefix = os.environ.get(
+        PodmanContainerEnvironment.IMAGE_PREFIX_ENV,
+        PodmanContainerEnvironment.DEFAULT_IMAGE_PREFIX,
+    )
+    docker_dir = Path(__file__).parent / "containers" / "docker"
+    cache_dir = Path(cfg.image_cache_dir).expanduser().resolve() if cfg.image_cache_dir else None
+
+    def _exists(image: str) -> bool:
+        return subprocess.run(
+            ["podman", "image", "exists", image], capture_output=True
+        ).returncode == 0
+
+    ready = 0
+    for domain in BASE_IMAGES:
+        image = f"{prefix}/base_{domain}"
+        if _exists(image):
+            ready += 1
+            continue
+
+        tar = cache_dir / f"base_{domain}.tar" if cache_dir else None
+        if tar is not None and tar.exists():
+            print(f"📦 Loading {image} from {tar} ...")
+            proc = subprocess.run(
+                ["podman", "load", "-i", str(tar)], capture_output=True, text=True
+            )
+            if proc.returncode == 0 and _exists(image):
+                ready += 1
+                continue
+            print(f"⚠️  podman load failed for {tar.name}: "
+                  f"{(proc.stdout + proc.stderr).strip()[-300:] or '(no output)'}")
+
+        ctx = docker_dir / f"base_{domain}"
+        if not (ctx / "Containerfile").exists():
+            print(f"❌ {image}: no cached tar and no build context at {ctx}")
+            continue
+        print(f"🔨 Building {image} from {ctx} ...")
+        proc = subprocess.run(
+            ["podman", "build", "-t", image, str(ctx)], capture_output=True, text=True
+        )
+        if proc.returncode != 0:
+            print(f"❌ podman build failed for {image}: "
+                  f"{(proc.stdout + proc.stderr).strip()[-500:] or '(no output)'}")
+            continue
+        ready += 1
+        if cache_dir is not None:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            tmp = cache_dir / f".base_{domain}.tar.partial"
+            save = subprocess.run(
+                ["podman", "save", "-o", str(tmp), image], capture_output=True, text=True
+            )
+            if save.returncode == 0:
+                tmp.replace(cache_dir / f"base_{domain}.tar")
+                print(f"💾 Cached {image} -> {cache_dir / f'base_{domain}.tar'}")
+            else:
+                tmp.unlink(missing_ok=True)
+
+    print(f"🔨 Podman base images ready: {ready}/{len(BASE_IMAGES)}\n")
+    if ready < len(BASE_IMAGES):
+        print("⚠️  Some base images are missing; tasks routed to them will fail to initialize.")
+
+
 def _run_generate_solutions(cfg: SolutionConfig) -> None:
     """Core driver (stdout/stderr may be teed by main())."""
+    # The env class is resolved lazily from this variable at construction
+    # time (see generator.env.resolve_environment_class), so setting it here
+    # covers every worker thread without threading a param through the
+    # solver signatures.
+    os.environ["TMAX_CONTAINER_RUNTIME"] = cfg.container_runtime
+
     all_entries = list(Path(cfg.tasks_dir).iterdir())
     # Accept either the canonical `task_*` prefix (skill-tax / endless-terminals)
     # or any directory that ships a `task.json` (adapter-produced dirs like
@@ -595,7 +708,12 @@ def _run_generate_solutions(cfg: SolutionConfig) -> None:
     # ------------------------------------------------------------------
     # Pre-build phase
     # ------------------------------------------------------------------
-    if cfg.base_sifs_dir:
+    if cfg.container_runtime == "podman":
+        # Podman path: no SIFs anywhere — ensure the shared base images
+        # exist (already present > loaded from tar cache > built from the
+        # committed docker/ contexts).
+        _ensure_podman_base_images(cfg)
+    elif cfg.base_sifs_dir:
         # Ensure all 9 base SIFs exist; build any that are missing.
         from rl_data.generator.apptainer_def_gen import BASE_IMAGES, CONTAINERS_DIR
         base_dir = Path(cfg.base_sifs_dir).resolve()

@@ -16,7 +16,10 @@ from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor
 
 from rl_data import chat_completion_batch_with_tools, DEFAULT_MODEL
-from rl_data.generator.env import InteractiveContainerEnvironment as ContainerEnvironment
+from rl_data.generator.env import (
+    InteractiveContainerEnvironment as ContainerEnvironment,
+    resolve_environment_class,
+)
 
 MAX_OUTPUT_LENGTH = 50_000
 SUBMIT_MARKER = "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"
@@ -231,7 +234,8 @@ def run_n_solutions(
         start_time = time.time()
 
         def _init_env(i: int) -> ContainerEnvironment:
-            env = ContainerEnvironment(
+            # Runtime chosen lazily via $TMAX_CONTAINER_RUNTIME (apptainer|podman)
+            env = resolve_environment_class()(
                 container_sif_path=container_sif_path,
                 initial_test_path=initial_test_path,
                 final_test_path=final_test_path,

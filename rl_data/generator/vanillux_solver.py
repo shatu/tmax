@@ -62,7 +62,10 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 from rl_data import chat_completion_batch_with_tools, DEFAULT_MODEL
-from rl_data.generator.env import InteractiveContainerEnvironment as ContainerEnvironment
+from rl_data.generator.env import (
+    InteractiveContainerEnvironment as ContainerEnvironment,
+    resolve_environment_class,
+)
 from rl_data.generator.sample_solutions import (
     CommandDebugLogger,
     SUBMIT_MARKER,
@@ -222,7 +225,8 @@ def run_n_solutions_vanillux(
         t0 = time.time()
 
         def _init_env(i: int) -> ContainerEnvironment:
-            env = ContainerEnvironment(
+            # Runtime chosen lazily via $TMAX_CONTAINER_RUNTIME (apptainer|podman)
+            env = resolve_environment_class()(
                 container_sif_path=container_sif_path,
                 initial_test_path=initial_test_path,
                 final_test_path=final_test_path,
