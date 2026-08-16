@@ -44,6 +44,49 @@ does **not** apply the harbor source patches — those live in the package
 files and need to be reapplied after `uv sync` (see
 [harbor source patches](#harbor-source-patches)).
 
+### SFT solution generation (rl_data pipeline, podman runtime)
+
+`beaker_configs/launch_gen_solutions.sh` + `run_gen_solutions_in_job.sh` are a
+sibling pipeline that runs `rl_data.generate_solutions` (the SFT warm-start
+rollouts) instead of harbor. The job downloads a task corpus (compact
+`tasks.zip`) from the HF Hub, serves a model with vLLM on the local GPUs, and
+solves every task at pass@k with `--container-runtime podman`, syncing the
+`solutions/*_summary.json` results to the gantry results dataset.
+
+```bash
+# GLM-5.2-FP8 on 8xB300 (ai2/holmes), full TMax-SFT-16.5K corpus
+./beaker_configs/launch_gen_solutions.sh --hardware b300
+
+# smoke test first
+./beaker_configs/launch_gen_solutions.sh --hardware b300 --num-tasks 10
+
+# prepopulate the base-image cache without GPUs
+./beaker_configs/launch_gen_solutions.sh --hardware b300 --build-images-only
+```
+
+**Why podman, not apptainer** (the runtime the rl_data pipeline uses on
+Slurm/GPFS): probing on ai2/holmes and ai2/jupiter (2026-08-16) showed AI2
+Beaker jobs cannot run apptainer at all — the job lives inside a user
+namespace whose uid/gid mapping writes the host denies (killing both the
+non-suid runtime and `--fakeroot` builds), the suid starter's privileged ops
+are equally blocked, and the runtime's locked `/proc` masks make the fresh
+procfs mounts `apptainer build`'s `%post` needs impossible everywhere.
+Rootful podman with `userns=host` + a `/proc:/proc` volume needs none of
+those privileges; every solver primitive (run, exec, bind mounts, apt inside
+the container) passed the probe job on holmes.
+
+The 10 shared base images are built from
+`rl_data/containers/docker/base_*/` (generated from the apptainer defs by
+`rl_data/containers/def_to_containerfile.py`) and cached as `podman save`
+tarballs on weka (`/weka/oe-adapt-default/pradeepd/tmax_base_images` by
+default), so they build at most once; per-task setup runs as a delta script
+inside each rollout container, same as the Slurm pipeline. GLM-5.2 serving
+notes: FlashInfer JITs its Blackwell MoE kernels in-job (the script installs
+`cuda-minimal-build-13-0 cuda-libraries-dev-13-0`), MTP speculative decoding
+and DeepGEMM are off by default (`--enable-mtp` / `--use-deep-gemm` to opt
+in), and GLM-5.2 does not fit on 8xH100 (~743 GB FP8 weights), so the
+launcher rejects that combination.
+
 ## What the Beaker job does
 
 A single task running:
