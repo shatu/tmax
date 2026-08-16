@@ -60,6 +60,9 @@
 #   APPTAINER_FLAVOR         plain | suid (default: plain). suid also installs
 #                            the setuid starter so builds don't need userns
 #                            mappings (escape hatch for AppArmor-restricted hosts).
+#   APPTAINER_RUNTIME_SMOKE  1 to probe the solve-time apptainer runtime (pull
+#                            a stock SIF, exec/instance/bind/apt probes) and
+#                            exit — CPU-only, works where builds cannot
 #   BUILD_SIFS_ONLY          1 to only build missing base SIFs into the cache
 #                            and exit (CPU-only; run on a userns-capable
 #                            cluster like ai2/jupiter — holmes can't build)
@@ -160,7 +163,7 @@ apt-get install -y -qq rsync curl ca-certificates squashfs-tools uidmap
 # TRT-LLM sources include (cublasLt.h, curand_kernel.h, nvrtc.h, ...) —
 # piecemeal -dev packages turned into per-run whack-a-mole (runs 3-4).
 : "${CUDA_BUILD_PKGS:=cuda-minimal-build-13-0 cuda-libraries-dev-13-0}"
-if [ "${BUILD_SIFS_ONLY:-0}" != "1" ] && ! command -v nvcc >/dev/null 2>&1; then
+if [ "${BUILD_SIFS_ONLY:-0}" != "1" ] && [ "${APPTAINER_RUNTIME_SMOKE:-0}" != "1" ] && ! command -v nvcc >/dev/null 2>&1; then
     log "nvcc missing — installing ${CUDA_BUILD_PKGS} from NVIDIA's apt repo"
     # shellcheck disable=SC2086
     if ! apt-get install -y -qq $CUDA_BUILD_PKGS build-essential 2>/dev/null; then
@@ -309,6 +312,55 @@ if [ "${BUILD_SIFS_ONLY:-0}" = "1" ]; then
     done
     _n_final="$(find rl_data/containers -maxdepth 1 -name '*.sif' | wc -l)"
     log "build-only done: $_n_final base SIF(s) present, exit=$_fail"
+    exit "$_fail"
+fi
+
+# --- 2d. Runtime-smoke mode -------------------------------------------------------
+# APPTAINER_RUNTIME_SMOKE=1: probe whether the SOLVE-TIME apptainer runtime
+# works on this host, without needing buildable SIFs. `apptainer pull` (unlike
+# build) runs no %post and mounts no fresh procfs — just OCI layer extraction
+# + mksquashfs — so it works even where builds are impossible. Then exercise
+# the exact invocation shapes env.py uses at solve time, honouring the
+# preflight's APPTAINER_NO_USERNS decision (plain-root mode on holmes).
+if [ "${APPTAINER_RUNTIME_SMOKE:-0}" = "1" ]; then
+    log "APPTAINER_RUNTIME_SMOKE=1 — probing solve-time runtime, then exiting"
+    _flags=()
+    if [ "${APPTAINER_NO_USERNS:-0}" != "1" ]; then
+        _flags+=(--fakeroot --userns)
+    fi
+    log "runtime flags under test: ${_flags[*]:-<plain root>}"
+    _sif=/tmp/smoke_ubuntu.sif
+    _fail=0
+    _probe() {
+        _name="$1"; shift
+        if "$@" >/tmp/probe.log 2>&1; then
+            log "PASS: $_name"
+        else
+            log "FAIL: $_name — $(tail -3 /tmp/probe.log | tr '\n' '|')"
+            _fail=1
+        fi
+    }
+    _probe "pull ubuntu:22.04 -> SIF (no build engine)" \
+        apptainer pull --force "$_sif" docker://ubuntu:22.04
+    _probe "exec: basic" \
+        apptainer exec "${_flags[@]}" --writable-tmpfs --cleanenv --no-home "$_sif" true
+    _probe "exec: /proc usable" \
+        apptainer exec "${_flags[@]}" --writable-tmpfs --cleanenv --no-home "$_sif" cat /proc/self/status
+    _probe "exec: bind mount" \
+        apptainer exec "${_flags[@]}" --writable-tmpfs --cleanenv --no-home --bind /tmp:/mnt "$_sif" ls /mnt
+    _probe "exec: writable tmpfs" \
+        apptainer exec "${_flags[@]}" --writable-tmpfs --cleanenv --no-home "$_sif" sh -c 'touch /usr/local/_probe && rm /usr/local/_probe'
+    _probe "exec: setup.sh pattern (apt update+install inside container)" \
+        apptainer exec "${_flags[@]}" --writable-tmpfs --cleanenv --no-home "$_sif" sh -c 'apt-get update -qq && apt-get install -y -qq jq && jq --version'
+    _probe "instance: start" \
+        apptainer instance start "${_flags[@]}" --writable-tmpfs --no-home "$_sif" smoke1
+    _probe "instance: shell over stdin (env.py PTY path)" \
+        bash -c 'echo "echo MARKER_OK; exit" | apptainer shell --cleanenv instance://smoke1 | grep -q MARKER_OK'
+    _probe "instance: 4 concurrent" \
+        bash -c "set -e; for i in 2 3 4 5; do apptainer instance start ${_flags[*]:-} --writable-tmpfs --no-home $_sif smoke\$i; done"
+    apptainer instance list 2>/dev/null || true
+    for _i in 1 2 3 4 5; do apptainer instance stop "smoke$_i" >/dev/null 2>&1 || true; done
+    log "runtime smoke done: exit=$_fail"
     exit "$_fail"
 fi
 
