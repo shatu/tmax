@@ -360,8 +360,59 @@ if [ "${APPTAINER_RUNTIME_SMOKE:-0}" = "1" ]; then
         bash -c "set -e; for i in 2 3 4 5; do apptainer instance start ${_flags[*]:-} --writable-tmpfs --no-home $_sif smoke\$i; done"
     apptainer instance list 2>/dev/null || true
     for _i in 1 2 3 4 5; do apptainer instance stop "smoke$_i" >/dev/null 2>&1 || true; done
-    log "runtime smoke done: exit=$_fail"
-    exit "$_fail"
+
+    # ---- podman probes: is a podman runtime PORT viable on this host? ----
+    # Rootful podman with userns=host needs strictly less than apptainer:
+    # no userns mappings at all — crun creates mount/pid namespaces as
+    # ns-root, and the /proc:/proc volume (the eval pipeline's trick) gives
+    # containers a bound proc instead of a fresh procfs mount. Note the
+    # deliberate difference from the eval containers.conf: userns="host",
+    # not "auto:size=65536" — auto needs the mapping writes this host denies.
+    log "podman probes (runtime-port viability)"
+    apt-get install -y -qq podman crun uidmap fuse-overlayfs slirp4netns >/dev/null 2>&1 \
+        || log "WARN: podman install failed — probes below will fail"
+    mkdir -p /etc/containers
+    cat > /etc/containers/containers.conf <<'CONF'
+[containers]
+netns="host"
+userns="host"
+ipcns="host"
+utsns="host"
+cgroupns="host"
+cgroups="disabled"
+log_driver = "k8s-file"
+volumes = [
+        "/proc:/proc",
+]
+default_sysctls = []
+[engine]
+cgroup_manager = "cgroupfs"
+events_logger="file"
+runtime="crun"
+CONF
+    _pfail=0
+    _pprobe() {
+        _name="$1"; shift
+        if "$@" >/tmp/probe.log 2>&1; then
+            log "PASS: $_name"
+        else
+            log "FAIL: $_name — $(tail -3 /tmp/probe.log | tr '\n' '|')"
+            _pfail=1
+        fi
+    }
+    _pprobe "podman: pull alpine" podman pull -q docker.io/library/alpine
+    _pprobe "podman: run basic" podman run --rm alpine true
+    _pprobe "podman: /proc usable" podman run --rm alpine cat /proc/self/status
+    _pprobe "podman: bind mount" podman run --rm -v /tmp:/mnt alpine ls /mnt
+    _pprobe "podman: detached + exec (env.py port pattern)" \
+        bash -c 'podman run -d --name smokepod alpine sleep 300 >/dev/null && podman exec smokepod echo MARKER_OK | grep -q MARKER_OK'
+    _pprobe "podman: setup.sh pattern (apt update inside ubuntu container)" \
+        podman run --rm docker.io/library/ubuntu:22.04 sh -c 'apt-get update -qq >/dev/null && echo APT_OK'
+    podman rm -f smokepod >/dev/null 2>&1 || true
+
+    log "runtime smoke done: apptainer_fail=$_fail podman_fail=$_pfail"
+    # Job succeeds if EITHER runtime is viable on this host.
+    if [ "$_fail" = "0" ] || [ "$_pfail" = "0" ]; then exit 0; else exit 1; fi
 fi
 
 # --- 3. HF cache on weka when available (GLM-5.2-FP8 is ~700 GB) -------------
