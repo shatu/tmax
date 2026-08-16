@@ -280,7 +280,11 @@ if [ "${BUILD_SIFS_ONLY:-0}" = "1" ]; then
             continue
         fi
         log "building $(basename "$_sif")"
-        if apptainer build "$_sif" "$_defp"; then
+        # --fakeroot maps a full 65k uid/gid range via newuidmap + /etc/subuid
+        # (written in section 2). Without it, a single-uid 0->0 namespace is
+        # used and %post's apt-get dies switching to its _apt user
+        # ("setgroups 65534 ... Operation not permitted").
+        if apptainer build --fakeroot "$_sif" "$_defp"; then
             # The build is complete here, so copy directly (sync_sifs's
             # age guard would skip a just-finished file).
             [ -n "${SIF_CACHE_DIR:-}" ] && rsync -a "$_sif" "$SIF_CACHE_DIR/"
