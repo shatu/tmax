@@ -272,6 +272,20 @@ sync_sifs() {
 # engine needs (runs 5-7), no matter the flavor.
 if [ "${BUILD_SIFS_ONLY:-0}" = "1" ]; then
     log "BUILD_SIFS_ONLY=1 — building missing base SIFs, then exiting"
+    # Beaker's runtime masks parts of /proc (kcore, acpi, ...) inside job
+    # containers; the kernel then refuses fresh procfs mounts in nested
+    # namespaces ("proc not fully visible" -> EPERM), which kills apptainer
+    # build's %post setup instantly. Strip the masks — same class of fix as
+    # the /proc:/proc volume in the podman eval pipeline's containers.conf.
+    # (Lazy unmount; masks created by the outer runtime may be locked, in
+    # which case the WARN below tells us this host can't build either.)
+    _masks="$(awk '$5 ~ "^/proc/." {print $5}' /proc/self/mountinfo)"
+    if [ -n "$_masks" ]; then
+        log "unmasking /proc for nested builds:$(printf ' %s' $_masks)"
+        for _m in $_masks; do
+            umount -l "$_m" 2>/dev/null || log "WARN: could not unmount mask $_m (locked?)"
+        done
+    fi
     _fail=0
     for _defp in rl_data/containers/base_*.def; do
         _sif="${_defp%.def}.sif"
