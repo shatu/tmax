@@ -191,6 +191,18 @@ class InteractiveContainerEnvironment:
     # ----------------------------
     # Shell lifecycle
     # ----------------------------
+    def _shell_cmd(self) -> List[str]:
+        """Command that attaches an interactive shell to the running instance.
+
+        Runtime-specific hook: overridden by :class:`PodmanContainerEnvironment`.
+        """
+        return [
+            "apptainer", "shell",
+            "--cleanenv",
+            "--pwd", "/home/user",
+            f"instance://{self.instance_name}",
+        ]
+
     def _start_shell_once(self) -> bool:
         """Single attempt: PTY + apptainer shell + wait for init marker."""
         # Create PTY pair
@@ -205,13 +217,8 @@ class InteractiveContainerEnvironment:
         except Exception:
             pass
 
-        # Compose apptainer shell command
-        cmd = [
-            "apptainer", "shell",
-            "--cleanenv",
-            "--pwd", "/home/user",
-            f"instance://{self.instance_name}",
-        ]
+        # Compose the interactive shell command (runtime-specific hook)
+        cmd = self._shell_cmd()
 
         try:
             # Launch with PTY endpoints
@@ -847,6 +854,214 @@ class InteractiveContainerEnvironment:
             current_dir = output.strip().splitlines()[-1]
             return f"({self.sif_path.name}) {current_dir} $ "
         return f"({self.sif_path.name}) $ "
+
+
+class PodmanContainerEnvironment(InteractiveContainerEnvironment):
+    """Podman backend for solve-time task containers.
+
+    Same public API and PTY machinery as the apptainer class; only the
+    container lifecycle differs:
+
+      * long-lived instance  -> ``podman run -d ... sleep infinity``
+      * interactive shell    -> ``podman exec -it <name> bash`` on the PTY
+      * teardown             -> ``podman rm -f <name>``
+
+    Built for hosts where apptainer cannot run at all (AI2 Beaker: user-ns
+    mapping writes and the suid starter are both blocked — see
+    scripts/beaker/README.md). Podman with ``userns=host`` needs neither.
+
+    Two deliberate simplifications vs the apptainer flow:
+
+      * **No /home/user materialization.** That dance exists because SIF +
+        ``--writable-tmpfs`` puts /home/user on fuse-overlayfs where regular
+        file creation can EINVAL. A podman container's filesystem is a real
+        writable overlay, so the image's /home/user is used in place.
+      * **The setup delta runs inside the long-lived container** (not a
+        separate throwaway exec), so apt/pip installs made by ``setup.sh``
+        persist for the whole rollout — closer to the original %post
+        semantics than the apptainer flow, where non-/home/user writes were
+        discarded with the tmpfs between delta and instance.
+
+    Only the shared-base mode is supported: the image is resolved from
+    ``task.json`` (``base_image``/``domain``) to ``$TMAX_IMAGE_PREFIX/base_<x>``
+    (default prefix ``localhost/tmax``). Per-task image builds are not — the
+    corpus ships apptainer defs, and building those is exactly what Beaker
+    hosts cannot do.
+    """
+
+    IMAGE_PREFIX_ENV = "TMAX_IMAGE_PREFIX"
+    DEFAULT_IMAGE_PREFIX = "localhost/tmax"
+
+    # ----------------------------
+    # Runtime-specific hooks
+    # ----------------------------
+    def _shell_cmd(self) -> List[str]:
+        return [
+            "podman", "exec", "-it",
+            "-w", "/home/user",
+            self.instance_name,
+            "bash", "--noprofile", "--norc",
+        ]
+
+    def _stop_instance(self) -> None:
+        if self.instance_name:
+            subprocess.run(
+                ["podman", "rm", "-f", self.instance_name],
+                capture_output=True,
+            )
+            self.instance_name = None
+
+    def build_container(self):
+        print(
+            "❌ PodmanContainerEnvironment cannot build per-task images from "
+            "apptainer defs; provide prebuilt base images "
+            f"({os.environ.get(self.IMAGE_PREFIX_ENV, self.DEFAULT_IMAGE_PREFIX)}/base_<domain>)."
+        )
+        return False
+
+    # ----------------------------
+    # Image resolution
+    # ----------------------------
+    def _resolve_runtime_image(self) -> Optional[str]:
+        """Resolve the base image reference for this task.
+
+        Mirrors :meth:`_resolve_runtime_sif`'s hint order — ``base_image``
+        from task.json (v2 routing), then ``domain``, then the parser's
+        software_engineering fallback — but returns an OCI reference.
+        """
+        if not self.def_path.exists():
+            return None
+        from rl_data.generator.apptainer_def_gen import parse_def_to_delta
+
+        task_json = self.def_path.parent / "task.json"
+        domain_hint: Optional[str] = None
+        base_image_hint: Optional[str] = None
+        if task_json.exists():
+            try:
+                _meta = json.loads(task_json.read_text())
+                domain_hint = _meta.get("domain")
+                base_image_hint = _meta.get("base_image")
+            except Exception:
+                pass
+
+        resolved_hint = base_image_hint or domain_hint
+        base_domain, _ = parse_def_to_delta(
+            self.def_path.read_text(), domain_hint=resolved_hint
+        )
+        prefix = os.environ.get(self.IMAGE_PREFIX_ENV, self.DEFAULT_IMAGE_PREFIX)
+        return f"{prefix}/base_{base_domain}"
+
+    # ----------------------------
+    # Lifecycle
+    # ----------------------------
+    def _apply_setup_delta_in_container(self, setup_script: str) -> Tuple[bool, str]:
+        """Run the task's setup script inside the running container.
+
+        The script is staged via the bind-mounted temp dir (same path inside
+        and out), so no content goes through the PTY.
+        """
+        assert self.temp_dir is not None
+        script_path = self.temp_dir / "_delta_setup.sh"
+        script_path.write_text(setup_script, encoding="utf-8")
+        script_path.chmod(0o755)
+
+        proc = subprocess.run(
+            [
+                "podman", "exec", "-w", "/home/user", self.instance_name,
+                "/bin/bash", str(script_path),
+            ],
+            capture_output=True, text=True,
+            timeout=self._DELTA_SETUP_TIMEOUT_S,
+        )
+        if proc.returncode != 0:
+            err = (proc.stdout or "") + (proc.stderr or "")
+            return False, f"setup delta failed (exit {proc.returncode}): {err.strip()[-500:] or '(no output)'}"
+        return True, ""
+
+    def initialize(self, run_initial_tests: bool = True) -> bool:
+        """Start the podman container, apply the task delta, attach the shell."""
+        if self.verbose:
+            print(f"🔧 Initializing podman environment for {self.def_path.parent.name}...")
+
+        image = self._resolve_runtime_image()
+        if image is None:
+            print("❌ Cannot resolve a base image (no container.def next to the task)")
+            return False
+
+        self.temp_dir = Path(tempfile.mkdtemp(prefix="agent_env_")).resolve()
+
+        self.instance_name = f"agent_{uuid.uuid4().hex[:8]}"
+        run_cmd = [
+            "podman", "run", "-d",
+            "--name", self.instance_name,
+            # temp_dir has the same path inside and out, like the apptainer
+            # bind — tests and transfer files rely on this.
+            "-v", f"{self.temp_dir}:{self.temp_dir}",
+            "-w", "/home/user",
+            image,
+            "sleep", "infinity",
+        ]
+        if self.verbose:
+            print(f"🔧 Starting container: {' '.join(run_cmd)}")
+        start_proc = subprocess.run(run_cmd, capture_output=True, text=True)
+        if start_proc.returncode != 0:
+            if self.verbose:
+                print(f"❌ podman run failed: {start_proc.stdout + start_proc.stderr}")
+            self.instance_name = None
+            shutil.rmtree(self.temp_dir, ignore_errors=True)
+            self.temp_dir = None
+            return False
+
+        setup_script = self._get_setup_script()
+        if setup_script and setup_script.strip():
+            try:
+                ok_delta, delta_msg = self._apply_setup_delta_in_container(setup_script)
+            except subprocess.TimeoutExpired:
+                ok_delta, delta_msg = False, f"setup delta timed out after {self._DELTA_SETUP_TIMEOUT_S}s"
+            if not ok_delta:
+                if self.verbose:
+                    print(f"❌ {delta_msg}")
+                self.cleanup()
+                return False
+
+        if not self._start_shell():
+            if self.verbose:
+                print("❌ Failed to start interactive shell")
+            self.cleanup()
+            return False
+        if self.verbose:
+            print("✅ Interactive shell started")
+
+        if run_initial_tests:
+            if not self.run_initial_tests():
+                if self.verbose:
+                    print("❌ Initial state tests failed")
+                self.cleanup()
+                return False
+
+        if self.verbose:
+            print("✅ Container environment ready")
+        self.exec("cd /home/user")
+        self.exec("export PYTHONPATH=/home/user/.local/lib/python3/dist-packages:${PYTHONPATH:-}")
+        return True
+
+
+def resolve_environment_class():
+    """Pick the container-environment class from ``$TMAX_CONTAINER_RUNTIME``.
+
+    ``apptainer`` (default, HPC/Slurm) or ``podman`` (Beaker — see
+    PodmanContainerEnvironment). Resolved lazily at env-construction time so
+    generate_solutions can set the variable from --container-runtime before
+    any environment is created.
+    """
+    runtime = os.environ.get("TMAX_CONTAINER_RUNTIME", "apptainer").strip().lower()
+    if runtime == "podman":
+        return PodmanContainerEnvironment
+    if runtime == "apptainer":
+        return InteractiveContainerEnvironment
+    raise ValueError(
+        f"Unknown TMAX_CONTAINER_RUNTIME {runtime!r}; expected 'apptainer' or 'podman'."
+    )
 
 
 if __name__ == "__main__":
