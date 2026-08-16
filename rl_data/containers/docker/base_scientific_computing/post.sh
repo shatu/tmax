@@ -1,0 +1,17 @@
+export DEBIAN_FRONTEND=noninteractive
+apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip python3-venv \
+    coreutils findutils gawk sed grep \
+    curl wget git \
+    build-essential gfortran \
+    liblapack-dev libblas-dev \
+    r-base \
+    sudo \
+&& rm -rf /var/lib/apt/lists/*
+
+pip3 install --no-cache-dir \
+    pytest numpy scipy matplotlib sympy \
+    h5py netCDF4
+
+useradd -m -s /bin/bash user || true
+chmod 755 /home/user

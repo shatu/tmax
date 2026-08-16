@@ -1,0 +1,6 @@
+# Generated from ../base_scientific_computing.def by def_to_containerfile.py — do not edit by hand.
+FROM ubuntu:22.04
+ENV LC_ALL=C.UTF-8
+ENV LANG=C.UTF-8
+COPY post.sh /tmp/post.sh
+RUN bash -e /tmp/post.sh && rm -f /tmp/post.sh

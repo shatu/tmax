@@ -1,0 +1,8 @@
+# Generated from ../base_software_engineering.def by def_to_containerfile.py — do not edit by hand.
+FROM ubuntu:22.04
+ENV LC_ALL=C.UTF-8
+ENV LANG=C.UTF-8
+ENV GOPATH=/home/user/go
+ENV PATH=/home/user/go/bin:/home/user/.cargo/bin:$PATH
+COPY post.sh /tmp/post.sh
+RUN bash -e /tmp/post.sh && rm -f /tmp/post.sh
