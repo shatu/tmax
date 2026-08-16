@@ -8,6 +8,7 @@ import re
 import subprocess
 import sys
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -591,14 +592,26 @@ def _ensure_podman_base_images(cfg: SolutionConfig) -> None:
         if not (ctx / "Containerfile").exists():
             print(f"❌ {image}: no cached tar and no build context at {ctx}")
             continue
-        print(f"🔨 Building {image} from {ctx} ...")
+        # --isolation=chroot: buildah's default (OCI) isolation mounts a
+        # fresh procfs for each RUN step, which restricted hosts (Beaker's
+        # locked /proc masks) refuse with "mount /proc: Operation not
+        # permitted". chroot isolation runs RUN steps without it.
+        print(f"🔨 Building {image} from {ctx} (isolation=chroot) ...")
         proc = subprocess.run(
-            ["podman", "build", "-t", image, str(ctx)], capture_output=True, text=True
+            ["podman", "build", "--isolation=chroot", "-t", image, str(ctx)],
+            capture_output=True, text=True,
         )
         if proc.returncode != 0:
-            print(f"❌ podman build failed for {image}: "
+            print(f"⚠️  podman build failed for {image}: "
                   f"{(proc.stdout + proc.stderr).strip()[-500:] or '(no output)'}")
-            continue
+            # Fallback that avoids the build engine entirely, using only the
+            # primitives validated by the holmes runtime probes:
+            # run the FROM image -> exec post.sh -> commit.
+            print(f"🔨 Retrying {image} via run+exec+commit ...")
+            ok, msg = _manual_podman_build(ctx, image)
+            if not ok:
+                print(f"❌ manual build failed for {image}: {msg}")
+                continue
         ready += 1
         if cache_dir is not None:
             cache_dir.mkdir(parents=True, exist_ok=True)
@@ -614,7 +627,64 @@ def _ensure_podman_base_images(cfg: SolutionConfig) -> None:
 
     print(f"🔨 Podman base images ready: {ready}/{len(BASE_IMAGES)}\n")
     if ready < len(BASE_IMAGES):
-        print("⚠️  Some base images are missing; tasks routed to them will fail to initialize.")
+        # Fail loudly: tasks routed to a missing base cannot initialize, and
+        # a silent partial set burned a full debugging cycle once already
+        # (podman_run1: 0/10 "ready", solver started anyway).
+        raise SystemExit(
+            f"base images incomplete ({ready}/{len(BASE_IMAGES)}); aborting"
+        )
+
+
+def _manual_podman_build(ctx: Path, image: str, timeout: int = 3600) -> tuple[bool, str]:
+    """Build ``image`` from a generated context without the build engine.
+
+    ``podman run`` the Containerfile's FROM image, ``podman cp`` + ``exec``
+    the post script, then ``podman commit`` with the Containerfile's ENV
+    lines. Every step here passed the holmes runtime probes, unlike buildah's
+    RUN isolation (fresh procfs mount) which restricted hosts refuse.
+    """
+    containerfile = (ctx / "Containerfile").read_text(encoding="utf-8")
+    from_image: Optional[str] = None
+    env_changes: list[str] = []
+    for line in containerfile.splitlines():
+        line = line.strip()
+        if line.startswith("FROM "):
+            from_image = line[len("FROM "):].strip()
+        elif line.startswith("ENV "):
+            env_changes += ["--change", line]
+    if not from_image:
+        return False, f"no FROM line in {ctx / 'Containerfile'}"
+
+    name = f"tmax_build_{ctx.name}_{uuid.uuid4().hex[:8]}"
+
+    def _run(cmd: list[str], step_timeout: int = 600) -> tuple[bool, str]:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=step_timeout)
+        if proc.returncode != 0:
+            return False, (proc.stdout + proc.stderr).strip()[-500:] or "(no output)"
+        return True, ""
+
+    try:
+        ok, msg = _run(["podman", "run", "-d", "--name", name, from_image,
+                        "sleep", "infinity"])
+        if not ok:
+            return False, f"run: {msg}"
+        ok, msg = _run(["podman", "cp", str(ctx / "post.sh"), f"{name}:/tmp/post.sh"])
+        if not ok:
+            return False, f"cp: {msg}"
+        ok, msg = _run(["podman", "exec", name, "bash", "-e", "/tmp/post.sh"],
+                       step_timeout=timeout)
+        if not ok:
+            return False, f"post.sh: {msg}"
+        _run(["podman", "exec", name, "rm", "-f", "/tmp/post.sh"])
+        ok, msg = _run(["podman", "commit", *env_changes, name, image],
+                       step_timeout=900)
+        if not ok:
+            return False, f"commit: {msg}"
+        return True, ""
+    except subprocess.TimeoutExpired as exc:
+        return False, f"timed out: {exc}"
+    finally:
+        subprocess.run(["podman", "rm", "-f", name], capture_output=True)
 
 
 def _run_generate_solutions(cfg: SolutionConfig) -> None:
