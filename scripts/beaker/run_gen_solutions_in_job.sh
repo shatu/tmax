@@ -60,6 +60,9 @@
 #   APPTAINER_FLAVOR         plain | suid (default: plain). suid also installs
 #                            the setuid starter so builds don't need userns
 #                            mappings (escape hatch for AppArmor-restricted hosts).
+#   BUILD_SIFS_ONLY          1 to only build missing base SIFs into the cache
+#                            and exit (CPU-only; run on a userns-capable
+#                            cluster like ai2/jupiter — holmes can't build)
 #   SIF_CACHE_DIR            base-SIF cache dir. Default:
 #                            /weka/oe-adapt-default/pradeepd/tmax_base_sifs
 #                            when that weka mount is present. Seed it with
@@ -157,7 +160,7 @@ apt-get install -y -qq rsync curl ca-certificates squashfs-tools uidmap
 # TRT-LLM sources include (cublasLt.h, curand_kernel.h, nvrtc.h, ...) —
 # piecemeal -dev packages turned into per-run whack-a-mole (runs 3-4).
 : "${CUDA_BUILD_PKGS:=cuda-minimal-build-13-0 cuda-libraries-dev-13-0}"
-if ! command -v nvcc >/dev/null 2>&1; then
+if [ "${BUILD_SIFS_ONLY:-0}" != "1" ] && ! command -v nvcc >/dev/null 2>&1; then
     log "nvcc missing — installing ${CUDA_BUILD_PKGS} from NVIDIA's apt repo"
     # shellcheck disable=SC2086
     if ! apt-get install -y -qq $CUDA_BUILD_PKGS build-essential 2>/dev/null; then
@@ -233,6 +236,62 @@ mkdir -p "$HOME/.apptainer"
 if [ ! -L "$HOME/.apptainer/instances" ]; then
     rm -rf "$HOME/.apptainer/instances"
     ln -s /tmp/apptainer_instances "$HOME/.apptainer/instances"
+fi
+
+# --- 2b. Base-SIF cache on weka -------------------------------------------------
+# Base SIFs otherwise rebuild from scratch every job (~15-40 min, and
+# impossible where userns mappings are blocked, as on holmes). Seed
+# rl_data/containers from a weka cache, and write back whatever gets built.
+if [ -z "${SIF_CACHE_DIR:-}" ] && [ -d /weka/oe-adapt-default ]; then
+    SIF_CACHE_DIR="/weka/oe-adapt-default/pradeepd/tmax_base_sifs"
+fi
+if [ -n "${SIF_CACHE_DIR:-}" ]; then
+    mkdir -p "$SIF_CACHE_DIR"
+    _n_cached="$(find "$SIF_CACHE_DIR" -maxdepth 1 -name '*.sif' | wc -l)"
+    if [ "$_n_cached" -gt 0 ]; then
+        log "seeding rl_data/containers with $_n_cached cached base SIF(s) from $SIF_CACHE_DIR"
+        rsync -a "$SIF_CACHE_DIR"/*.sif rl_data/containers/
+    fi
+fi
+sync_sifs() {
+    if [ -n "${SIF_CACHE_DIR:-}" ]; then
+        # Only copy SIFs untouched for 2+ min: rsyncing one mid-build would
+        # land a truncated image in the cache, and later jobs would seed it,
+        # skip the build, and fail at runtime. (Remedy for a bad cache entry:
+        # delete the .sif from $SIF_CACHE_DIR and let the next job rebuild.)
+        find rl_data/containers -maxdepth 1 -name '*.sif' -mmin +2 -print0 2>/dev/null \
+            | xargs -0 -r -I{} rsync -a {} "$SIF_CACHE_DIR/" || true
+    fi
+}
+
+# --- 2c. Build-only mode ---------------------------------------------------------
+# BUILD_SIFS_ONLY=1 turns the job into a CPU-only SIF factory: build whatever
+# base SIFs the cache is missing, push them to the cache, and exit — no vLLM,
+# no solver, no GPUs. Run this on a cluster where user namespaces work
+# (e.g. ai2/jupiter); holmes denies the userns mappings apptainer's build
+# engine needs (runs 5-7), no matter the flavor.
+if [ "${BUILD_SIFS_ONLY:-0}" = "1" ]; then
+    log "BUILD_SIFS_ONLY=1 — building missing base SIFs, then exiting"
+    _fail=0
+    for _defp in rl_data/containers/base_*.def; do
+        _sif="${_defp%.def}.sif"
+        if [ -f "$_sif" ]; then
+            log "$(basename "$_sif") already present (cached) — skipping"
+            continue
+        fi
+        log "building $(basename "$_sif")"
+        if apptainer build "$_sif" "$_defp"; then
+            # The build is complete here, so copy directly (sync_sifs's
+            # age guard would skip a just-finished file).
+            [ -n "${SIF_CACHE_DIR:-}" ] && rsync -a "$_sif" "$SIF_CACHE_DIR/"
+        else
+            log "FAILED: $(basename "$_sif")"
+            _fail=1
+        fi
+    done
+    _n_final="$(find rl_data/containers -maxdepth 1 -name '*.sif' | wc -l)"
+    log "build-only done: $_n_final base SIF(s) present, exit=$_fail"
+    exit "$_fail"
 fi
 
 # --- 3. HF cache on weka when available (GLM-5.2-FP8 is ~700 GB) -------------
@@ -325,34 +384,6 @@ fi
 log "launching vllm: ${VLLM_CMD[*]}"
 "${VLLM_CMD[@]}" >"$VLLM_LOG" 2>&1 &
 VLLM_PID=$!
-
-# --- 5b. Base-SIF cache on weka -------------------------------------------------
-# Base SIFs otherwise rebuild from scratch every job (~15-40 min, and
-# impossible where userns mappings are blocked). Seed rl_data/containers from
-# a weka cache before the solver, and write back whatever the job built.
-# Seeding the cache out-of-band with already-built SIFs (e.g. scp'd from the
-# GPFS cluster's rl_data/containers/) skips in-job builds entirely.
-if [ -z "${SIF_CACHE_DIR:-}" ] && [ -d /weka/oe-adapt-default ]; then
-    SIF_CACHE_DIR="/weka/oe-adapt-default/pradeepd/tmax_base_sifs"
-fi
-if [ -n "${SIF_CACHE_DIR:-}" ]; then
-    mkdir -p "$SIF_CACHE_DIR"
-    _n_cached="$(find "$SIF_CACHE_DIR" -maxdepth 1 -name '*.sif' | wc -l)"
-    if [ "$_n_cached" -gt 0 ]; then
-        log "seeding rl_data/containers with $_n_cached cached base SIF(s) from $SIF_CACHE_DIR"
-        rsync -a "$SIF_CACHE_DIR"/*.sif rl_data/containers/
-    fi
-fi
-sync_sifs() {
-    if [ -n "${SIF_CACHE_DIR:-}" ]; then
-        # Only copy SIFs untouched for 2+ min: rsyncing one mid-build would
-        # land a truncated image in the cache, and later jobs would seed it,
-        # skip the build, and fail at runtime. (Remedy for a bad cache entry:
-        # delete the .sif from $SIF_CACHE_DIR and let the next job rebuild.)
-        find rl_data/containers -maxdepth 1 -name '*.sif' -mmin +2 -print0 2>/dev/null \
-            | xargs -0 -r -I{} rsync -a {} "$SIF_CACHE_DIR/" || true
-    fi
-}
 
 # --- 6. Result sync (periodic + on exit) ---------------------------------------
 mkdir -p "$RESULTS_DIR"

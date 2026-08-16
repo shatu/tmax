@@ -39,6 +39,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # --- defaults ----------------------------------------------------------------
 HARDWARE="b300"
 CLUSTER=""                       # default derived from HARDWARE below
+BUILD_SIFS_ONLY=0
+GPU_COUNT_SET=0
 VLLM_MODEL="zai-org/GLM-5.2-FP8"
 SERVED_MODEL_NAME=""
 VLLM_VERSION="0.23.0"
@@ -127,9 +129,11 @@ Options:
   --min-runtime DUR      minimum guaranteed runtime before the job can be
                          preempted, e.g. '1h', '30m' (default: server default,
                          i.e. preemptible at any time)
-  --apptainer-flavor F   plain | suid (default: suid on b300, plain on h100).
-                         suid installs the setuid starter so base-SIF builds
-                         work where userns mappings are blocked (holmes).
+  --apptainer-flavor F   plain | suid (default: suid on b300, plain on h100)
+  --build-sifs-only      CPU-only job: build missing base SIFs into the weka
+                         cache and exit (no vLLM/solver; defaults --gpus 0).
+                         Run on a userns-capable cluster (e.g. --hardware h100
+                         -> ai2/jupiter); holmes cannot build SIFs at all.
   --priority PRI         beaker priority (default: urgent)
   --budget BUDGET        beaker budget (default: workspace default)
   --workspace WS         beaker workspace (default: \$BEAKER_WORKSPACE or ai2/tmax)
@@ -150,7 +154,8 @@ while [ $# -gt 0 ]; do
         --vllm-model)        VLLM_MODEL="$2"; shift 2 ;;
         --name)              SERVED_MODEL_NAME="$2"; shift 2 ;;
         --vllm-version)      VLLM_VERSION="$2"; shift 2 ;;
-        --gpus)              GPU_COUNT="$2"; shift 2 ;;
+        --gpus)              GPU_COUNT="$2"; GPU_COUNT_SET=1; shift 2 ;;
+        --build-sifs-only)   BUILD_SIFS_ONLY=1; shift ;;
         --tp)                TP_SIZE="$2"; shift 2 ;;
         --dp)                DP_SIZE="$2"; shift 2 ;;
         --max-model-len)     MAX_MODEL_LEN="$2"; shift 2 ;;
@@ -216,7 +221,12 @@ if [ -z "$APPTAINER_FLAVOR" ]; then
     esac
 fi
 
-if [[ "$HARDWARE" == "h100" && "$VLLM_MODEL" == *GLM-5.2* ]]; then
+# Build-only jobs never serve a model: no GPUs needed, model guard moot.
+if [ "$BUILD_SIFS_ONLY" = "1" ] && [ "$GPU_COUNT_SET" = "0" ]; then
+    GPU_COUNT=0
+fi
+
+if [[ "$BUILD_SIFS_ONLY" != "1" && "$HARDWARE" == "h100" && "$VLLM_MODEL" == *GLM-5.2* ]]; then
     cat >&2 <<'EOF'
 error: GLM-5.2 cannot be served on a single 8xH100 node:
   * FP8 weights are ~743 GB vs 640 GB of HBM on 8xH100
@@ -245,7 +255,11 @@ fi
 if [ -z "$REPO_GIT_REF" ]; then
     REPO_GIT_REF="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 fi
-JOB_NAME="${JOB_NAME:-gen-sol-${SERVED_MODEL_NAME}}"
+if [ "$BUILD_SIFS_ONLY" = "1" ]; then
+    JOB_NAME="${JOB_NAME:-build-base-sifs}"
+else
+    JOB_NAME="${JOB_NAME:-gen-sol-${SERVED_MODEL_NAME}}"
+fi
 BEAKER_NAME="$JOB_NAME"
 
 cat <<EOF
@@ -315,6 +329,7 @@ GANTRY_CMD=(
     --env "FORCE_RERUN=${FORCE_RERUN}"
     --env "APPTAINER_FLAVOR=${APPTAINER_FLAVOR}"
     --env "SIF_CACHE_DIR=${SIF_CACHE_DIR:-}"
+    --env "BUILD_SIFS_ONLY=${BUILD_SIFS_ONLY}"
     # Run the task with the privileges nested containers need (user
     # namespaces for apptainer build/%post). Same setting the harbor/podman
     # eval pipeline relies on; without it holmes blocks userns creation.
