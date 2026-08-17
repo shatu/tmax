@@ -66,8 +66,14 @@
 #   IMAGE_CACHE_DIR          podman-save tar cache. Default:
 #                            /weka/oe-adapt-default/pradeepd/tmax_base_images
 #                            when that weka mount is present.
+#   SUMMARY_CACHE_DIR        shared cross-job summary store. Default:
+#                            /weka/oe-adapt-default/pradeepd/tmax_solutions/<TASKS_DIR_NAME>
+#                            when weka is mounted. Jobs RESTORE this model's
+#                            summaries from it at startup (so completed tasks
+#                            are skipped across jobs/shards/preemptions) and
+#                            sync new ones back every SYNC_INTERVAL.
 #   RESULTS_DIR              where to sync solutions/ summaries (default: /results,
-#                            persisted by gantry as the result dataset)
+#                            persisted by gantry as the PER-JOB result dataset)
 #   SYNC_INTERVAL            seconds between periodic result syncs (default: 300)
 #   HF_CACHE_DIR             HF_HOME override. Default: a weka path if
 #                            /weka/oe-adapt-default is mounted (so the ~700 GB
@@ -262,6 +268,27 @@ fi
 N_TASK_DIRS="$(find "$TASKS_DIR" -maxdepth 1 -type d -name 'task_*' | wc -l)"
 log "task corpus ready: $N_TASK_DIRS task dirs"
 
+# --- 5b. Cross-job summary cache on weka ----------------------------------------
+# The gantry results dataset is per-job, and the workdir is ephemeral — without
+# a shared store, every new job (or preemption resume) would redo completed
+# tasks. Restore this model's summaries from weka so generate_solutions' skip
+# logic sees prior work; sync_results writes new ones back continuously.
+if [ -z "${SUMMARY_CACHE_DIR:-}" ] && [ -d /weka/oe-adapt-default ]; then
+    SUMMARY_CACHE_DIR="/weka/oe-adapt-default/pradeepd/tmax_solutions/${TASKS_DIR_NAME}"
+fi
+_SUMMARY_GLOB="hosted_vllm_${SERVED_MODEL_NAME}*"
+if [ -n "${SUMMARY_CACHE_DIR:-}" ] && [ -d "$SUMMARY_CACHE_DIR" ]; then
+    _n_restored="$(find "$SUMMARY_CACHE_DIR" -name "$_SUMMARY_GLOB" 2>/dev/null | wc -l)"
+    if [ "$_n_restored" -gt 0 ]; then
+        log "restoring $_n_restored ${SERVED_MODEL_NAME} summarie(s) from $SUMMARY_CACHE_DIR"
+        rsync -am \
+            --include='task_*/' --include='task_*/solutions/' \
+            --include="task_*/solutions/${_SUMMARY_GLOB}" --exclude='*' \
+            "$SUMMARY_CACHE_DIR/" "$TASKS_DIR/"
+    fi
+fi
+mkdir -p "${SUMMARY_CACHE_DIR:-/tmp/tmax_solutions}"
+
 # --- 6. Start vLLM in the background ------------------------------------------
 VLLM_LOG=/tmp/vllm.log
 VLLM_LOG_TAIL_LINES="${VLLM_LOG_TAIL_LINES:-300}"
@@ -323,6 +350,15 @@ sync_results() {
         --include='task_*/' --include='task_*/solutions/***' \
         --include='logs/***' --exclude='*' \
         "$TASKS_DIR/" "$RESULTS_DIR/$TASKS_DIR_NAME/" 2>/dev/null || true
+    # Shared weka store: only THIS model's summaries (the shipped baseline
+    # summaries ride along in the corpus already), so shards/preemptions/
+    # future jobs skip completed tasks and conversion reads one location.
+    if [ -n "${SUMMARY_CACHE_DIR:-}" ]; then
+        rsync -am \
+            --include='task_*/' --include='task_*/solutions/' \
+            --include="task_*/solutions/${_SUMMARY_GLOB}" --exclude='*' \
+            "$TASKS_DIR/" "$SUMMARY_CACHE_DIR/" 2>/dev/null || true
+    fi
 }
 
 cleanup() {

@@ -84,6 +84,7 @@ BEAKER_DOCKER_IMAGE="${BEAKER_DOCKER_IMAGE:-}"
 REPO_GIT_REF=""
 WEKA_MOUNT="oe-adapt-default:/weka/oe-adapt-default"
 IMAGE_CACHE_DIR="${IMAGE_CACHE_DIR:-}"   # in-job default: weka tmax_base_images
+SUMMARY_CACHE_DIR="${SUMMARY_CACHE_DIR:-}"   # in-job default: weka tmax_solutions/<corpus>
 
 usage() {
     cat <<EOF
@@ -135,6 +136,11 @@ Options:
                          the 2026-08-16 runtime-smoke probes.
   --image-cache-dir DIR  podman-save tar cache (default: in-job weka path
                          /weka/oe-adapt-default/pradeepd/tmax_base_images)
+  --summary-cache-dir DIR
+                         shared cross-job summary store; jobs restore prior
+                         summaries from it (skip completed tasks) and sync new
+                         ones back (default: in-job weka path
+                         /weka/oe-adapt-default/pradeepd/tmax_solutions/<corpus>)
   --job-name NAME        beaker experiment name (default: gen-sol-<served-name>)
   --min-runtime DUR      minimum guaranteed runtime before the job can be
                          preempted, e.g. '1h', '30m' (default: server default,
@@ -186,6 +192,7 @@ while [ $# -gt 0 ]; do
         --sample-seed)       SAMPLE_SEED="$2"; shift 2 ;;
         --force-rerun)       FORCE_RERUN=1; shift ;;
         --image-cache-dir)   IMAGE_CACHE_DIR="$2"; shift 2 ;;
+        --summary-cache-dir) SUMMARY_CACHE_DIR="$2"; shift 2 ;;
         --job-name)          JOB_NAME="$2"; shift 2 ;;
         --min-runtime)       MIN_RUNTIME="$2"; shift 2 ;;
         --priority)          PRIORITY="$2"; shift 2 ;;
@@ -325,6 +332,7 @@ GANTRY_CMD=(
     --env "FORCE_RERUN=${FORCE_RERUN}"
     --env "BUILD_IMAGES_ONLY=${BUILD_IMAGES_ONLY}"
     --env "IMAGE_CACHE_DIR=${IMAGE_CACHE_DIR}"
+    --env "SUMMARY_CACHE_DIR=${SUMMARY_CACHE_DIR}"
     # Nested-container privileges (namespaces for podman) — same setting the
     # harbor/podman eval pipeline relies on.
     --env BEAKER_ALLOW_SUBCONTAINERS=1

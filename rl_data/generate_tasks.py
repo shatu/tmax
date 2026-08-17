@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import time
 from dataclasses import dataclass
@@ -64,8 +65,14 @@ class PipelineConfig:
 
 
 def _safe_write_text(path: Path, content: str) -> None:
+    """Atomically write text: readers (and the summary-cache rsync that runs
+    every few minutes in Beaker jobs) must never observe a truncated file —
+    a half-written summary synced to the shared cache would make later jobs
+    skip that task forever."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
+    tmp = path.parent / f".{path.name}.tmp-{uuid.uuid4().hex[:8]}"
+    tmp.write_text(content, encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def _build_sif(def_path: Path, sif_path: Path) -> bool:
