@@ -69,6 +69,7 @@ START_AT=0
 WORKERS=12
 NUM_POOL_WORKERS=16
 SOLUTION_TEMPERATURE=0.7
+MAX_TRAJECTORY_TOKENS=0
 SAMPLE_SIZE=0
 SAMPLE_SEED=0
 FORCE_RERUN=0
@@ -121,6 +122,10 @@ Options:
   --workers N            parallel tasks (default: 12)
   --num-pool-workers N   parallel LLM calls per turn (default: 16)
   --temperature F        solution temperature (default: 0.7)
+  --max-trajectory-tokens N
+                         stop rollouts whose estimated training-format length
+                         (history + completions incl. reasoning traces)
+                         exceeds N; set to the SFT max_seq_length (default: off)
   --sample-size N        fixed random subset (default: 0 = off)
   --sample-seed N        subset seed (default: 0)
   --force-rerun          re-run tasks that already have a summary for this model
@@ -176,6 +181,7 @@ while [ $# -gt 0 ]; do
         --workers)           WORKERS="$2"; shift 2 ;;
         --num-pool-workers)  NUM_POOL_WORKERS="$2"; shift 2 ;;
         --temperature)       SOLUTION_TEMPERATURE="$2"; shift 2 ;;
+        --max-trajectory-tokens) MAX_TRAJECTORY_TOKENS="$2"; shift 2 ;;
         --sample-size)       SAMPLE_SIZE="$2"; shift 2 ;;
         --sample-seed)       SAMPLE_SEED="$2"; shift 2 ;;
         --force-rerun)       FORCE_RERUN=1; shift ;;
@@ -313,6 +319,7 @@ GANTRY_CMD=(
     --env "WORKERS=${WORKERS}"
     --env "NUM_POOL_WORKERS=${NUM_POOL_WORKERS}"
     --env "SOLUTION_TEMPERATURE=${SOLUTION_TEMPERATURE}"
+    --env "MAX_TRAJECTORY_TOKENS=${MAX_TRAJECTORY_TOKENS}"
     --env "SAMPLE_SIZE=${SAMPLE_SIZE}"
     --env "SAMPLE_SEED=${SAMPLE_SEED}"
     --env "FORCE_RERUN=${FORCE_RERUN}"

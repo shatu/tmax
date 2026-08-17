@@ -187,6 +187,14 @@ def run_n_solutions(
     command_log_dir: Optional[str] = None,
     base_sifs_dir: Optional[str] = None,
     max_timeouts_per_solution: int = 2,
+    #: Stop a rollout once its estimated TRAINING-format length — last turn's
+    #: prompt_tokens + accumulated completion_tokens (which include reasoning
+    #: traces for models served with a reasoning parser) — exceeds this budget.
+    #: Trajectories over the SFT max_seq_length are untrainable, so generating
+    #: past the budget is wasted compute. Stopped rollouts are recorded as
+    #: failures with ``over_budget: true`` and skip final tests (a "pass" that
+    #: can't be trained on must not enter the SFT corpus). 0 = disabled.
+    max_trajectory_tokens: int = 0,
 ) -> Dict[str, Any]:
     """Produce n interactive solutions for the given task using tool-calling format."""
 
@@ -202,6 +210,10 @@ def run_n_solutions(
          "reasoning_tokens": 0}
         for _ in range(num_solutions)
     ]
+    # Per-solution: prompt size of the most recent turn (the live history) and
+    # whether the rollout was stopped for exceeding max_trajectory_tokens.
+    last_prompt_tokens: List[int] = [0] * num_solutions
+    over_budget: List[bool] = [False] * num_solutions
 
     out_dir: Optional[Path] = None
     if save_dir:
@@ -297,6 +309,7 @@ def run_n_solutions(
                         usage_accum[sol_idx]["completion_tokens"] += getattr(u, "completion_tokens", 0) or 0
                         usage_accum[sol_idx]["total_tokens"] += getattr(u, "total_tokens", 0) or 0
                         usage_accum[sol_idx]["reasoning_tokens"] += getattr(u, "reasoning_tokens", 0) or 0
+                        last_prompt_tokens[sol_idx] = getattr(u, "prompt_tokens", 0) or 0
 
             actions = [_extract_tool_call(msg) for msg in response_msgs]
 
@@ -382,6 +395,25 @@ def run_n_solutions(
             end_time = time.time()
             print(f"commands executed in {end_time - start_time:.1f} seconds")
 
+            # Training-length budget: estimate = live history (last prompt) +
+            # every turn's completion tokens (reasoning included). Assistant
+            # content is counted in both terms, making the estimate slightly
+            # conservative — the right direction for a hard SFT budget.
+            if max_trajectory_tokens > 0:
+                for n in list(not_done_idx):
+                    if is_done[n]:
+                        continue
+                    est = last_prompt_tokens[n] + usage_accum[n]["completion_tokens"]
+                    if est > max_trajectory_tokens:
+                        is_done[n] = True
+                        over_budget[n] = True
+                        to_mark_done.append(n)
+                        if verbose:
+                            print(
+                                f"⏹️  solution {n}: est. training length {est} > "
+                                f"{max_trajectory_tokens} budget; stopping rollout"
+                            )
+
             if to_mark_done:
                 done_set = set(to_mark_done)
                 not_done_idx = [idx for idx in not_done_idx if idx not in done_set]
@@ -395,6 +427,9 @@ def run_n_solutions(
         start_time = time.time()
 
         def _run_final(i: int) -> tuple[bool, str]:
+            if over_budget[i]:
+                # An over-budget "pass" must never enter the SFT corpus.
+                return False, "(final tests skipped: trajectory exceeded max_trajectory_tokens)"
             return envs[i].run_final_tests()
 
         with ThreadPoolExecutor(max_workers=num_pool_workers) as pool:
@@ -409,6 +444,7 @@ def run_n_solutions(
                 "messages": messages[i],
                 "output": output,
                 "reward": 1 if success else 0,
+                "over_budget": over_budget[i],
                 "usage": usage_accum[i],
             })
         end_time = time.time()

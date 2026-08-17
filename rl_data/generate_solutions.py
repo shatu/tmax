@@ -97,6 +97,11 @@ class SolutionConfig:
     #: seed missing base images before falling back to ``podman build`` from
     #: rl_data/containers/docker/. Freshly built images are saved back here.
     image_cache_dir: Optional[str] = None
+    #: Stop a rollout once its estimated training-format token length (live
+    #: history + all completion tokens incl. reasoning traces) exceeds this
+    #: budget — set to the SFT max_seq_length so no compute is spent on
+    #: untrainable trajectories. bash harness only; 0 = disabled.
+    max_trajectory_tokens: int = 0
     #: Random-sample at most this many tasks from ``tasks_dir`` (0 = disabled;
     #: use ``num_tasks``/``start_at`` for sequential sampling instead).
     #: Applied **after** ``filter_solved`` and ``use_parquet`` so the random
@@ -340,6 +345,7 @@ def process_task(task_dir: str, cfg: SolutionConfig):
             log_commands=cfg.log_commands,
             command_log_dir=str(cmd_log_resolved) if cmd_log_resolved else None,
             base_sifs_dir=cfg.base_sifs_dir,
+            max_trajectory_tokens=cfg.max_trajectory_tokens,
         )
 
         summary_name = _summary_basename(cfg.model, cfg.harness, cfg.thinking)
@@ -451,6 +457,16 @@ def parse_args(argv: Optional[List[str]] = None) -> SolutionConfig:
         metavar="DIR",
         help="podman only: directory of `podman save` tarballs (base_<domain>.tar) to "
              "seed missing base images from; freshly built images are saved back here.",
+    )
+    ap.add_argument(
+        "--max-trajectory-tokens",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Stop rollouts whose estimated TRAINING-format length (history + all "
+             "completion tokens, reasoning included) exceeds N — set to the SFT "
+             "max_seq_length. Stopped rollouts are failures with over_budget=true. "
+             "bash harness only; 0 = disabled.",
     )
     ap.add_argument(
         "--sample-size",

@@ -154,6 +154,10 @@ def run_n_solutions_vanillux(
     command_log_dir: Optional[str] = None,
     base_sifs_dir: Optional[str] = None,
     max_timeouts_per_solution: int = 2,
+    #: Accepted for signature parity with sample_solutions.run_n_solutions;
+    #: not implemented for the vanillux harness (used for RL, where the SFT
+    #: training-length budget doesn't apply).
+    max_trajectory_tokens: int = 0,
 ) -> Dict[str, Any]:
     """Vanillux harness: bash-only tool calling with mini-swe-agent prompts.
 
@@ -173,6 +177,11 @@ def run_n_solutions_vanillux(
       head/tail strategy (``_truncate_observation``) when they exceed
       10 000 chars, instead of our legacy hard cut.
     """
+    if max_trajectory_tokens:
+        raise ValueError(
+            "max_trajectory_tokens is only implemented for the 'bash' harness "
+            "(sample_solutions.run_n_solutions); unset it for vanillux runs."
+        )
     task_data = json.loads(Path(task_path).read_text(encoding="utf-8"))
     task_description: str = task_data.get("description", "").strip()
     print(f"[vanillux] running {num_solutions} solutions for task")

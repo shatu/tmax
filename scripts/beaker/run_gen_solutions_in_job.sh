@@ -54,6 +54,9 @@
 #   COMMAND_TIMEOUT          per-command timeout in containers (default: 600)
 #   SHELL_INIT_TIMEOUT       default 240
 #   SHELL_INIT_ATTEMPTS      default 3
+#   MAX_TRAJECTORY_TOKENS    stop rollouts whose est. training-format length
+#                            (history + completions incl. reasoning) exceeds
+#                            this; set to the SFT max_seq_length (default: 0 = off)
 #   SAMPLE_SIZE / SAMPLE_SEED  optional fixed random subset (default: 0 = off)
 #   FORCE_RERUN              1 to re-run tasks that already have a summary (default: 0)
 #
@@ -98,6 +101,7 @@ log() { printf '\n=== [%s] %s ===\n' "$(date -u +%H:%M:%S)" "$*"; }
 : "${COMMAND_TIMEOUT:=600}"
 : "${SHELL_INIT_TIMEOUT:=240}"
 : "${SHELL_INIT_ATTEMPTS:=3}"
+: "${MAX_TRAJECTORY_TOKENS:=0}"
 : "${SAMPLE_SIZE:=0}"
 : "${SAMPLE_SEED:=0}"
 : "${FORCE_RERUN:=0}"
@@ -385,6 +389,9 @@ if [ -n "${IMAGE_CACHE_DIR:-}" ]; then
 fi
 if [ "$FORCE_RERUN" = "1" ]; then
     EXTRA_ARGS+=( --force-rerun )
+fi
+if [ "$MAX_TRAJECTORY_TOKENS" != "0" ]; then
+    EXTRA_ARGS+=( --max-trajectory-tokens "$MAX_TRAJECTORY_TOKENS" )
 fi
 if [ "$SAMPLE_SIZE" != "0" ]; then
     EXTRA_ARGS+=( --sample-size "$SAMPLE_SIZE" --sample-seed "$SAMPLE_SEED" )
