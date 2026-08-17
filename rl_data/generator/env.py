@@ -975,10 +975,17 @@ class PodmanContainerEnvironment(InteractiveContainerEnvironment):
 
         proc = subprocess.run(
             [
-                "podman", "exec", "-w", "/home/user", self.instance_name,
+                "podman", "exec", "-w", "/home/user",
+                # tzdata & friends otherwise block forever on debconf's
+                # interactive prompt ("Geographic area:") — podman exec's
+                # open stdin pipe makes debconf think it can ask (podman_run3:
+                # 8/8 deltas of a tzdata-installing task hung 1800s each).
+                "--env", "DEBIAN_FRONTEND=noninteractive",
+                self.instance_name,
                 "/bin/bash", str(script_path),
             ],
             capture_output=True, text=True,
+            stdin=subprocess.DEVNULL,
             timeout=self._DELTA_SETUP_TIMEOUT_S,
         )
         if proc.returncode != 0:
