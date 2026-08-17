@@ -896,8 +896,16 @@ class PodmanContainerEnvironment(InteractiveContainerEnvironment):
     # Runtime-specific hooks
     # ----------------------------
     def _shell_cmd(self) -> List[str]:
+        # -i only, NO -t: with -t podman allocates a tty inside the container
+        # whose echo is on, so bash echoes every wrapped command back — the
+        # echo contains the completion marker string, which _read_until_marker
+        # then matches FIRST, truncating the real output away (podman_run2:
+        # every rollout saw its own command as the only "output" and scored
+        # 0/72). Without a tty, bash reads the streamed commands from a pipe
+        # non-interactively: no echo, no canonical-mode line mangling on long
+        # commands, and the marker protocol behaves exactly as designed.
         return [
-            "podman", "exec", "-it",
+            "podman", "exec", "-i",
             "-w", "/home/user",
             self.instance_name,
             "bash", "--noprofile", "--norc",
@@ -1016,8 +1024,14 @@ class PodmanContainerEnvironment(InteractiveContainerEnvironment):
         if setup_script and setup_script.strip():
             try:
                 ok_delta, delta_msg = self._apply_setup_delta_in_container(setup_script)
-            except subprocess.TimeoutExpired:
-                ok_delta, delta_msg = False, f"setup delta timed out after {self._DELTA_SETUP_TIMEOUT_S}s"
+            except subprocess.TimeoutExpired as exc:
+                _partial = (exc.stdout or b"") if isinstance(exc.stdout, (bytes, str)) else ""
+                if isinstance(_partial, bytes):
+                    _partial = _partial.decode("utf-8", errors="replace")
+                ok_delta, delta_msg = False, (
+                    f"setup delta timed out after {self._DELTA_SETUP_TIMEOUT_S}s; "
+                    f"partial output: {(_partial.strip()[-300:] or '(none)')}"
+                )
             if not ok_delta:
                 if self.verbose:
                     print(f"❌ {delta_msg}")
