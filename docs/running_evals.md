@@ -151,10 +151,16 @@ From [`run_eval_in_job.sh`](../scripts/beaker/run_eval_in_job.sh):
    checkout).
 2. `apt-get install` podman + helpers; install the Docker Compose v2 CLI plugin
    (harbor shells out to `docker compose`, which talks to podman's socket).
-3. Write `/etc/containers/containers.conf` (host netns/ipc/uts, `userns=auto:size=65536`, crun, cgroups disabled).
-4. `uv sync`, then **patch harbor's installed package** for podman compat
-   (host networking in the compose file, world-writable bind-mount dirs, drop
-   `--rmi all` from compose-down to avoid Docker Hub rate limits).
+3. Write `/etc/containers/containers.conf` (host netns, `userns=auto:size=65536`,
+   host cgroupns, crun, cgroups disabled; ipc/uts stay **private** — podman
+   rejects `shm_size` under a host IPC namespace).
+4. `uv sync`, then **patch harbor's installed package** for podman compat:
+   host-network compose overlay with service-name→127.0.0.1 aliases,
+   `CMD-SHELL` healthcheck rewrites, tar-first uploads, platform-detection
+   fallback, egress control off, image-retention gate
+   (`HARBOR_KEEP_TASK_IMAGES`), and the `HARBOR_AGENT_TIMEOUT_SEC` override.
+   See [the TB3 patch table](#what-run_eval_in_jobsh-patches-for-tb3-and-why)
+   for what each one prevents.
 5. `source scripts/setup_podman_harbor.sh`: `mknod /dev/net/tun`, create the
    aardvark-dns dir, start `podman system service` on `/tmp/podman.sock`, export
    `DOCKER_HOST`.
@@ -433,8 +439,9 @@ TB3's 74 tasks are a different format generation:
   multi-service trials → errored trials, re-runnable), and the 2
   `allow_internet=false` tasks get internet;
 - 4 tasks request GPUs (`exam-pdf-eval`, `fp8-rmsnorm-gemm`, `jax-speedrun-gpu`,
-  `math-eval-grader`) — under podman-in-job these are expected to error unless
-  GPU passthrough is wired up; budget for ~4 errored trials or exclude them.
+  `math-eval-grader`). harbor's docker environment cannot allocate GPUs and
+  **raises out of the whole job** (not just the trial) when it schedules one —
+  always `--exclude-task-name` all four.
 
 harbor 0.21 also dropped all bind mounts from the docker environment (logs and
 artifacts move via upload/download), which obsoleted the verifier/oracle/paths
@@ -452,16 +459,73 @@ rebuilds).
       /weka/oe-adapt-default/shashankg/datasets/terminal-bench-3-0   # 74 dirs
    ```
 
-2. **Run it** via `--dataset-path`, same flags as any tmax Qwen3.5 eval:
+2. **Run it as TWO jobs** via `--dataset-path`. Split single-container from
+   multi-service tasks: all task containers share the job's network namespace,
+   so two concurrent multi-service trials can collide on the same port.
 
    ```bash
-   ./beaker_configs/launch_eval.sh allenai/tmax-9b \
-     --dataset-path /weka/oe-adapt-default/shashankg/datasets/terminal-bench-3-0 \
-     --agent Vanillux2Agent:Vanillux2Agent --model-provider openai \
-     --tool-call-parser qwen3_xml --language-model-only \
-     --gpus 1 --max-model-len 65536 --n-attempts 1 \
-     --cluster ai2/saturn --workspace ai2/oe-agents
+   COMMON=(--dataset-path /weka/oe-adapt-default/shashankg/datasets/terminal-bench-3-0
+           --agent Vanillux2Agent:Vanillux2Agent --model-provider openai
+           --tool-call-parser qwen3_xml --language-model-only
+           --gpus 1 --max-model-len 65536 --n-attempts 1
+           --max-retries 1 --environment-build-timeout-multiplier 2
+           --verifier-timeout-multiplier 2 --no-trial-mounts
+           --mirror-url <live-mirror>:5000
+           --cluster ai2/saturn --workspace ai2/oe-agents)
+   GPU_TASKS=(--exclude-task-name '*exam-pdf-eval' --exclude-task-name '*fp8-rmsnorm-gemm'
+              --exclude-task-name '*jax-speedrun-gpu' --exclude-task-name '*math-eval-grader')
+   # job 1 — 58 single-container tasks (exclude the 12 multi-service ones too)
+   ./beaker_configs/launch_eval.sh allenai/tmax-9b "${COMMON[@]}" "${GPU_TASKS[@]}" \
+     --n-concurrent 6 --job-name <name>-single   # + --exclude-task-name for each multi-service task
+   # job 2 — the 12 multi-service tasks, SERIALLY
+   ./beaker_configs/launch_eval.sh allenai/tmax-9b "${COMMON[@]}" \
+     --n-concurrent 1 --job-name <name>-multi \
+     --include-task-name '*heat-pump-warranty' ...   # one per multi-service task
    ```
+
+   Flag notes: `--max-retries 1` absorbs transient flakes (anonymous GitHub 403s
+   during builds, port collisions). `--no-trial-mounts` is needed by verifiers
+   that `chmod` their own `/logs/verifier` as anti-forgery hardening
+   (`ks-solver-cpp`, `ontology-kg-querying`, `freight-dispatch-shift`): trial
+   bind mounts are owned by a uid outside the container's `userns=auto` mapping,
+   so those `chmod`s EPERM and no `reward.txt` is ever written.
+
+### What `run_eval_in_job.sh` patches for TB3 (and why)
+
+All of these are podman-in-a-beaker-job workarounds applied to the installed
+harbor at job start. They are load-bearing — removing one reliably errors a
+subset of trials:
+
+| Patch | Without it |
+|---|---|
+| host-network compose overlay (every service, `extra_hosts` service→127.0.0.1 aliases) | bridge networking is impossible in-job, so every trial errors |
+| exec-form healthchecks rewritten to `CMD-SHELL` | podman's docker-compat API **word-splits** healthcheck argv, so any check with spaces in an argument can never pass → multi-service tasks hang then error |
+| healthcheck driver loop (`podman healthcheck run`), `start_period`-aware, `retries: 999` | no systemd ⇒ healthcheck timers never fire ⇒ `depends_on: service_healthy` waits forever |
+| private ipc/uts namespaces (no `ipcns=host`) | podman refuses containers that set `shm_size` under a host IPC ns (`legacy-utility-triage`, `medical-claims-processing`) |
+| tar-first uploads | `compose cp` writes files owned by unmapped uids under `userns=auto` |
+| `default_docker_platform()` fallback | podman's shim has no `{{.Server.Arch}}` ⇒ every task with its own `[verifier.environment]` errors |
+| egress control off + `no-network` downgraded to a warning | `allow_internet=false` tasks are otherwise rejected outright; they now run **with** internet (deviation) |
+
+`userns="auto:size=65536"` must stay: without a user namespace crun cannot do
+its setup mounts in a job container (`mount mqueue: Operation not permitted`)
+and nothing starts at all.
+
+### Reference result and known-unrunnable tasks
+
+`allenai/tmax-9b`, k=1, 2026-08-15: **pass@1 = 0.0000** over 70 tasks (67 clean,
+3 errored). Genuine, not harness breakage — median 37 tool calls/trial and 32/67
+trials pass *some* verifier tests, but TB3 grades all-or-nothing (frontier models
+sit at ~34–43%). Merged per-task results:
+`/weka/oe-adapt-default/shashankg/tmax-eval/tmax-9b-tb3-k1-combined/`.
+
+Three tasks do not run in this harness (count them as 0):
+`erp-procurement-planning` and `intrastat-meldung` (services share named
+volumes, and `userns=auto` gives each container a different uid mapping, so
+cross-container volume writes fail) and `legacy-utility-triage` (image build
+fails under buildah at a `chmod`+symlink `RUN` step).
+
+Note `scripts/beaker/combined_evals.py` is still hardcoded to tb21/tblite, so
+TB3 results are not picked up by the combined tracking sheet yet.
 
 ### SWE-bench Verified
 
