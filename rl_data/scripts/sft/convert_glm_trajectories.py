@@ -48,6 +48,11 @@ USER_PREFIX = "Please solve this task:\n\n"
 _ASSISTANT_DROP_KEYS = {"function_call", "provider_specific_fields", "annotations", "audio"}
 
 
+#: Extra argument keys the model invented (beyond the bash tool's single
+#: `command` parameter), dropped during normalization — counted for reporting.
+_EXTRA_ARG_KEYS: dict = {}
+
+
 def _convert_assistant(msg: dict) -> dict:
     out = {
         "role": "assistant",
@@ -64,10 +69,23 @@ def _convert_assistant(msg: dict) -> dict:
                 args = json.loads(args)
             except json.JSONDecodeError:
                 args = {"command": args}  # keep malformed calls inspectable
+        if not isinstance(args, dict):
+            args = {"command": str(args)}
+        # Normalize to EXACTLY the declared tool parameters. Arrow/datasets
+        # infers a fixed struct for `arguments`; GLM occasionally smuggles
+        # extra keys in (THOUGHT, description, ...), which breaks the cast
+        # ("Couldn't cast struct<command, THOUGHT> to ..."). The harness only
+        # ever executed `command`, so dropping extras reproduces reality.
+        for k in args:
+            if k != "command":
+                _EXTRA_ARG_KEYS[k] = _EXTRA_ARG_KEYS.get(k, 0) + 1
         out["tool_calls"].append({
             "id": tc.get("id"),
             "type": tc.get("type") or "function",
-            "function": {"name": fn.get("name"), "arguments": args},
+            "function": {
+                "name": fn.get("name"),
+                "arguments": {"command": str(args.get("command") or "")},
+            },
         })
     return out
 
@@ -170,6 +188,8 @@ def main() -> None:
     print(f"rows written     : {n_rows} -> {args.out}")
     print(f"skipped: failures={n_skipped_fail} over-length={n_skipped_len} "
           f"malformed={n_skipped_struct}")
+    if _EXTRA_ARG_KEYS:
+        print(f"normalized away extra tool-call argument keys: {_EXTRA_ARG_KEYS}")
 
 
 if __name__ == "__main__":
