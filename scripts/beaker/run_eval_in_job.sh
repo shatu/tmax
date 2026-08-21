@@ -399,7 +399,7 @@ fi
 : "${VLLM_PORT:=8008}"
 : "${DP_SIZE:=1}"
 VLLM_LOG=/tmp/vllm.log
-VLLM_LOG_TAIL_LINES="${VLLM_LOG_TAIL_LINES:-300}"
+VLLM_LOG_TAIL_LINES="${VLLM_LOG_TAIL_LINES:-1500}"
 # Pin fastapi < 0.137: fastapi 0.137 changed the router internals and breaks
 # prometheus-fastapi-instrumentator (which vLLM mounts on every route), so the
 # API server 500s on every request including /v1/models — the readiness probe
@@ -436,6 +436,9 @@ cleanup() {
     log "cleanup: killing vllm pid $VLLM_PID"
     kill "$VLLM_PID" 2>/dev/null || true
     wait "$VLLM_PID" 2>/dev/null || true
+    # Preserve the FULL vllm log — with 8 DP engines the interleaved shutdown
+    # tracebacks push the root-cause worker error out of any bounded tail.
+    cp "$VLLM_LOG" /results/vllm_full.log 2>/dev/null || true
 }
 trap cleanup EXIT
 
