@@ -40,6 +40,7 @@ VLLM_PORT=8008
 VLLM_VERSION="0.19.1"
 VLLM_TOOL_CALL_PARSER="hermes"
 VLLM_LANGUAGE_MODEL_ONLY=0
+VLLM_EXTRA_ARGS=""
 MAX_MODEL_LEN=""
 DATASET="terminal-bench@2.0"
 HARBOR_ENV="docker"
@@ -93,6 +94,9 @@ Options:
   --vllm-version VER     vLLM package version for uvx (default: 0.19.1)
   --tool-call-parser P   vLLM tool call parser (default: hermes)
   --language-model-only  pass --language_model_only to vLLM
+  --vllm-extra-args S    free-form extra args appended to vllm serve
+                         (e.g. "--model-impl transformers" for architectures
+                         vLLM has no native implementation for)
   --max-model-len LEN    pass --max-model-len to vllm
   --dataset DS           harbor dataset (default: terminal-bench@2.0; also
                          valid: openthoughts-tblite@2.0)
@@ -156,6 +160,7 @@ while [ $# -gt 0 ]; do
         --vllm-version)    VLLM_VERSION="$2"; shift 2 ;;
         --tool-call-parser) VLLM_TOOL_CALL_PARSER="$2"; shift 2 ;;
         --language-model-only|--language_model_only) VLLM_LANGUAGE_MODEL_ONLY=1; shift ;;
+        --vllm-extra-args) VLLM_EXTRA_ARGS="$2"; shift 2 ;;
         --max-model-len)   MAX_MODEL_LEN="$2"; shift 2 ;;
         --dataset)         DATASET="$2"; shift 2 ;;
         --harbor-env)      HARBOR_ENV="$2"; shift 2 ;;
@@ -255,8 +260,7 @@ GANTRY_CMD=(
     --priority "$PRIORITY"
     --weka "oe-adapt-default:/weka/oe-adapt-default"
     --env-secret HF_TOKEN
-    --env-secret "DOCKER_PAT=${DOCKER_PAT_SECRET:-hamishivi_DOCKER_PAT}"
-    --env-secret "DAYTONA_API_KEY=${DAYTONA_API_KEY_SECRET:-hamishivi_DAYTONA_API_KEY}"
+    --env-secret "DOCKER_PAT=${DOCKER_PAT_SECRET:-pradeepd_DOCKER_PAT}"
     --env "MODEL_PATH=${MODEL_PATH}"
     --env "MODEL_REVISION=${REVISION}"
     --env "SERVED_MODEL_NAME=${SERVED_MODEL_NAME}"
@@ -264,6 +268,7 @@ GANTRY_CMD=(
     --env "VLLM_VERSION=${VLLM_VERSION}"
     --env "VLLM_TOOL_CALL_PARSER=${VLLM_TOOL_CALL_PARSER}"
     --env "VLLM_LANGUAGE_MODEL_ONLY=${VLLM_LANGUAGE_MODEL_ONLY}"
+    --env "VLLM_EXTRA_ARGS=${VLLM_EXTRA_ARGS}"
     --env "VLLM_PORT=${VLLM_PORT}"
     --env "TP_SIZE=${TP_SIZE}"
     --env "DP_SIZE=${DP_SIZE}"
@@ -313,6 +318,14 @@ fi
 
 if [ -n "$BUDGET" ]; then
     GANTRY_CMD+=(--budget "$BUDGET")
+fi
+
+# The Daytona secret is only read when the daytona backend is in use, but a
+# Beaker secret REFERENCE must resolve at job start regardless — so only pass
+# it when needed (or when the caller explicitly names a secret), letting
+# docker-backend runs work in workspaces without a Daytona secret.
+if [ "$HARBOR_ENV" = "daytona" ] || [ -n "${DAYTONA_API_KEY_SECRET:-}" ]; then
+    GANTRY_CMD+=(--env-secret "DAYTONA_API_KEY=${DAYTONA_API_KEY_SECRET:-hamishivi_DAYTONA_API_KEY}")
 fi
 
 if [ "$RESULTS_DIR" = "/results" ]; then

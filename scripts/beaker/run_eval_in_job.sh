@@ -11,6 +11,7 @@
 #   VLLM_VERSION             vLLM package version for uvx (default: 0.19.1)
 #   VLLM_TOOL_CALL_PARSER    vLLM tool parser (default: hermes)
 #   VLLM_LANGUAGE_MODEL_ONLY pass --language_model_only to vLLM when set to 1
+#   VLLM_EXTRA_ARGS          free-form extra args appended to vllm serve
 #   VLLM_PORT                port for vLLM (default: 8008)
 #   TP_SIZE                  --tensor-parallel-size (required)
 #   DP_SIZE                  --data-parallel-size (default: 1)
@@ -421,6 +422,10 @@ if [ -n "${MAX_MODEL_LEN:-}" ]; then
 fi
 if [ "${VLLM_LANGUAGE_MODEL_ONLY:-0}" = "1" ]; then
     VLLM_CMD+=( --language_model_only )
+fi
+if [ -n "${VLLM_EXTRA_ARGS:-}" ]; then
+    # shellcheck disable=SC2206
+    VLLM_CMD+=( ${VLLM_EXTRA_ARGS} )
 fi
 
 log "launching vllm: ${VLLM_CMD[*]}"
