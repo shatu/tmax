@@ -40,7 +40,7 @@ def main() -> None:
     args = ap.parse_args()
 
     import torch
-    from transformers import AutoProcessor, AutoTokenizer
+    from transformers import AutoTokenizer
     from transformers.models.qwen3_5 import Qwen3_5ForCausalLM, Qwen3_5ForConditionalGeneration
 
     print(f"loading base composite: {args.base}")
@@ -80,14 +80,19 @@ def main() -> None:
     # Tokenizer + chat template from the TRAINED checkpoint (what SFT used).
     tok = AutoTokenizer.from_pretrained(args.checkpoint)
     tok.save_pretrained(out)
-    # Vision/processor plumbing from the base repo so the composite is complete.
-    try:
-        AutoProcessor.from_pretrained(args.base).save_pretrained(out)
-        # save_pretrained(processor) may overwrite tokenizer files with the
-        # base ones — restore the trained tokenizer's files on top.
-        tok.save_pretrained(out)
-    except Exception as e:  # noqa: BLE001
-        print(f"WARN: processor copy failed ({e}); vLLM --language_model_only may not need it")
+    # Vision/processor plumbing from the base repo so the composite is
+    # complete. Copied as plain files: instantiating AutoProcessor would
+    # require torchvision (Qwen3VLVideoProcessor) for no benefit, and its
+    # save_pretrained can clobber the trained tokenizer files.
+    from huggingface_hub import hf_hub_download
+
+    for fname in ("preprocessor_config.json", "video_preprocessor_config.json"):
+        try:
+            shutil.copy(hf_hub_download(args.base, fname), out / fname)
+            print(f"copied {fname} from base")
+        except Exception as e:  # noqa: BLE001
+            print(f"WARN: could not copy {fname} ({e}); "
+                  "vLLM --language_model_only does not need it")
 
     # generation_config from the trained checkpoint if present.
     gen_cfg = Path(args.checkpoint) / "generation_config.json"
