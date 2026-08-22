@@ -39,6 +39,7 @@ DP_SIZE=""
 VLLM_PORT=8008
 VLLM_VERSION="0.19.1"
 VLLM_TOOL_CALL_PARSER="hermes"
+VLLM_REASONING_PARSER=""
 VLLM_LANGUAGE_MODEL_ONLY=0
 VLLM_EXTRA_ARGS=""
 MAX_MODEL_LEN=""
@@ -92,7 +93,10 @@ Options:
   --dp N                 data-parallel-size (default: 1)
   --port PORT            vllm port (default: 8008)
   --vllm-version VER     vLLM package version for uvx (default: 0.19.1)
-  --tool-call-parser P   vLLM tool call parser (default: hermes)
+  --tool-call-parser P   vLLM tool call parser (default: hermes; use
+                         qwen3_coder for Qwen3.5 — its native tool-call
+                         format is XML, which hermes cannot parse)
+  --reasoning-parser P   vLLM reasoning parser (e.g. qwen3; default: none)
   --language-model-only  pass --language_model_only to vLLM
   --vllm-extra-args S    free-form extra args appended to vllm serve
                          (e.g. "--model-impl transformers" for architectures
@@ -159,6 +163,7 @@ while [ $# -gt 0 ]; do
         --port)            VLLM_PORT="$2"; shift 2 ;;
         --vllm-version)    VLLM_VERSION="$2"; shift 2 ;;
         --tool-call-parser) VLLM_TOOL_CALL_PARSER="$2"; shift 2 ;;
+        --reasoning-parser) VLLM_REASONING_PARSER="$2"; shift 2 ;;
         --language-model-only|--language_model_only) VLLM_LANGUAGE_MODEL_ONLY=1; shift ;;
         --vllm-extra-args) VLLM_EXTRA_ARGS="$2"; shift 2 ;;
         --max-model-len)   MAX_MODEL_LEN="$2"; shift 2 ;;
@@ -267,6 +272,7 @@ GANTRY_CMD=(
     --env "HARBOR_MODEL_NAME=${HARBOR_MODEL_NAME}"
     --env "VLLM_VERSION=${VLLM_VERSION}"
     --env "VLLM_TOOL_CALL_PARSER=${VLLM_TOOL_CALL_PARSER}"
+    --env "VLLM_REASONING_PARSER=${VLLM_REASONING_PARSER}"
     --env "VLLM_LANGUAGE_MODEL_ONLY=${VLLM_LANGUAGE_MODEL_ONLY}"
     --env "VLLM_EXTRA_ARGS=${VLLM_EXTRA_ARGS}"
     --env "VLLM_PORT=${VLLM_PORT}"
@@ -294,6 +300,7 @@ GANTRY_CMD=(
     --env "HARBOR_ENVIRONMENT_BUILD_TIMEOUT_MULTIPLIER=${HARBOR_ENVIRONMENT_BUILD_TIMEOUT_MULTIPLIER}"
     --env "HARBOR_AGENT_TIMEOUT_SEC=${HARBOR_AGENT_TIMEOUT_SEC}"
     --env "JOB_NAME=${JOB_NAME}"
+    --env "DOCKERHUB_USERNAME=${DOCKERHUB_USERNAME:-pdasigi}"
     --env BEAKER_ALLOW_SUBCONTAINERS=1
     --env BEAKER_SKIP_DOCKER_SOCKET=1
     --host-networking

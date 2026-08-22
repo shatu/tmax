@@ -9,7 +9,8 @@
 #   SERVED_MODEL_NAME        --served-model-name for vLLM (required)
 #   HARBOR_MODEL_NAME        optional model name passed to harbor
 #   VLLM_VERSION             vLLM package version for uvx (default: 0.19.1)
-#   VLLM_TOOL_CALL_PARSER    vLLM tool parser (default: hermes)
+#   VLLM_TOOL_CALL_PARSER    vLLM tool parser (default: hermes; qwen3_coder for Qwen3.5)
+#   VLLM_REASONING_PARSER    optional vLLM reasoning parser (e.g. qwen3)
 #   VLLM_LANGUAGE_MODEL_ONLY pass --language_model_only to vLLM when set to 1
 #   VLLM_EXTRA_ARGS          free-form extra args appended to vllm serve
 #   VLLM_PORT                port for vLLM (default: 8008)
@@ -422,6 +423,9 @@ if [ -n "${MAX_MODEL_LEN:-}" ]; then
 fi
 if [ "${VLLM_LANGUAGE_MODEL_ONLY:-0}" = "1" ]; then
     VLLM_CMD+=( --language_model_only )
+fi
+if [ -n "${VLLM_REASONING_PARSER:-}" ]; then
+    VLLM_CMD+=( --reasoning-parser "$VLLM_REASONING_PARSER" )
 fi
 if [ -n "${VLLM_EXTRA_ARGS:-}" ]; then
     # shellcheck disable=SC2206
