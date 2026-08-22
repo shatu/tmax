@@ -43,3 +43,6 @@ nemotron-terminal.pdf
 hamish*
 jobs/*
 .claude/*
+
+## gantry upload cache-buster (timestamp file written into scripts/beaker/)
+.gantry-cachebust
