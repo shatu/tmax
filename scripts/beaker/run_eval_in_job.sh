@@ -397,7 +397,14 @@ fi
 # --- 5. Start vLLM in the background ----------------------------------------
 : "${VLLM_VERSION:=0.19.1}"
 : "${VLLM_TOOL_CALL_PARSER:=hermes}"
-: "${VLLM_PORT:=8008}"
+: "${VLLM_PORT:=}"
+if [ -z "$VLLM_PORT" ]; then
+    # Auto-pick a free port. Fixed defaults collide under host networking
+    # when multiple eval jobs co-schedule on one node (eval_run10: 87/89
+    # trials 404'd against a NEIGHBOR job's vLLM that won the port race).
+    VLLM_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+    log "auto-picked vLLM port: $VLLM_PORT"
+fi
 : "${DP_SIZE:=1}"
 VLLM_LOG=/tmp/vllm.log
 VLLM_LOG_TAIL_LINES="${VLLM_LOG_TAIL_LINES:-1500}"
@@ -448,8 +455,10 @@ trap cleanup EXIT
 
 log "waiting for vllm on :$VLLM_PORT (up to 30 min)"
 for _ in $(seq 1 360); do
-    if curl -sf "http://localhost:$VLLM_PORT/v1/models" >/dev/null 2>&1; then
-        log "vllm ready"
+    # Identity-checked readiness: the endpoint must be OUR server (listing
+    # our served model name), not a neighbor's on a shared-port host.
+    if curl -sf "http://localhost:$VLLM_PORT/v1/models" 2>/dev/null | grep -q "\"$SERVED_MODEL_NAME\""; then
+        log "vllm ready (serving $SERVED_MODEL_NAME)"
         break
     fi
     if ! kill -0 "$VLLM_PID" 2>/dev/null; then
@@ -460,8 +469,8 @@ for _ in $(seq 1 360); do
     sleep 5
 done
 
-if ! curl -sf "http://localhost:$VLLM_PORT/v1/models" >/dev/null 2>&1; then
-    log "vllm did not become ready in 30 min — tail of $VLLM_LOG:"
+if ! curl -sf "http://localhost:$VLLM_PORT/v1/models" 2>/dev/null | grep -q "\"$SERVED_MODEL_NAME\""; then
+    log "vllm did not become ready (serving $SERVED_MODEL_NAME) in 30 min — tail of $VLLM_LOG:"
     tail -"$VLLM_LOG_TAIL_LINES" "$VLLM_LOG" || true
     exit 1
 fi

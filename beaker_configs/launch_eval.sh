@@ -36,7 +36,7 @@ HARBOR_MODEL_NAME=""
 GPU_COUNT=8
 TP_SIZE=""
 DP_SIZE=""
-VLLM_PORT=8008
+VLLM_PORT=""   # empty = in-job auto-picks a free port
 VLLM_VERSION="0.19.1"
 VLLM_TOOL_CALL_PARSER="hermes"
 VLLM_REASONING_PARSER=""
@@ -91,7 +91,8 @@ Options:
   --gpus N               GPUs (default: 8)
   --tp N                 tensor-parallel-size (default: GPU_COUNT)
   --dp N                 data-parallel-size (default: 1)
-  --port PORT            vllm port (default: 8008)
+  --port PORT            vllm port (default: auto-pick a free port in-job —
+                         fixed ports collide when jobs share a node)
   --vllm-version VER     vLLM package version for uvx (default: 0.19.1)
   --tool-call-parser P   vLLM tool call parser (default: hermes; use
                          qwen3_coder for Qwen3.5 — its native tool-call
