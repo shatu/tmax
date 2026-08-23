@@ -4,6 +4,7 @@ import subprocess
 from transformers.utils import hub as transformers_hub
 
 WEKA_CLUSTERS = [
+    "ai2/holmes",
     "ai2/jupiter",
     "ai2/saturn",
     "ai2/titan",

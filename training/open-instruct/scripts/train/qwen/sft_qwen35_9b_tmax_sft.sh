@@ -3,19 +3,21 @@
 # SFT for Qwen3.5-9B on all splits of the TMAX skill-tax no-tool-call SFT mix.
 # 4 nodes x 8 GPUs = 32 GPUs, SP=2, 32k seq len.
 
-BEAKER_IMAGE="${1:-nathanl/open_instruct_auto}"
+BEAKER_IMAGE="${1:-shashankg/open-instruct-integration-test-omni_agent_cuda13-cuda13}"
 MODEL="Qwen/Qwen3.5-9B"
-DATASET="hamishivi/tmax-sft-skill-tax-20260505-2.2k-combined-balanced-qwen3.6-27b-thinking-no-tool-call"
-DATASET_CONFIG="skill_tax_20260505_2.2k_combined_balanced_thinking_all"
+DATASET="allenai/tmax-sft-glm-52"
+DATASET_CONFIG="successful"
 
 uv run python mason.py \
-    --cluster ai2/jupiter \
-    --workspace ai2/olmo-instruct \
-    --priority urgent \
+    --cluster ai2/holmes \
+    --workspace ai2/oe-agents-holmes \
+    --priority high \
     --image "$BEAKER_IMAGE" \
+    --description "TMax SFT with GLM 5.2 successful rollouts" \
     --pure_docker_mode \
     --preemptible \
-    --num_nodes 4 \
+    --min_runtime 8h \
+    --num_nodes 1 \
     --env BEAKER_ALLOW_SUBCONTAINERS=1 \
     --env BEAKER_SKIP_DOCKER_SOCKET=1 \
     --gpus 8 \
@@ -25,16 +27,17 @@ uv run python mason.py \
     --mixed_precision bf16 \
     --num_processes 8 \
     --use_deepspeed \
-    --deepspeed_config_file configs/ds_configs/stage3_offloading_accelerate.conf \
+    --deepspeed_config_file configs/ds_configs/stage3_no_offloading_accelerate.conf \
     --deepspeed_multinode_launcher standard \
     open_instruct/finetune.py \
-    --exp_name qwen35_9b_tmax_skill_tax_no_tool_call_sft \
+    --exp_name qwen35_9b_tmax_glm52_successful_sft \
+    --wandb_project_name oe-general-agents \
     --model_name_or_path $MODEL \
     --tokenizer_name $MODEL \
     --use_liger_kernel \
     --max_seq_length 65536 \
-    --sequence_parallel_size 2 \
-    --per_device_train_batch_size 1 \
+    --sequence_parallel_size 1 \
+    --per_device_train_batch_size 4 \
     --gradient_accumulation_steps 8 \
     --learning_rate 2e-5 \
     --lr_scheduler_type linear \
@@ -52,5 +55,8 @@ uv run python mason.py \
     --with_tracking \
     --logging_steps 1 \
     --seed 42 \
+    --output_dir /weka/oe-adapt-default/pradeepd/checkpoints \
+    --checkpointing_steps 20 \
+    --keep_last_n_checkpoints 1 \
     --push_to_hub false \
     --try_launch_beaker_eval_jobs false
