@@ -439,6 +439,15 @@ if [ -n "${VLLM_EXTRA_ARGS:-}" ]; then
     VLLM_CMD+=( ${VLLM_EXTRA_ARGS} )
 fi
 
+# Pre-warm the uvx environment BEFORE the readiness clock starts: on a cold
+# uv cache, installing vLLM (413 MiB + ~180 packages) alone took ~25-27 min
+# in eval runs 11-12 — the model-startup timeout should not be billed for it.
+log "pre-warming vllm ${VLLM_VERSION} uvx environment"
+_prewarm_t0=$SECONDS
+uvx --with "fastapi<0.137" "vllm==${VLLM_VERSION}" --help >/dev/null 2>&1 \
+    || log "WARN: uvx pre-warm exited nonzero (continuing; serve will surface real errors)"
+log "uvx environment ready in $(( SECONDS - _prewarm_t0 ))s"
+
 log "launching vllm: ${VLLM_CMD[*]}"
 "${VLLM_CMD[@]}" >"$VLLM_LOG" 2>&1 &
 VLLM_PID=$!
@@ -453,8 +462,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-log "waiting for vllm on :$VLLM_PORT (up to 30 min)"
-for _ in $(seq 1 360); do
+: "${VLLM_READY_TIMEOUT:=3600}"
+log "waiting for vllm on :$VLLM_PORT (up to ${VLLM_READY_TIMEOUT}s)"
+for _ in $(seq 1 $(( VLLM_READY_TIMEOUT / 5 ))); do
     # Identity-checked readiness: the endpoint must be OUR server (listing
     # our served model name), not a neighbor's on a shared-port host.
     if curl -sf "http://localhost:$VLLM_PORT/v1/models" 2>/dev/null | grep -q "\"$SERVED_MODEL_NAME\""; then
@@ -470,7 +480,7 @@ for _ in $(seq 1 360); do
 done
 
 if ! curl -sf "http://localhost:$VLLM_PORT/v1/models" 2>/dev/null | grep -q "\"$SERVED_MODEL_NAME\""; then
-    log "vllm did not become ready (serving $SERVED_MODEL_NAME) in 30 min — tail of $VLLM_LOG:"
+    log "vllm did not become ready (serving $SERVED_MODEL_NAME) in ${VLLM_READY_TIMEOUT}s — tail of $VLLM_LOG:"
     tail -"$VLLM_LOG_TAIL_LINES" "$VLLM_LOG" || true
     exit 1
 fi
