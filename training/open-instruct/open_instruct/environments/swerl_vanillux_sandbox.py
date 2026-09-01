@@ -55,12 +55,34 @@ _BASH_WRAPPER = f"""#!/bin/bash
 set -a
 source {shlex.quote(_BASH_ENV_PATH)} 2>/dev/null || true
 set +a
+# Cap per-process address space inside the sandbox so a runaway model-issued
+# command (e.g. bytearray(35 GiB)) can be killed by the kernel instead of
+# bringing down the host and triggering Ray-level OOM cascades. Override via
+# SWERL_SANDBOX_ULIMIT_AS_KB (in KiB, ulimit -v unit); default 2 GiB.
+ulimit -v "${{SWERL_SANDBOX_ULIMIT_AS_KB:-2097152}}" 2>/dev/null || true
 _cwd="$(cat {shlex.quote(_BASH_CWD_PATH)} 2>/dev/null || echo /app)"
 cd "$_cwd" 2>/dev/null || cd /workspace || exit 1
-eval "$1"
+_stdout="$(mktemp /tmp/.swerl_vanillux_stdout.XXXXXX)"
+_stderr="$(mktemp /tmp/.swerl_vanillux_stderr.XXXXXX)"
+# Redirect the user command to regular files first. Background services started
+# by the command can otherwise inherit apptainer exec's stdout/stderr pipes and
+# keep the host-side subprocess waiting for EOF even after the shell returns.
+# Also redirect stdin from /dev/null and run in a new session so any background
+# daemon spawned by the command can't inherit the apptainer-exec pty/pipes.
+setsid bash -c 'eval "$1" >"$2" 2>"$3" </dev/null' _ "$1" "$_stdout" "$_stderr" </dev/null
 _exit_code=$?
 export -p > {shlex.quote(_BASH_ENV_PATH)}
 pwd > {shlex.quote(_BASH_CWD_PATH)}
+cat "$_stdout"
+cat "$_stderr" >&2
+rm -f "$_stdout" "$_stderr"
+# Kill any child processes of this wrapper (e.g. backgrounded subshells like
+# "(while :; do ...; done) &") that inherited the apptainer-exec stdout/stderr
+# pipes. Without this, the host-side subprocess.run blocks until tool_call_timeout
+# waiting for EOF on a pipe a backgrounded subshell is still writing to.
+# Verified against /home/rulin/sandbox_repro/test_wrapper_fixes.py — only this
+# pattern actually unblocks the host call.
+pkill -P $$ 2>/dev/null
 exit $_exit_code
 """
 
@@ -323,7 +345,14 @@ class SWERLVanilluxSandboxEnv(RLEnvironment):
         self._step_count = 0
         self._task_id = task_id
         self._max_steps = kwargs.get("max_steps", VANILLUX_CALL_LIMIT)
-        self._backend.run_command("mkdir -p /workspace /output /logs/verifier")
+        mkdir_result = self._backend.run_command("mkdir -p /workspace /output /logs/verifier")
+        # Restored (tmax-private#1 repair): fail the reset loudly when directory
+        # initialization fails instead of nominally succeeding on a torn sandbox.
+        if mkdir_result.exit_code != 0:
+            raise RuntimeError(
+                "Failed to initialize Vanillux sandbox directories "
+                f"(exit={mkdir_result.exit_code}): {mkdir_result.stderr or mkdir_result.stdout}"
+            )
         record_phase("mkdir")
 
         self._instruction = ""
@@ -383,6 +412,10 @@ class SWERLVanilluxSandboxEnv(RLEnvironment):
             dir_info = tarfile.TarInfo(name=prefix)
             dir_info.type = tarfile.DIRTYPE
             dir_info.mode = 0o755
+            dir_info.uid = 0
+            dir_info.gid = 0
+            dir_info.uname = "root"
+            dir_info.gname = "root"
             tar.addfile(dir_info)
 
             for root, dirs, files in os.walk(host_dir):
@@ -392,25 +425,50 @@ class SWERLVanilluxSandboxEnv(RLEnvironment):
                     info = tarfile.TarInfo(name=f"{prefix}/{rel_dir}")
                     info.type = tarfile.DIRTYPE
                     info.mode = 0o755
+                    info.uid = 0
+                    info.gid = 0
+                    info.uname = "root"
+                    info.gname = "root"
                     tar.addfile(info)
                 for fname in files:
                     src_path = os.path.join(root, fname)
                     rel_file = os.path.join(rel_root, fname) if rel_root != "." else fname
-                    tar.add(src_path, arcname=f"{prefix}/{rel_file}")
+                    # Restored (tmax-private#1 repair): force deterministic root
+                    # ownership on every member; tar.add() preserved uploader
+                    # uid/gid, drifting file ownership inside task containers.
+                    info = tar.gettarinfo(src_path, arcname=f"{prefix}/{rel_file}")
+                    info.uid = 0
+                    info.gid = 0
+                    info.uname = "root"
+                    info.gname = "root"
+                    with open(src_path, "rb") as f:
+                        tar.addfile(info, f)
 
         self._backend.put_archive("/", tar_stream.getvalue())
 
     def _prepare_vanillux_runtime(self) -> None:
         assert self._backend is not None
-        self._backend.run_command(
+        init_result = self._backend.run_command(
             "mkdir -p /workspace /root && "
             "cd /workspace && "
             '[ -d /app ] || { _P="$(pwd)"; [ "$_P" != "/" ] && ln -sf "$_P" /app; } && '
             f"printf '%s\\n' /app > {shlex.quote(_BASH_CWD_PATH)} && "
             f": > {shlex.quote(_BASH_ENV_PATH)}"
         )
+        # Restored (tmax-private#1 repair): a reset must not report success over an
+        # unusable sandbox — the false-success class behind the poison-pill incident.
+        if init_result.exit_code != 0:
+            raise RuntimeError(
+                "Failed to initialize Vanillux runtime directories "
+                f"(exit={init_result.exit_code}): {init_result.stderr or init_result.stdout}"
+            )
         self._backend.write_file(_BASH_WRAPPER_PATH, _BASH_WRAPPER)
-        self._backend.run_command(f"chmod +x {_BASH_WRAPPER_PATH_QUOTED}")
+        chmod_result = self._backend.run_command(f"chmod +x {_BASH_WRAPPER_PATH_QUOTED}")
+        if chmod_result.exit_code != 0:
+            raise RuntimeError(
+                "Failed to install Vanillux bash wrapper "
+                f"(exit={chmod_result.exit_code}): {chmod_result.stderr or chmod_result.stdout}"
+            )
 
     async def step(self, call: EnvCall) -> StepResult:
         if self._backend is None:
@@ -446,6 +504,23 @@ class SWERLVanilluxSandboxEnv(RLEnvironment):
                         "task_id": self._task_id,
                     },
                 )
+            except RuntimeError as e:
+                # Restored (tmax-private#1 repair): a backend torn down mid-episode
+                # (e.g. after a command timeout) must end the episode cleanly instead
+                # of propagating out of step() and grinding the rollout to max_steps.
+                # The sibling swerl_sandbox.py kept this handler through the sync.
+                if "Instance not started" not in str(e):
+                    raise
+                logger.warning(f"[{self._task_id}] sandbox backend unavailable after timeout: {e}")
+                return StepResult(
+                    result=(
+                        "Sandbox backend is no longer running, likely after a command timeout. "
+                        "Ending episode with reward 0."
+                    ),
+                    reward=0.0,
+                    done=True,
+                    metadata={"timeout": True, "backend_unavailable": True, "task_id": self._task_id},
+                )
         return self._with_last_step_warning(
             StepResult(result=format_error_message(f"Unknown tool '{call.name}'. The only available tool is `bash`."))
         )
@@ -480,6 +555,26 @@ class SWERLVanilluxSandboxEnv(RLEnvironment):
         output = result.stdout or ""
         if result.stderr:
             output += f"\n{result.stderr}" if output else result.stderr
+
+        # Restored (tmax-private#1 repair): exit 124 = command hit the sandbox-side
+        # timeout. Surface it as a distinct terminal timeout observation instead of
+        # ordinary output, so the rollout ends and telemetry records the class.
+        if result.exit_code == 124:
+            truncated = truncate_observation(output) if output else "Command timed out."
+            observation = f"{truncated}\n\n(exit_code={result.exit_code})"
+            logger.info(
+                "[%s] bash command timed out exit=%s command=%r output_preview=%r",
+                self._task_id,
+                result.exit_code,
+                command[:500],
+                truncated[:500],
+            )
+            return StepResult(
+                result=observation,
+                reward=0.0,
+                done=True,
+                metadata={"exit_code": result.exit_code, "timeout": True, "task_id": self._task_id},
+            )
 
         if SUBMIT_MARKER in output:
             return self._run_tests()

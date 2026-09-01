@@ -1,6 +1,7 @@
 """Pool of Ray actors with acquire/release semantics."""
 
 import asyncio
+import contextlib
 import os
 import random
 import time
@@ -70,7 +71,8 @@ class EnvironmentPool:
         **actor_kwargs: Any,
     ):
         self._acquire_timeout = acquire_timeout
-        remote_class = ray.remote(actor_class)
+        self._remote_class = ray.remote(actor_class)
+        self._actor_kwargs = dict(actor_kwargs)
         docker_hosts = _podman_docker_hosts_from_env()
         self._docker_hosts = (
             docker_hosts if actor_kwargs.get("backend") == "docker" and "docker_host" not in actor_kwargs else []
@@ -92,7 +94,7 @@ class EnvironmentPool:
                 actor_class.__name__,
                 len(self._docker_hosts),
             )
-        self._actors = [remote_class.remote(**actor_kwargs) for _ in range(pool_size)]
+        self._actors = [self._remote_class.remote(**self._actor_kwargs) for _ in range(pool_size)]
 
         setup_tasks = [actor.setup.remote() for actor in self._actors]
         ray.get(setup_tasks)
@@ -126,13 +128,29 @@ class EnvironmentPool:
             if _actor_reusable_after_error(e):
                 await self._release_actor(actor)
             else:
-                logger.warning("Not returning crashed environment actor to pool after reset failure: %s", e)
+                # Health barrier (tmax-private#1 repair): a crashed actor previously
+                # stayed in self._actors but never re-entered the available queue —
+                # a silent capacity leak. Discard it (kill + deregister) and spawn a
+                # replacement off-loop so pool capacity stays stable across failures.
+                await self._discard_actor(actor, reason=f"reset failure: {e}")
+                try:
+                    loop = asyncio.get_running_loop()
+                    replacement = await loop.run_in_executor(None, self._create_actor_batch, 1, 2)
+                    for new_actor in replacement:
+                        self._actors.append(new_actor)
+                        await self._available.put(new_actor)
+                except Exception as create_error:
+                    logger.warning("Failed to create replacement environment actor: %s", create_error)
             raise
         return actor, target_tools
 
     @ray.method(concurrency_group="release")
     async def release(self, actor: ray.actor.ActorHandle) -> None:
         await self._release_actor(actor)
+
+    @ray.method(concurrency_group="release")
+    async def discard(self, actor: ray.actor.ActorHandle, reason: str = "") -> None:
+        await self._discard_actor(actor, reason)
 
     def size(self) -> int:
         return len(self._actors)
@@ -143,6 +161,52 @@ class EnvironmentPool:
         if host is not None:
             self._release_host(host)
         await self._available.put(actor)
+
+    def _create_actor_batch(self, count: int, max_retries: int) -> list[ray.actor.ActorHandle]:
+        actors: list[ray.actor.ActorHandle] = []
+        last_error: BaseException | None = None
+        for attempt in range(1, max_retries + 1):
+            if len(actors) == count:
+                return actors
+
+            candidates = [self._remote_class.remote(**self._actor_kwargs) for _ in range(count - len(actors))]
+            for actor, setup_ref in zip(candidates, (candidate.setup.remote() for candidate in candidates)):
+                try:
+                    ray.get(setup_ref)
+                    actors.append(actor)
+                except Exception as error:
+                    last_error = error
+                    with contextlib.suppress(Exception):
+                        ray.kill(actor, no_restart=True)
+
+            if len(actors) < count:
+                logger.warning(
+                    "Environment actor setup failed during replacement (attempt %s/%s, ready=%s/%s): %s",
+                    attempt,
+                    max_retries,
+                    len(actors),
+                    count,
+                    last_error,
+                )
+
+        for actor in actors:
+            with contextlib.suppress(Exception):
+                ray.kill(actor, no_restart=True)
+        raise RuntimeError(
+            f"Failed to create {count} replacement environment actors after {max_retries} attempts; "
+            f"created {len(actors)}: {last_error}"
+        ) from last_error
+
+    async def _discard_actor(self, actor: ray.actor.ActorHandle, reason: str = "") -> None:
+        actor_key = _actor_key(actor)
+        host = self._actor_host_leases.pop(actor_key, None)
+        if host is not None:
+            self._release_host(host)
+
+        self._actors = [candidate for candidate in self._actors if _actor_key(candidate) != actor_key]
+        with contextlib.suppress(Exception):
+            ray.kill(actor, no_restart=True)
+        logger.warning("Discarded environment actor %s. reason=%s pool_size=%s", actor_key, reason, len(self._actors))
 
     async def _reset_actor(self, actor: ray.actor.ActorHandle, reset_kwargs: dict[str, Any]) -> list[dict]:
         if not self._docker_hosts:
