@@ -1,0 +1,51 @@
+{
+ "present": {
+  "post_filter_reward": [
+   "val/avg_group_performance_post_filter"
+  ],
+  "pre_filter_reward": [
+   "val/avg_group_performance_pre_filter"
+  ],
+  "primary_reward": [
+   "scores",
+   "objective/verifiable_reward",
+   "objective/passthrough_reward"
+  ],
+  "response_length_mean": [
+   "val/sequence_lengths"
+  ],
+  "response_length_p50_p90": [
+   "val/sequence_lengths_max",
+   "val/sequence_lengths_min",
+   "val/sequence_lengths_solved",
+   "val/sequence_lengths_unsolved"
+  ],
+  "tool_calls_mean": [
+   "tools/aggregate/avg_calls_per_rollout",
+   "tools/bash/avg_calls_per_rollout"
+  ],
+  "tool_calls_aux": [
+   "tools/aggregate/failure_rate",
+   "tools/aggregate/avg_runtime",
+   "tools/bash/failure_rate",
+   "tools/bash/avg_runtime"
+  ],
+  "filtering": [
+   "batch/filtered_prompts",
+   "batch/filtered_prompts_zero",
+   "batch/filtered_prompts_solved",
+   "batch/filtered_prompts_nonzero",
+   "batch/total_prompts",
+   "batch/no_resampled_prompts",
+   "val/total_reward_groups"
+  ]
+ },
+ "absent": [],
+ "extra_debug": [
+  "debug/dppo_mask_frac_kept",
+  "debug/vllm_local_reverse_kl",
+  "debug/vllm_vs_local_logprob_diff_max",
+  "debug/vllm_vs_local_logprob_diff_mean",
+  "debug/vllm_vs_local_logprob_diff_std"
+ ]
+}
