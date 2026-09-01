@@ -1,0 +1,341 @@
+#!/usr/bin/env python3
+"""Tool-behaviour anomaly audit for a preserved rollout bundle.
+
+Requested by hamishivi on tmax-private#1 (2026-09-01) for trainer 11096823
+steps 1-77: not aggregate health, but per-call behaviour — and specifically the
+question of whether Sandfleet/TMAX infrastructure faults are being mistaken for
+model/task failures, or vice versa.
+
+Design notes that matter for reading the output:
+
+  * INFRA vs TASK is the primary split. A sandbox OOM, a backend loss, a
+    transport error or an OCI-conversion fallback is an infrastructure event and
+    must not be scored as the model failing the task. A non-zero exit from the
+    model's own command, or a test that legitimately fails, is a task outcome.
+  * "exit_code=0 alongside failure text" is deliberately separated from
+    "non-zero exit": the first is a silent-corruption class (the wrapper claims
+    success while the payload says otherwise) and is far more serious.
+  * Reward-semantic mismatches are computed against the TERMINAL state of the
+    rollout, not against any single call, because a rollout can legitimately
+    contain a failed call and still succeed afterwards.
+
+Every class is emitted with counts by step and by image, plus a bounded sample,
+so a reviewer can reproduce any row from the source JSONL.
+
+Usage:
+  python3 tool_audit.py ROLLOUTS_DIR [--out-prefix logs/tool_audit-<job>]
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import glob
+import json
+import os
+import re
+import sys
+from collections import Counter, defaultdict
+
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+# Infrastructure markers — these indicate the platform failed, not the model.
+INFRA_PATTERNS = {
+    "sandbox_oom": re.compile(r"OOM reaper|SandboxOOMError|exceeded its Slurm step memory", re.I),
+    "backend_lost": re.compile(r"Sandbox worker was lost|SandboxLostError|sandbox_lost", re.I),
+    "instance_not_started": re.compile(r"Instance not started", re.I),
+    "transport_error": re.compile(r"Could not reach Sandfleet endpoint|Connection refused|"
+                                  r"Connection reset by peer|Lost connection to sandbox", re.I),
+    "oci_fallback": re.compile(r"Converting OCI blobs|docker://", re.I),
+    "reset_failed": re.compile(r"Reset failed after \d+ attempts", re.I),
+    "rollout_walltime": re.compile(r"Rollout timed out after", re.I),
+    # hamishivi refinement (2): this is a TEXTUAL match and the phrase can come
+    # from task content (a model's own program printing "timed out after ..."),
+    # so it is not a trustworthy infrastructure count. Labelled TEXTUAL.
+}
+TEXTUAL_PATTERNS = {
+    "tool_call_timeout_textual": re.compile(r"timed out after .*s\b", re.I),
+}
+
+# Task-level failure text produced by the model's own commands.
+TASK_FAIL_PATTERNS = re.compile(
+    r"Traceback \(most recent call last\)|ModuleNotFoundError|SyntaxError|"
+    r"command not found|No such file or directory|FAILED|\bERROR\b|assert",
+    re.I,
+)
+# hamishivi refinement (1): pytest summarises as "1 failed, 3 passed" on ONE
+# line. Matching "passed" anywhere would score that line as a pass. So a line
+# containing "N failed" is a FAILED line regardless of any passed count on it,
+# and the passed regex is evaluated only on lines with no failure count.
+TESTS_FAILED = re.compile(r"\b\d+ failed\b|\berror(s)? during collection\b", re.I)
+_PASSED_TOKEN = re.compile(r"\b\d+ passed\b|=+ .*passed.* =+", re.I)
+
+
+def _verdict_positions(text: str):
+    """(last_pass_pos, last_fail_pos) evaluated line-wise, failure-dominant."""
+    last_pass = last_fail = None
+    off = 0
+    for line in text.splitlines(keepends=True):
+        if TESTS_FAILED.search(line):
+            last_fail = off
+        elif _PASSED_TOKEN.search(line):
+            last_pass = off
+        off += len(line)
+    return last_pass, last_fail
+
+
+class TESTS_PASSED:  # noqa: N801 - kept as a name for the call sites below
+    @staticmethod
+    def search(text):
+        lp, lf = _verdict_positions(text)
+        return lp is not None
+
+    @staticmethod
+    def finditer(text):
+        lp, _ = _verdict_positions(text)
+        return iter([type("M", (), {"start": staticmethod(lambda p=lp: p)})()] if lp is not None else [])
+EXIT0 = re.compile(r"\(exit_code=0\)")
+EXIT_NONZERO = re.compile(r"\(exit_code=(?!0\))(\d+)\)")
+
+
+def load(rollouts_dir: str):
+    for path in sorted(glob.glob(os.path.join(rollouts_dir, "*_rollouts_*.jsonl"))):
+        with open(path, errors="replace") as fh:
+            for line in fh:
+                try:
+                    yield json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("rollouts_dir")
+    ap.add_argument("--out-prefix", default="logs/tool_audit")
+    ap.add_argument("--sample", type=int, default=3)
+    args = ap.parse_args()
+
+    rows = []
+    by_class_step = defaultdict(Counter)
+    by_class_task = defaultdict(Counter)
+    samples = defaultdict(list)
+    totals = Counter()
+    # Schema census. Emitted with the results so that any claim made from this
+    # audit can be checked against the fields the data actually carries. This
+    # is the artifact that would have caught the OOM/sandbox-loss overclaim
+    # immediately instead of after review.
+    # Census every level, not just the top one: a first pass looked only at
+    # r["rollout_state"] and concluded the field did not exist, when in fact it
+    # lives at r["request_info"]["rollout_state"]. A census that does not
+    # descend can manufacture exactly the false-absence it exists to prevent.
+    schema_keys = Counter()
+    ri_keys = Counter()
+    rs_keys = Counter()
+    info_keys = Counter()
+    n = 0
+
+    for r in load(args.rollouts_dir):
+        n += 1
+        step = int(r.get("step", -1)) + 1          # rollout step is 0-based
+        task = (r.get("ground_truth") or ["?"])[0]
+        reward = r.get("reward")
+        ri = r.get("request_info") or {}
+        rs = ri.get("rollout_state") or {}
+        out = ANSI.sub("", str(ri.get("tool_outputs") or ""))
+        err = ANSI.sub("", str(ri.get("tool_errors") or ""))
+        blob = out + "\n" + err
+        stats = ri.get("tool_call_stats") or []
+        ncalls = ri.get("num_calls") or len(stats)
+        # TERMINAL-STATE SOURCE, corrected after hamishivi's objection.
+        # An earlier version consulted rollout_state.info.oom_killed and
+        # .sandbox_lost. A key census over all 19,712 records settles it:
+        # request_info.rollout_state is present 19,712/19,712 and its `info`
+        # sub-dict is present 19,712/19,712 — but `info` carries exactly two
+        # keys, env_name and step_count. oom_killed and sandbox_lost appear in
+        # ZERO records. So both branches were dead code, and reporting "0
+        # occurrences" from a detector that cannot fire reads as "checked and
+        # clean" when it means "never checked". They are removed rather than
+        # left sitting at zero. Measured terminal claims here are TIMEOUT-ONLY.
+        #
+        # rollout_state.timeout (2,419 True) and request_info.timeouts agree
+        # exactly on this run, so either is a valid source; ri.timeouts is used
+        # because it is the flatter of the two.
+        timed_out = bool(ri.get("timeouts"))
+        schema_keys.update(r.keys())
+        ri_keys.update(ri.keys())
+        rs_keys.update(rs.keys())
+        _info = rs.get("info")
+        if isinstance(_info, dict):
+            info_keys.update(_info.keys())
+
+        hits = []
+        for name, pat in INFRA_PATTERNS.items():
+            if pat.search(blob):
+                hits.append(("INFRA", name))
+        for name, pat in TEXTUAL_PATTERNS.items():
+            if pat.search(blob):
+                hits.append(("TEXTUAL", name))
+        # (structured sandbox_lost / oom_killed hits removed — see the terminal-
+        # state note above. The same-named entries in INFRA_PATTERNS remain and
+        # are TEXT matches on the transcript, which is a different and weaker
+        # claim, labelled as such in the report.)
+        if timed_out:
+            hits.append(("INFRA", "marked_timeout"))
+
+        nz = EXIT_NONZERO.findall(blob)
+        if nz:
+            hits.append(("BASELINE", "nonzero_exit"))
+        if TASK_FAIL_PATTERNS.search(blob):
+            hits.append(("BASELINE", "failure_text"))
+
+        # exit0-with-failure-text must be evaluated PER CALL, not per transcript.
+        # A first pass matched any traceback anywhere against any exit_code=0
+        # anywhere and flagged 81.5% of rollouts — meaningless, because an agent
+        # doing coding work sees tracebacks constantly and then fixes them. The
+        # real silent-corruption signal is failure text inside the SAME command
+        # segment that reported success, so segment on the exit markers.
+        segs = re.split(r"\(exit_code=(\d+)\)", blob)
+        # segs = [text0, code0, text1, code1, ...]; text_i is the output that
+        # PRECEDES code_i, i.e. that command's own output.
+        for i in range(1, len(segs), 2):
+            code = segs[i]
+            body = segs[i - 1]
+            if code == "0" and TASK_FAIL_PATTERNS.search(body):
+                # ignore the benign case where the failure text is the model
+                # reading a file / echoing an earlier error rather than a result
+                if TESTS_FAILED.search(body) or re.search(
+                        r"Traceback \(most recent call last\)", body):
+                    hits.append(("SUSPECT", "exit0_with_failure_in_same_call"))
+                    break
+        if not blob.strip() and ncalls:
+            hits.append(("SUSPECT", "empty_output_despite_calls"))
+        if ncalls == 0:
+            hits.append(("SUSPECT", "zero_tool_calls"))
+        # --- reward-semantic mismatches -------------------------------------
+        # These MUST compare against the rollout's TERMINAL state. A first pass
+        # matched any test-failure or infra string anywhere in a multi-turn
+        # transcript against the final reward, and flagged 254 "full reward
+        # though tests failed" plus 225 "positive reward after infra failure" —
+        # nearly all false: the model had a failing run, fixed it, and passed.
+        # Sampling those rows showed "N passed" with reward 1.0, i.e. correct.
+        # So look only at the LAST test verdict in the transcript.
+        last_pass, last_fail = _verdict_positions(blob)
+        final_passed = last_pass is not None and (last_fail is None or last_pass > last_fail)
+        final_failed = last_fail is not None and (last_pass is None or last_fail > last_pass)
+
+        if final_passed and isinstance(reward, (int, float)) and reward == 0:
+            # hamishivi refinement (3): the graded signal is the HIDDEN verifier
+            # (/logs/verifier/reward.txt via test.sh), not the model's own test
+            # file. "my tests pass but reward is 0" is the expected shape of a
+            # hidden-verifier disagreement, not a scoring bug. Measured on the
+            # raw records: 30/60 of these pass-signals came from the model's own
+            # test_final_state.py and only 1 mentioned the verifier at all.
+            if re.search(r"test_final_state|/tmp/test_", blob):
+                hits.append(("EXPECTED", "zero_reward_model_own_tests_passed"))
+            else:
+                hits.append(("SUSPECT", "zero_reward_though_final_tests_passed"))
+        if final_failed and isinstance(reward, (int, float)) and reward == 1:
+            hits.append(("SUSPECT", "full_reward_though_final_tests_failed"))
+        # Infra-vs-reward: only meaningful when the rollout ENDED on the infra
+        # event (terminal), not when it hit a transient and then recovered.
+        # Timeout is the only terminal state this schema records, so this is a
+        # timeout-vs-reward check and is named accordingly.
+        if timed_out and isinstance(reward, (int, float)) and reward > 0:
+            hits.append(("SUSPECT", "positive_reward_despite_terminal_timeout"))
+
+        for kind, name in set(hits):
+            cls = f"{kind}:{name}"
+            totals[cls] += 1
+            by_class_step[cls][step] += 1
+            by_class_task[cls][task] += 1
+            if len(samples[cls]) < args.sample:
+                samples[cls].append({
+                    "class": cls, "task_id": task, "global_step": step,
+                    "prompt_idx": r.get("prompt_idx"), "sample_idx": r.get("sample_idx"),
+                    "reward": reward, "num_calls": ncalls,
+                    "finish_reason": r.get("finish_reason"),
+                    "timeout": timed_out, "done": rs.get("done"),
+                    "exit_codes_seen": sorted(set(nz))[:5],
+                    "excerpt": blob.strip()[-320:],
+                })
+        rows.append({
+            "global_step": step, "acceptance_step": step, "task_id": task,
+            "prompt_idx": r.get("prompt_idx"), "sample_idx": r.get("sample_idx"),
+            "reward": reward, "num_calls": ncalls, "timeout": int(timed_out),
+            # `done` is genuine: 18,043 True / 1,669 False across the run. It
+            # was briefly dropped here on the strength of a census that failed
+            # to descend into request_info; restored once measured.
+            "done": int(bool(rs.get("done"))),
+            "finish_reason": r.get("finish_reason"),
+            "classes": ";".join(sorted(f"{k}:{v}" for k, v in set(hits))),
+        })
+
+    csv_path = f"{args.out_prefix}.csv"
+    json_path = f"{args.out_prefix}.json"
+    with open(csv_path, "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
+        w.writeheader()
+        w.writerows(rows)
+    json.dump({
+        "records": n,
+        "schema_census": {
+            "record_keys": dict(schema_keys.most_common()),
+            "request_info_keys": dict(ri_keys.most_common()),
+            "rollout_state_keys": dict(rs_keys.most_common()),
+            "rollout_state_info_keys": dict(info_keys.most_common()),
+            "absent_at_every_level": [
+                k for k in ("oom_killed", "sandbox_lost")
+                if not (schema_keys.get(k) or ri_keys.get(k)
+                        or rs_keys.get(k) or info_keys.get(k))
+            ],
+        },
+        "terminal_state_basis": "request_info.timeouts only. rollout_state and "
+                                "rollout_state.info are both present in every "
+                                "record, but info carries only env_name and "
+                                "step_count: oom_killed and sandbox_lost occur "
+                                "in zero records at any nesting level, so no "
+                                "OOM or sandbox-loss claim is made here",
+        # Every class states HOW it was derived. Without this, a reader sees
+        # "INFRA:sandbox_oom 234" next to "no OOM claim is made" and cannot tell
+        # that the 234 is a regex hit on transcript text, not a platform-
+        # reported OOM. Text matches are evidence of a string, not of an event.
+        "class_provenance": {
+            **{f"INFRA:{k}": "TEXT_MATCH on tool_outputs+tool_errors"
+               for k in INFRA_PATTERNS},
+            **{f"TEXTUAL:{k}": "TEXT_MATCH on tool_outputs+tool_errors"
+               for k in TEXTUAL_PATTERNS},
+            "INFRA:marked_timeout": "STRUCTURED from request_info.timeouts",
+            "BASELINE:nonzero_exit": "TEXT_MATCH on (exit_code=N) markers",
+            "BASELINE:failure_text": "TEXT_MATCH on task-failure vocabulary",
+            "SUSPECT:exit0_with_failure_in_same_call":
+                "TEXT_MATCH, segmented per tool call",
+            "SUSPECT:zero_tool_calls": "STRUCTURED from request_info.num_calls",
+            "SUSPECT:empty_output_despite_calls":
+                "STRUCTURED num_calls + empty transcript",
+            "SUSPECT:zero_reward_though_final_tests_passed":
+                "STRUCTURED reward + TEXT_MATCH terminal verdict",
+            "SUSPECT:full_reward_though_final_tests_failed":
+                "STRUCTURED reward + TEXT_MATCH terminal verdict",
+            "SUSPECT:positive_reward_despite_terminal_timeout":
+                "STRUCTURED request_info.timeouts + reward",
+            "EXPECTED:zero_reward_model_own_tests_passed":
+                "STRUCTURED reward + TEXT_MATCH on model-authored test paths",
+        },
+        "totals": dict(totals),
+        "by_step": {k: dict(v) for k, v in by_class_step.items()},
+        "by_task_top20": {k: dict(v.most_common(20)) for k, v in by_class_task.items()},
+        "samples": {k: v for k, v in samples.items()},
+    }, open(json_path, "w"), indent=1)
+
+    print(f"records audited: {n}")
+    print(f"wrote {csv_path} and {json_path}\n")
+    print(f"{'class':<48} {'count':>7}  {'%':>6}  distinct_tasks")
+    for cls, c in totals.most_common():
+        print(f"{cls:<48} {c:>7}  {100*c/n:>5.2f}%  {len(by_class_task[cls])}")
+    if not totals:
+        print("(no anomalies in any class)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

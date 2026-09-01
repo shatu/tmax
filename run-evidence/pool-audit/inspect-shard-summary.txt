@@ -1,0 +1,36 @@
+# apptainer inspect, full pool, job 11137452 (32-way array)
+# shard  ok  bad   (shard rule: manifest line NR % 32 == shard_id)
+0/32  ok=452  bad=0
+1/32  ok=453  bad=0
+2/32  ok=453  bad=0
+3/32  ok=453  bad=0
+4/32  ok=453  bad=0
+5/32  ok=453  bad=0
+6/32  ok=453  bad=0
+7/32  ok=453  bad=0
+8/32  ok=453  bad=0
+9/32  ok=453  bad=0
+10/32  ok=453  bad=0
+11/32  ok=453  bad=0
+12/32  ok=453  bad=0
+13/32  ok=453  bad=0
+14/32  ok=453  bad=0
+15/32  ok=453  bad=0
+16/32  ok=453  bad=0
+17/32  ok=453  bad=0
+18/32  ok=453  bad=0
+19/32  ok=453  bad=0
+20/32  ok=453  bad=0
+21/32  ok=453  bad=0
+22/32  ok=453  bad=0
+23/32  ok=453  bad=0
+24/32  ok=453  bad=0
+25/32  ok=452  bad=0
+26/32  ok=452  bad=0
+27/32  ok=452  bad=0
+28/32  ok=452  bad=0
+29/32  ok=452  bad=0
+30/32  ok=452  bad=0
+31/32  ok=452  bad=0
+
+TOTAL ok=14488 bad=0

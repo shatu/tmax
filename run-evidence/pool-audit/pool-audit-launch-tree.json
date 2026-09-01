@@ -1,0 +1,31 @@
+{
+ "tree": "repos/cand-r3",
+ "pool": "/checkpoint/memorization/oscaryinn/tmax/sifs",
+ "manifest_images": 14488,
+ "resolved": 14488,
+ "missing": [],
+ "missing_count": 0,
+ "bare_refs": [],
+ "bare_ref_count": 0,
+ "empty": [],
+ "empty_count": 0,
+ "undersized": [],
+ "undersized_count": 0,
+ "size_min": 49479680,
+ "size_p50": 112367616.0,
+ "size_max": 3449839616,
+ "total_bytes": 2096980758528,
+ "inspect_checked": 14488,
+ "inspect_shards": 32,
+ "inspect_failures": [],
+ "inspect_failure_count": 0,
+ "gates": {
+  "coverage_all_resolved": true,
+  "zero_bare_or_docker_refs": true,
+  "zero_empty": true,
+  "size_floor_10MB": true,
+  "inspect_full_coverage": true,
+  "inspect_all_valid": true
+ },
+ "VERDICT": "PASS"
+}

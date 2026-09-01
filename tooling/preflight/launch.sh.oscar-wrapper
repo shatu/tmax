@@ -1,0 +1,114 @@
+#!/bin/bash
+# Launch a DPPO arm + its watchdog, the fair-sc-safe way.
+#
+#   source tmax_env.sh smoke
+#   ./launch.sh
+#
+# Two invariants this wrapper exists to enforce:
+#   1. NO --export flag, no VAR= forms on the sbatch line (gotcha #1 — re-confirmed
+#      on fair-sc 2026-08-28, job 10995500 requeued-held at ~120 s with no output).
+#      Everything travels by plain shell inheritance.
+#   2. Proxy vars are stripped BEFORE sbatch so they cannot be inherited into the
+#      job (gotcha #2). Measured on a compute node: with the Claude-session
+#      127.0.0.1 proxy inherited, pypi and github both return 000; with it unset,
+#      both return 200.
+set -euo pipefail
+
+: "${EXP_NAME:?source tmax_env.sh first}"
+: "${RUN_ID:?source tmax_env.sh first}"
+: "${QOS:?source tmax_env.sh first}"
+: "${OPEN_INSTRUCT_DIR:?source tmax_env.sh first}"
+
+LAUNCHER=scripts/train/debug/envs/swerl_vanillux_tmax15k_vmvm_dppo_slurm.sh
+WATCHDOG=scripts/train/debug/envs/autorestart_watchdog.sh
+
+cd "$OPEN_INSTRUCT_DIR"
+[ -f "$LAUNCHER" ] || { echo "no $LAUNCHER in $PWD" >&2; exit 1; }
+
+# We run out of Rulin's shared working copy, so a RUN_ID collision would write
+# into somebody else's checkpoint_states and corrupt their resume. Refuse unless
+# RESUME=1 is explicitly set (resume is the one case where reuse is correct).
+for d in output/checkpoint_states output/rollouts output/runs; do
+  if [ -e "$d/$RUN_ID" ] && [ "${RESUME:-0}" != "1" ]; then
+    echo "REFUSING: $PWD/$d/$RUN_ID already exists." >&2
+    echo "  If this is your run and you mean to resume: RESUME=1 $0" >&2
+    echo "  Otherwise pick a new EXP_NAME/RUN_ID — this tree is shared." >&2
+    exit 1
+  fi
+done
+
+# (2) strip proxies from the submitting shell
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy \
+      X2P_PROXY_URL no_proxy NO_PROXY 2>/dev/null || true
+
+# (3) hard pre-allocation gate. Full 14,488-image audit + live guard probe,
+# before we ask for a single GPU. Requested by hamishivi on tmax-private#1:
+# "run the full 14,488-image audit and wire it as a hard pre-allocation gate."
+# SKIP_PREFLIGHT exists only for smoke arms that deliberately use a subset pool;
+# it is loud, and it is never correct for an acceptance run.
+if [ "${SKIP_PREFLIGHT:-0}" = "1" ]; then
+  echo "!! SKIP_PREFLIGHT=1 — image gate bypassed. Not valid for acceptance runs." >&2
+else
+  if ! "$OSCAR_ROOT/scripts/preflight.sh"; then
+    echo "launch aborted by preflight gate — no allocation requested." >&2
+    exit 1
+  fi
+fi
+
+echo "launching $EXP_NAME  run_id=$RUN_ID  qos=$QOS"
+echo "  dataset : $DATASET_JSONL"
+echo "  sifs    : $SWERL_APPTAINER_SIF_DIR"
+echo "  output  : $OPEN_INSTRUCT_DIR/output"
+
+# The launcher's #SBATCH header is written for Rulin's project and hardcodes three
+# things we cannot use (verified 2026-08-29 by reading the header):
+#   --account=comem                          we are in memorization, not comem
+#   --qos=h100_comem_high                    their pool, at cap; ours is idle
+#   --output/--error=/checkpoint/comem/rulin/logs/...   not writable by us — the job
+#                                            would fail just opening its output file
+# CLI flags override header directives, so we override all three rather than edit
+# the launcher (shared source: do not touch without posting on the PR first).
+mkdir -p "$OSCAR_ROOT/logs/slurm"
+
+# (1) no --export anywhere on this line
+# Optional walltime bound (control8x32 sets 24h; smoke modes inherit the
+# launcher's 7-day header, which is fine for a <1h run).
+TIME_ARG=(); [ -n "${WALLTIME:-}" ] && TIME_ARG=(--time="$WALLTIME")
+EXCL_ARG=(); [ -n "${EXCLUDE_NODES:-}" ] && EXCL_ARG=(--exclude="$EXCLUDE_NODES")
+
+JOB=$(sbatch --parsable \
+        --job-name="jb-$EXP_NAME" \
+        --account=memorization \
+        --qos="$QOS" \
+        "${TIME_ARG[@]}" "${EXCL_ARG[@]}" \
+        --output="$OSCAR_ROOT/logs/slurm/%x-%j.out" \
+        --error="$OSCAR_ROOT/logs/slurm/%x-%j.err" \
+        "$LAUNCHER")
+echo "trainer job: $JOB"
+
+# The watchdog defaults REPO_ROOT and LOGDIR to Rulin's tree too. REPO_ROOT is an
+# env knob so we can point it at ours; LOGDIR is hardcoded at line 38, so the
+# watchdog's own log goes to a path we can't write — override its sbatch output.
+export TARGET_JOB_ID="$JOB" JOB_NAME="jb-$EXP_NAME"
+export REPO_ROOT="$OPEN_INSTRUCT_DIR"
+WD=$(sbatch --parsable \
+        --job-name="autorestart-jb-$EXP_NAME" \
+        --account=memorization \
+        --qos="$QOS" \
+        --output="$OSCAR_ROOT/logs/slurm/%x-%j.out" \
+        --error="$OSCAR_ROOT/logs/slurm/%x-%j.err" \
+        "$WATCHDOG")
+echo "watchdog job: $WD"
+
+cat > "$OSCAR_ROOT/logs/$RUN_ID.run" <<EOF
+RUN_ID=$RUN_ID
+EXP_NAME=$EXP_NAME
+TRAINER_JOB=$JOB
+WATCHDOG_JOB=$WD
+QOS=$QOS
+LAUNCHED=$(date -Is)
+EOF
+echo "recorded -> $OSCAR_ROOT/logs/$RUN_ID.run"
+echo
+echo "monitor with:  $OSCAR_ROOT/scripts/monitor.sh $RUN_ID $JOB"
+echo "(check artifact mtimes, not squeue)"
