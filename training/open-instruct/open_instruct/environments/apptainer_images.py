@@ -18,6 +18,17 @@ def _strip_scheme(image: str) -> str:
     return _SCHEME.sub("", image).strip().strip("/")
 
 
+class MissingLocalSifError(RuntimeError):
+    """A configured local SIF pool did not contain a requested image."""
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _sif_name_for_image(image: str) -> str | None:
     name = re.sub(r"[^A-Za-z0-9._-]+", "__", _strip_scheme(image)).strip("._-")
     return f"{name}.sif" if name else None
@@ -85,4 +96,30 @@ def prefer_local_sif(image: str) -> str:
             if _is_nonempty_file(candidate):
                 _log_resolution(image, candidate, hash_match=True)
                 return str(candidate)
-    return image
+
+    # Fail closed. Configuring SWERL_APPTAINER_SIF_DIR is an assertion that the
+    # pool is authoritative for this run; returning the bare ref here sends the
+    # worker into a per-lease `docker://` pull + OCI->SIF conversion, which is
+    # ~600-1200s and fails exit=255 under restricted egress. That silent
+    # fallback cost trainer 11096823 a 6.5h run at step 78 (58 of 1,170 touched
+    # images were absent from the pool) and presented as a fleet-wide latency
+    # cliff rather than as a missing file.
+    #
+    # An operator who genuinely wants remote pulls can set
+    # SWERL_ALLOW_REMOTE_IMAGE_FALLBACK=1 and get the old behaviour, loudly.
+    if _env_flag("SWERL_ALLOW_REMOTE_IMAGE_FALLBACK", False):
+        logger.warning(
+            "No local SIF for %s in %s; falling back to a remote ref because "
+            "SWERL_ALLOW_REMOTE_IMAGE_FALLBACK is set. This triggers worker-side "
+            "OCI->SIF conversion.",
+            image,
+            configured_dir,
+        )
+        return image
+    raise MissingLocalSifError(
+        f"No local SIF for {image!r} in {configured_dir!r} "
+        f"(expected {sif_name!r} or a hash match). Refusing to fall back to a "
+        f"remote image reference: worker-side OCI->SIF conversion is slow and "
+        f"fails under restricted egress. Build the missing image into the pool, "
+        f"or set SWERL_ALLOW_REMOTE_IMAGE_FALLBACK=1 to allow remote pulls."
+    )

@@ -37,10 +37,22 @@ def test_mirror_reference_resolves_by_trailing_hash(tmp_path, monkeypatch):
 
 
 def test_zero_byte_match_and_unmatched_reference_are_not_used(tmp_path, monkeypatch):
+    # Intent is unchanged: a zero-byte SIF is not usable coverage. What changed
+    # (tmax-private#1 fail-closed guard) is the failure mode. Previously this
+    # returned the bare remote reference, which sent the worker into a
+    # per-lease docker:// pull + OCI->SIF conversion -- 600-1200s, exit=255
+    # under restricted egress -- and cost trainer 11096823 a 6.5h run at step
+    # 78. A configured pool is now authoritative: a miss raises.
     image = "registry.example/team/image:latest"
     (tmp_path / "registry.example__team__image__latest.sif").touch()
     monkeypatch.setenv("SWERL_APPTAINER_SIF_DIR", str(tmp_path))
+    monkeypatch.delenv("SWERL_ALLOW_REMOTE_IMAGE_FALLBACK", raising=False)
 
+    with pytest.raises(apptainer_images.MissingLocalSifError):
+        apptainer_images.prefer_local_sif(image)
+
+    # the escape hatch still yields the old behaviour, explicitly
+    monkeypatch.setenv("SWERL_ALLOW_REMOTE_IMAGE_FALLBACK", "1")
     assert apptainer_images.prefer_local_sif(image) == image
 
 
