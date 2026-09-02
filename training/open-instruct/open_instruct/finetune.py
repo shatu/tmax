@@ -94,6 +94,40 @@ def build_transform_fn_args(dataset_transform_fn: list[str], max_seq_length: int
     return transform_fn_args
 
 
+def load_pretokenized_jsonl(path: str, max_seq_length: int | None):
+    """Load a pre-tokenized SFT dataset directly from a JSONL file.
+
+    Each line must contain ``input_ids`` and ``labels`` (equal length). We add
+    an all-ones ``attention_mask`` and drop any example longer than
+    ``max_seq_length`` (if set). This keeps trajectories in the exact token space
+    produced by the RL rollouts (including interleaved tool outputs / special
+    tokens), avoiding any retokenization mismatch.
+    """
+
+    def gen():
+        with open(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                row = json.loads(line)
+                input_ids = row["input_ids"]
+                labels = row["labels"]
+                if len(input_ids) != len(labels):
+                    continue
+                if max_seq_length is not None and len(input_ids) > max_seq_length:
+                    continue
+                yield {
+                    "input_ids": input_ids,
+                    "attention_mask": [1] * len(input_ids),
+                    "labels": labels,
+                }
+
+    dataset = datasets.Dataset.from_generator(gen)
+    print(f"load_pretokenized_jsonl: kept {len(dataset)} examples (max_seq_length={max_seq_length}) from {path}")
+    return dataset
+
+
 @dataclass
 class FlatArguments:
     """
@@ -346,6 +380,14 @@ class FlatArguments:
             "help": "Degree of Ulysses sequence parallelism. 1 means disabled. Requires DeepSpeed ZeRO-3 and flash attention."
         },
     )
+    pretokenized_jsonl: str | None = field(
+        default=None,
+        metadata={
+            "help": "If set, load a pre-tokenized SFT dataset directly from this JSONL file (each line has "
+            "'input_ids' and 'labels'; 'attention_mask' is added automatically), skipping message tokenization. "
+            "Used for the RL-rollout SFT-rescue experiment where trajectories are already in token space."
+        },
+    )
 
     def __post_init__(self):
         if self.dataset_name is None and self.dataset_mixer is None and self.dataset_mixer_list is None:
@@ -523,21 +565,24 @@ def main(args: FlatArguments, tc: TokenizerConfig):
     if not dataset_mixer_list_config_names and args.dataset_config_name is not None:
         dataset_mixer_list_config_names = [args.dataset_config_name]
     with accelerator.main_process_first():
-        transform_fn_args = build_transform_fn_args(args.dataset_transform_fn, args.max_seq_length)
-        train_dataset = get_cached_dataset_tulu(
-            dataset_mixer_list=args.dataset_mixer_list,
-            dataset_mixer_list_splits=args.dataset_mixer_list_splits,
-            tc=tc,
-            dataset_transform_fn=args.dataset_transform_fn,
-            transform_fn_args=transform_fn_args,
-            target_columns=args.dataset_target_columns,
-            dataset_cache_mode=args.dataset_cache_mode,
-            dataset_config_hash=args.dataset_config_hash,
-            hf_entity=args.hf_entity,
-            dataset_local_cache_dir=args.dataset_local_cache_dir,
-            dataset_skip_cache=args.dataset_skip_cache,
-            dataset_mixer_list_config_names=dataset_mixer_list_config_names,
-        )
+        if args.pretokenized_jsonl:
+            train_dataset = load_pretokenized_jsonl(args.pretokenized_jsonl, args.max_seq_length)
+        else:
+            transform_fn_args = build_transform_fn_args(args.dataset_transform_fn, args.max_seq_length)
+            train_dataset = get_cached_dataset_tulu(
+                dataset_mixer_list=args.dataset_mixer_list,
+                dataset_mixer_list_splits=args.dataset_mixer_list_splits,
+                tc=tc,
+                dataset_transform_fn=args.dataset_transform_fn,
+                transform_fn_args=transform_fn_args,
+                target_columns=args.dataset_target_columns,
+                dataset_cache_mode=args.dataset_cache_mode,
+                dataset_config_hash=args.dataset_config_hash,
+                hf_entity=args.hf_entity,
+                dataset_local_cache_dir=args.dataset_local_cache_dir,
+                dataset_skip_cache=args.dataset_skip_cache,
+                dataset_mixer_list_config_names=dataset_mixer_list_config_names,
+            )
         train_dataset = train_dataset.shuffle(seed=args.seed)
         train_dataset.set_format(type="pt")
     if accelerator.is_main_process:
@@ -550,7 +595,7 @@ def main(args: FlatArguments, tc: TokenizerConfig):
     # when multiple ranks on a shared filesystem all try to access the
     # HF hub cache concurrently.
     model_path = args.config_name or args.model_name_or_path
-    if model_path and accelerator.is_main_process:
+    if model_path and accelerator.is_main_process and not os.path.isdir(model_path):
         snapshot_download(model_path, revision=args.model_revision)
     accelerator.wait_for_everyone()
 
@@ -1108,6 +1153,7 @@ if __name__ == "__main__":
         DeprecationWarning,
         stacklevel=1,
     )
+    utils.check_oe_eval_internal()
 
     parser = ArgumentParserPlus((FlatArguments, TokenizerConfig))
     args, tc = parser.parse_args_into_dataclasses()

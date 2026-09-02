@@ -2313,3 +2313,11 @@ def get_cached_dataset_tulu(
         system_prompt_override=system_prompt_override,
         dataset_mixer_list_config_names=dataset_mixer_list_config_names,
     )[0]
+
+
+# context_bench: register tool-calling-aware SFT transform
+try:
+    from open_instruct.contextbench_transforms import register as _cb_register
+    _cb_register(TRANSFORM_FNS)
+except Exception:
+    pass

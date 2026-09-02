@@ -197,6 +197,27 @@ class GRPOExperimentConfig(
     # Optimizer
     set_weight_decay_on_bias_and_norm: bool = True
     """Whether to set weight decay on bias and norm layers"""
+    optimizer_type: str = "adamw"
+    """Which optimizer to use for the policy: 'adamw' (default) or 'sgd'."""
+    sgd_momentum: float = 0.0
+    """Momentum for the SGD optimizer (only used when optimizer_type='sgd')."""
+    adam_epsilon: float = 1e-8
+    """Epsilon for AdamW. This is the *adaptivity dial* (ε-floor Adam): the per-coordinate
+    update is m_hat / (sqrt(v_hat) + eps). With the default 1e-8, eps << sqrt(v_hat) for every
+    coordinate, so Adam is fully adaptive and *dormant* (tiny-sqrt(v_hat)) coordinates take huge
+    steps the moment they receive any gradient (a collapse driver). Raising eps toward the typical
+    sqrt(v_hat) scale floors the denominator: dormant coordinates then move ~proportionally to m
+    (SGD-with-momentum-like) while high-gradient coordinates keep Adam behavior. eps -> large
+    interpolates Adam -> SGD-momentum. Passed straight to torch.optim.AdamW."""
+    grad_spike_clip_k: float = 0.0
+    """Skip-step-on-spike safeguard. 0 disables. When >0, at each optimizer boundary we compute the
+    global pre-step grad norm gn and track an EMA of it; if gn > k*EMA the accumulated gradient is
+    rescaled so its norm equals k*EMA before the step (an adaptive, EMA-relative clamp, far tighter
+    than DeepSpeed's fixed max_grad_norm=1.0 since the typical grad norm is ~0.02). This neutralizes
+    the anomalous spike before it can enter theta / m / v and trigger the collapse cascade. The EMA
+    is updated with the post-clamp norm so spikes cannot inflate the reference."""
+    grad_spike_ema_beta: float = 0.98
+    """EMA decay for the grad-norm reference used by grad_spike_clip_k."""
 
     # Batch sizes
     total_episodes: int = 100000
@@ -248,16 +269,16 @@ class GRPOExperimentConfig(
     Set to 0 to disable the upper side of the mask.
     """
     sequence_tis_mask_lower: float = 0.0
-    """Lower bound for the geometric-mean sequence ratio.
+    """Lower bound for the geometric-mean sequence ratio ρ_geo = geomean_t(π_θ / π_rollout).
 
-    When >0, whole responses with ρ_geo below this bound are masked. Set to 0
-    to disable the lower bound.
+    When >0, whole responses whose ρ_geo is below this bound are multiplied by 0
+    in both the pg loss and the KL term. Set to 0 to disable the lower bound.
     """
     sequence_tis_mask_upper: float = 0.0
-    """Upper bound for the geometric-mean sequence ratio.
+    """Upper bound for the geometric-mean sequence ratio ρ_geo = geomean_t(π_θ / π_rollout).
 
-    When >0, whole responses with ρ_geo above this bound are masked. Set to 0
-    to disable the upper bound.
+    When >0, whole responses whose ρ_geo is above this bound are multiplied by 0
+    in both the pg loss and the KL term. Set to 0 to disable the upper bound.
     """
     kl_estimator: Literal[0, 1, 2, 3] = 2
     """the KL estimator to use"""
@@ -299,6 +320,36 @@ class GRPOExperimentConfig(
     binary KL. We default to 0.1 as a moderately tighter middle-ground; bump
     closer to 0.15–0.2 for paper-faithful runs.
     """
+    robust_momentum: bool = False
+    """If True, use 'outlier-robust momentum' AdamW (spikiness-filtered, 1-backward). The current
+    step uses the full gradient (spike still benefits this step); the STORED momentum accumulates a
+    per-coordinate Winsorized gradient g_clip = clamp(g, +/- c*sqrt(v_hat)), so an anomalous spike is
+    not carried/amplified by momentum. v (2nd moment) tracks the FULL gradient (unlike leaky). This
+    preserves the +/- gradient cancellation that keeps standard-AdamW momentum undirected, while
+    dropping only the collapse-triggering spikes from momentum. Implemented as pure post-step
+    arithmetic on exp_avg (recover g from the exp_avg step-delta), no extra backward."""
+    robust_momentum_c: float = 4.0
+    """Winsorization multiple for robust_momentum: momentum accumulates clamp(g, +/- c*sqrt(v_hat))."""
+    leaky_full_v: bool = False
+    """If True (with leaky_negative_momentum), keep the 2nd moment v tracking the FULL gradient
+    (only the momentum m is positive-only). Isolation control to separate the leaky-m effect from
+    the leaky-v effect."""
+    leaky_negative_momentum: bool = False
+    """If True, use 'leaky-negative-momentum' AdamW (Proposed Method 1, 2-backward version):
+    the CURRENT step's update uses the full gradient (negatives still push down now), but the
+    STORED momentum only accumulates successful (advantage>0) trajectories, so a negative spike
+    is not carried forward/amplified by momentum. Implemented per optimizer step as:
+    (1) full-loss backward + normal AdamW step (snapshot m0=exp_avg beforehand);
+    (2) positive-only backward over the same microbatches, capture g_pos (safe_get_local_grad);
+    (3) surgery: exp_avg <- beta1*m0 + (1-beta1)*g_pos. Costs ~2 backward passes. Requires
+    positive_advantage_only handling in the loss. Default off."""
+    positive_advantage_only: bool = False
+    """If True, only tokens with advantage > 0 (i.e. relatively-successful / "chosen"
+    trajectories) contribute gradient; non-positive-advantage tokens are frozen
+    (detached), so the AdamW momentum only accumulates from successful trajectories.
+    This mimics SFT-on-good-data momentum while keeping the online RL loop, to test
+    whether removing the negative (push-down) gradient prevents late-training collapse.
+    Implemented by folding an ``advantage > 0`` mask into ``policy_freeze_mask``."""
     tvpo_divergence_threshold: float = 0.02
     """For TVPO: prompt-level total-variation trust-region radius δ.
 
@@ -320,6 +371,10 @@ class GRPOExperimentConfig(
     """
     record_entropy: bool = False
     """Whether to record policy entropy. The tiled loss computes it one LM-head tile at a time."""
+    log_momentum_diagnostics: bool = False
+    """If set, log global AdamW optimizer-state diagnostics each optimizer step: momentum norm ||m||,
+    second-moment scale, bias-corrected directedness rho=|m_hat|/(sqrt(v_hat)+eps) mean and tail fractions,
+    and step-to-step momentum persistence cos(m_t, m_{t-1}). Analysis-only (small all-reduce overhead)."""
     use_vllm_logprobs: bool = False
     """whether to use vLLM's logprobs for training instead of calculating them via forward pass"""
 
@@ -674,9 +729,11 @@ def compute_sequence_tis_mask(
     """Gate a whole sequence using the geometric mean of ρ_t = π_θ / π_rollout.
 
     The aggregation is evaluated in log space for numerical stability:
-    ``log(ρ_geo) = mean_t(log(ρ_t))``. The returned decision is broadcast to
-    every valid response token in the sequence. Also returns scalar counts of
-    sequences masked by the lower bound, masked by the upper bound, and evaluated.
+    ``log(ρ_geo) = mean_t(log(ρ_t))``. A sequence is masked when ρ_geo falls
+    below ``ratio_lower_bound`` or rises above ``ratio_upper_bound``. The
+    per-sequence decision is broadcast to every valid response token. Also
+    returns scalar counts of sequences masked by the lower bound, masked by the
+    upper bound, and evaluated (for logging mask rates).
     """
     zero_count = torch.zeros((), dtype=torch.float32, device=response_mask.device)
     if ratio_lower_bound <= 0.0 and ratio_upper_bound <= 0.0:

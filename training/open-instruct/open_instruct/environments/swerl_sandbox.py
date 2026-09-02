@@ -211,8 +211,11 @@ class SWERLSandboxEnv(RLEnvironment):
         resolved_image = kwargs.get("image")
         if not resolved_image and self._task_data_dir and task_id:
             task_dir = os.path.join(self._task_data_dir, task_id)
-            image_file = os.path.join(task_dir, "image.txt")
-            if os.path.isfile(image_file):
+            image_file = next(
+                (os.path.join(task_dir, name) for name in ("image.txt", "image.text") if os.path.isfile(os.path.join(task_dir, name))),
+                None,
+            )
+            if image_file is not None:
                 with open(image_file, encoding="utf-8") as f:
                     image_tag = f.read().strip()
                 if image_tag:
@@ -232,7 +235,7 @@ class SWERLSandboxEnv(RLEnvironment):
             )
             raise ValueError(
                 "SWERLSandboxEnv requires an explicit image per task. "
-                "Set env_config.image or provide image.txt in task data."
+                "Set env_config.image or provide image.txt/image.text in task data."
             )
         self._backend_kwargs["image"] = resolved_image
         if self._backend_type == "docker" and kwargs.get("docker_host"):
@@ -264,7 +267,12 @@ class SWERLSandboxEnv(RLEnvironment):
         self._task_id = task_id
         self._max_steps = kwargs.get("max_steps")
 
-        self._backend.run_command("mkdir -p /workspace /output /logs/verifier")
+        mkdir_result = self._backend.run_command("mkdir -p /workspace /output /logs/verifier")
+        if mkdir_result.exit_code != 0:
+            raise RuntimeError(
+                "Failed to initialize SWERL sandbox directories "
+                f"(exit={mkdir_result.exit_code}): {mkdir_result.stderr or mkdir_result.stdout}"
+            )
         record_phase("mkdir")
 
         # Load task data if available
@@ -368,6 +376,7 @@ class SWERLSandboxEnv(RLEnvironment):
                     done=True,
                     metadata={"oom_killed": True, "task_id": self._task_id},
                 )
+            # SandboxLostError subclasses RuntimeError, so it must be caught first.
             except SandboxLostError as e:
                 logger.warning(f"[{self._task_id}] sandbox worker lost: {e}")
                 with contextlib.suppress(Exception):
@@ -383,6 +392,19 @@ class SWERLSandboxEnv(RLEnvironment):
                         "error": str(e),
                         "task_id": self._task_id,
                     },
+                )
+            except RuntimeError as e:
+                if "Instance not started" not in str(e):
+                    raise
+                logger.warning(f"[{self._task_id}] sandbox backend unavailable after timeout: {e}")
+                return StepResult(
+                    result=(
+                        "Sandbox backend is no longer running, likely after a command timeout. "
+                        "Ending episode with reward 0."
+                    ),
+                    reward=0.0,
+                    done=True,
+                    metadata={"timeout": True, "backend_unavailable": True, "task_id": self._task_id},
                 )
         else:
             return self._with_last_step_warning(
@@ -417,8 +439,25 @@ class SWERLSandboxEnv(RLEnvironment):
         # Prefix with the command to match SFT training data format
         output = f"{command}\n{output}" if output else command
 
+        if result.exit_code == 124:
+            output = _truncate(output) or "Command timed out."
+            logger.info(
+                "[%s] bash command timed out exit=%s command=%r output_preview=%r",
+                self._task_id,
+                result.exit_code,
+                command[:500],
+                str(output)[:500],
+            )
+            return StepResult(
+                result=str(output),
+                reward=0.0,
+                done=True,
+                metadata={"exit_code": result.exit_code, "timeout": True, "task_id": self._task_id},
+            )
+
         # Check for submit marker
         if SUBMIT_MARKER in output:
+            logger.info("[%s] submit marker detected; running tests", self._task_id)
             return self._run_tests()
 
         output = _truncate(output) or "(no output)"
@@ -463,6 +502,14 @@ class SWERLSandboxEnv(RLEnvironment):
         result = self._backend.run_command("bash /tests/test.sh", timeout=self._test_timeout)
 
         reward = self._parse_reward()
+        logger.info(
+            "[%s] tests completed exit=%s reward=%s stdout_preview=%r stderr_preview=%r",
+            self._task_id,
+            result.exit_code,
+            reward,
+            (result.stdout or "")[:500],
+            (result.stderr or "")[:500],
+        )
 
         stdout = _truncate(result.stdout) if result.stdout else ""
         stderr = _truncate(result.stderr) if result.stderr else ""

@@ -151,6 +151,83 @@ def _count_sampled_episodes_for_step(
     return sampled_prompt_groups * streaming_config.num_samples_per_prompt_rollout
 
 
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        logger.warning("Invalid int for %s=%r; using default %s", name, value, default)
+        return default
+
+
+def _fail_on_orphaned_exclusion_knobs() -> None:
+    """Fail fast (tmax-private#1): the HFDataLoader side of these env knobs was removed at
+    tmax@61b5a85d (pre-sync data_loader read them itself during shuffling/state-restore;
+    the pinned data_loader has zero consumers), so honoring them silently trains on the
+    wrong claim. SWERL_EXCLUDE_TASK_TEXT_REGEX is the same family — found while verifying
+    the two named knobs."""
+    for knob in ("SWERL_EXCLUDE_DATASET_INDICES", "SWERL_EXCLUDE_TASK_TEXT_REGEX"):
+        if os.environ.get(knob, "").strip():
+            raise RuntimeError(
+                f"{knob} is set, but its HFDataLoader consumer was removed at tmax@61b5a85d — "
+                "the exclusion would be silently ignored. Unset it; restoration is tracked in "
+                "hamishivi/tmax-private#1."
+            )
+
+
+def _apply_debug_resume_data_skip(checkpoint_state: dict[str, Any] | None) -> dict[str, Any] | None:
+    skip_batches = _env_int("SWERL_SKIP_DATA_BATCHES_ON_RESUME", 0)
+    if skip_batches > 0:
+        # Fail fast (tmax-private#1): upstream 61b5a85d re-derives the stream position from
+        # iter_dataloader_state in DataPreparationActor.set_state; advancing training_step
+        # alone no longer skips batches — it desynchronizes the step counter from the actual
+        # iterator, a silent half-no-op. Restore the two-sided semantics with tests before
+        # re-enabling this knob.
+        raise RuntimeError(
+            "SWERL_SKIP_DATA_BATCHES_ON_RESUME is set, but its dataloader side was removed at "
+            "tmax@61b5a85d (stream position now comes from iter_dataloader_state, not training_step). "
+            "Unset it; restoring the semantics is tracked in hamishivi/tmax-private#1."
+        )
+    if checkpoint_state is None or skip_batches <= 0:
+        return checkpoint_state
+
+    dataloader_state = checkpoint_state.get("dataloader_state")
+    if not isinstance(dataloader_state, dict) or "training_step" not in dataloader_state:
+        logger.warning(
+            "SWERL_SKIP_DATA_BATCHES_ON_RESUME=%s but checkpoint has no dataloader_state.training_step; "
+            "streaming dataloader will not be advanced.",
+            skip_batches,
+        )
+        return checkpoint_state
+
+    checkpoint_state = dict(checkpoint_state)
+    dataloader_state = dict(dataloader_state)
+    old_training_step = int(dataloader_state["training_step"])
+    skip_before_step = _env_int("SWERL_SKIP_DATA_BATCHES_ON_RESUME_BEFORE_STEP", -1)
+    if skip_before_step >= 0 and old_training_step >= skip_before_step:
+        logger.warning(
+            "Not advancing resumed streaming dataloader by %s batches: dataloader training_step=%s is already >= "
+            "SWERL_SKIP_DATA_BATCHES_ON_RESUME_BEFORE_STEP=%s",
+            skip_batches,
+            old_training_step,
+            skip_before_step,
+        )
+        return checkpoint_state
+
+    dataloader_state["training_step"] = old_training_step + skip_batches
+    checkpoint_state["dataloader_state"] = dataloader_state
+    logger.warning(
+        "Debug advancing resumed streaming dataloader by %s training batches: training_step %s -> %s. "
+        "Model/optimizer checkpoint step is unchanged.",
+        skip_batches,
+        old_training_step,
+        dataloader_state["training_step"],
+    )
+    return checkpoint_state
+
+
 def _build_data_prep_actor_resume_state(checkpoint_state: dict[str, Any] | None) -> dict[str, Any] | None:
     if checkpoint_state is None:
         return None
@@ -179,6 +256,33 @@ def _build_data_prep_actor_resume_state(checkpoint_state: dict[str, Any] | None)
 CHECKPOINT_COMPLETE_MARKER = ".checkpoint_complete"
 WEIGHT_SYNC_TIMEOUT_S = 7200.0
 EXCLUDED_ENV_VARS = {"CUDA_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"}
+
+
+def _ray_runtime_env_from_environment() -> dict[str, Any] | None:
+    mode = os.environ.get("OPEN_INSTRUCT_RAY_RUNTIME_ENV", "full").strip().lower()
+    if mode in {"0", "false", "none", "off", "disabled", "disable-gcs-runtime-env"}:
+        logger.info("Skipping Ray runtime_env because OPEN_INSTRUCT_RAY_RUNTIME_ENV=%s", mode)
+        return None
+    if mode == "minimal":
+        keep = {
+            "PATH",
+            "PYTHONPATH",
+            "UV_PROJECT_ENVIRONMENT",
+            "HF_HOME",
+            "HF_HUB_CACHE",
+            "HF_DATASETS_CACHE",
+            "TRANSFORMERS_CACHE",
+            "RAY_ADDRESS",
+            "RAY_TMPDIR",
+            "NCCL_CUMEM_ENABLE",
+            "NCCL_SOCKET_IFNAME",
+        }
+        env_vars = {k: v for k, v in os.environ.items() if k in keep and k not in EXCLUDED_ENV_VARS}
+    else:
+        if mode != "full":
+            logger.warning("Unknown OPEN_INSTRUCT_RAY_RUNTIME_ENV=%s; using full runtime_env", mode)
+        env_vars = {k: v for k, v in os.environ.items() if k not in EXCLUDED_ENV_VARS}
+    return {"excludes": [".git/"], "env_vars": env_vars}
 
 
 def _build_vlm_name_mapper(model_name: str):
@@ -284,6 +388,10 @@ class PolicyTrainerRayProcess(RayProcess):
         ds_config["train_micro_batch_size_per_gpu"] = args.per_device_train_batch_size
         ds_config["gradient_accumulation_steps"] = 1
         ds_config["checkpoint"] = {"load_universal": args.deepspeed_checkpoint_load_universal}
+        if args.optimizer_type != "adamw":
+            # DeepSpeed only whitelists Adam-family optimizers; SGD (and other
+            # non-Adam optimizers) trip an assertion unless this flag is set.
+            ds_config["zero_allow_untested_optimizer"] = True
         # @vwxyzjn: MAGIC: it's actually needed to initialize this `dschf`, so
         # https://huggingface.co/docs/transformers/deepspeed#non-trainer-deepspeed-integration
         # next line instructs transformers to partition the model directly over multiple gpus using
@@ -319,7 +427,18 @@ class PolicyTrainerRayProcess(RayProcess):
             optim_params = get_optimizer_grouped_parameters(self.policy, args.weight_decay)
         else:
             optim_params = self.policy.parameters()
-        self.optimizer = torch.optim.AdamW(optim_params, lr=args.learning_rate, fused=args.fused_optimizer)
+        if args.optimizer_type == "sgd":
+            self.optimizer = torch.optim.SGD(
+                optim_params, lr=args.learning_rate, momentum=args.sgd_momentum, weight_decay=args.weight_decay
+            )
+            logger.info(f"Using SGD optimizer (lr={args.learning_rate}, momentum={args.sgd_momentum}).")
+        elif args.optimizer_type == "adamw":
+            self.optimizer = torch.optim.AdamW(
+                optim_params, lr=args.learning_rate, eps=args.adam_epsilon, fused=args.fused_optimizer
+            )
+            logger.info(f"Using AdamW optimizer (lr={args.learning_rate}, eps={args.adam_epsilon}).")
+        else:
+            raise ValueError(f"Unknown optimizer_type: {args.optimizer_type!r}. Must be 'adamw' or 'sgd'.")
         num_scheduler_steps = args.num_training_steps * args.num_epochs * args.num_mini_batches
         warmup_steps = int(num_scheduler_steps * args.warmup_ratio)
         scheduler = get_scheduler(
@@ -799,6 +918,17 @@ class PolicyTrainerRayProcess(RayProcess):
         if ref_logprobs is not None:
             ref_logprobs = torch.where(response_mask, ref_logprobs, torch.zeros_like(ref_logprobs))
 
+        # Proposed method 1: only let successful (advantage > 0) trajectories contribute
+        # gradient, so AdamW momentum accumulates SFT-like (positive) updates only.
+        # Fold an ``advantage > 0`` keep-mask into policy_freeze_mask (freeze => detach).
+        # ``_leaky_force_positive_only`` is set during the leaky-momentum 2nd backward pass.
+        if getattr(self.args, "positive_advantage_only", False) or getattr(self, "_leaky_force_positive_only", False):
+            pos_keep = (advantages > 0) & response_mask
+            if policy_freeze_mask is None:
+                policy_freeze_mask = pos_keep
+            else:
+                policy_freeze_mask = policy_freeze_mask.bool() & pos_keep
+
         if loss_denominator_mode == "sequence":
             loss_weights, _ = grpo_utils._sequence_loss_weights(response_mask, rollout_sample_ids, self._sp_group)
             current_global_count = loss_weights.sum().float().detach()
@@ -1086,6 +1216,7 @@ class PolicyTrainerRayProcess(RayProcess):
         tvpo_mask_total_tokens = torch.zeros((), device=device)
         tvpo_tv_weighted_sum = torch.zeros((), device=device)
         tvpo_tv_weight = torch.zeros((), device=device)
+        self._leaky_group_kwargs = []  # cache of per-microbatch loss kwargs for leaky-negative-momentum
         # Do multiple epochs of training on on-policy data (PPO-style), with a fresh random shuffle in each epoch
         with Timer("[Training Processes] Loss calculation", noop=self.rank != 0):
             loss_stats_B = grpo_utils.create_loss_stats(num_samples, device, record_entropy=self.args.record_entropy)
@@ -1151,18 +1282,21 @@ class PolicyTrainerRayProcess(RayProcess):
                                 self.args.tis_mask_lower,
                                 self.args.tis_mask_upper,
                             )
-                            (sequence_tis_mask_BT, sequence_lower_masked, sequence_upper_masked, sequence_total) = (
-                                grpo_utils.compute_sequence_tis_mask(
-                                    debug_logprobs_BT,
-                                    vllm_logprobs_BT,
-                                    response_mask_BT,
-                                    data_BT.rollout_sample_ids[i][:, 1:]
-                                    if data_BT.rollout_sample_ids is not None
-                                    else None,
-                                    self._sp_group,
-                                    self.args.sequence_tis_mask_lower,
-                                    self.args.sequence_tis_mask_upper,
-                                )
+                            (
+                                sequence_tis_mask_BT,
+                                sequence_lower_masked,
+                                sequence_upper_masked,
+                                sequence_total,
+                            ) = grpo_utils.compute_sequence_tis_mask(
+                                debug_logprobs_BT,
+                                vllm_logprobs_BT,
+                                response_mask_BT,
+                                data_BT.rollout_sample_ids[i][:, 1:]
+                                if data_BT.rollout_sample_ids is not None
+                                else None,
+                                self._sp_group,
+                                self.args.sequence_tis_mask_lower,
+                                self.args.sequence_tis_mask_upper,
                             )
                             sequence_tis_lower_masked += sequence_lower_masked
                             sequence_tis_upper_masked += sequence_upper_masked
@@ -1214,7 +1348,9 @@ class PolicyTrainerRayProcess(RayProcess):
                                 tvpo_tv_weight += response_mask_BT.sum()
                         is_accumulation_boundary = (local_step + 1) % accumulation_steps == 0
                         self.model.set_gradient_accumulation_boundary(is_accumulation_boundary)
-                        loss, tiled_metrics = self._compute_tiled_dapo_loss(
+                        leaky_enabled = getattr(self.args, "leaky_negative_momentum", False)
+                        robust_enabled = getattr(self.args, "robust_momentum", False)
+                        loss_kwargs = dict(
                             query_responses=data_BT.query_responses[i],
                             position_ids=data_BT.position_ids[i],
                             response_mask=response_mask_BT,
@@ -1233,12 +1369,41 @@ class PolicyTrainerRayProcess(RayProcess):
                             ),
                             cp_context=cp_contexts_BT[i],
                         )
+                        loss, tiled_metrics = self._compute_tiled_dapo_loss(**loss_kwargs)
 
                         torch.cuda.empty_cache()
                         self.model.backward(loss)
                         if is_accumulation_boundary:
-                            self.model.step()
-                            grad_norms.append(float(self.model.get_global_grad_norm()))
+                            if leaky_enabled:
+                                # Leaky-negative-momentum (all fwd/bwd BEFORE the step to avoid overlap
+                                # with the inflight weight-sync thread):
+                                #  1) capture full grad + snapshot moments m0,v0
+                                #  2) positive-only pass -> g_pos, then restore full grad
+                                #  3) full step (theta,v,exp_avg from full grad)
+                                #  4) arithmetic surgery: store positive-only moments
+                                leaky_g_full = self._leaky_capture_grads()
+                                leaky_m0, leaky_v0 = self._leaky_snapshot_moments()
+                                leaky_g_pos = self._leaky_positive_grads(self._leaky_group_kwargs + [loss_kwargs])
+                                self._leaky_restore_grads(leaky_g_full)
+                                self.model.step()
+                                grad_norms.append(float(self.model.get_global_grad_norm()))
+                                self._leaky_surgery(leaky_m0, leaky_v0, leaky_g_pos)
+                                if getattr(self.args, "log_momentum_diagnostics", False):
+                                    self._leaky_log_decomp(leaky_m0, leaky_g_full, leaky_g_pos)
+                                self._leaky_group_kwargs = []
+                            elif robust_enabled:
+                                # Outlier-robust (spikiness-filtered) momentum: normal full step, then
+                                # rewrite exp_avg to use a per-coordinate Winsorized gradient (1 backward).
+                                robust_m0, _ = self._leaky_snapshot_moments()
+                                self.model.step()
+                                grad_norms.append(float(self.model.get_global_grad_norm()))
+                                self._robust_momentum_surgery(robust_m0)
+                            else:
+                                self._grad_spike_clip()
+                                self.model.step()
+                                grad_norms.append(float(self.model.get_global_grad_norm()))
+                        elif leaky_enabled:
+                            self._leaky_group_kwargs.append(loss_kwargs)
                         local_step += 1
                         # Bound inter-iteration drift from async backward/ZeRO work
                         # before this rank starts the next sample.
@@ -1311,16 +1476,19 @@ class PolicyTrainerRayProcess(RayProcess):
                         self.args.tis_mask_lower,
                         self.args.tis_mask_upper,
                     )
-                    (sequence_tis_mask_BT, sequence_lower_masked, sequence_upper_masked, sequence_total) = (
-                        grpo_utils.compute_sequence_tis_mask(
-                            new_logprobs_BT,
-                            vllm_logprobs_BT,
-                            response_mask_BT,
-                            data_BT.rollout_sample_ids[i][:, 1:] if data_BT.rollout_sample_ids is not None else None,
-                            self._sp_group,
-                            self.args.sequence_tis_mask_lower,
-                            self.args.sequence_tis_mask_upper,
-                        )
+                    (
+                        sequence_tis_mask_BT,
+                        sequence_lower_masked,
+                        sequence_upper_masked,
+                        sequence_total,
+                    ) = grpo_utils.compute_sequence_tis_mask(
+                        new_logprobs_BT,
+                        vllm_logprobs_BT,
+                        response_mask_BT,
+                        data_BT.rollout_sample_ids[i][:, 1:] if data_BT.rollout_sample_ids is not None else None,
+                        self._sp_group,
+                        self.args.sequence_tis_mask_lower,
+                        self.args.sequence_tis_mask_upper,
                     )
                     sequence_tis_lower_masked += sequence_lower_masked
                     sequence_tis_upper_masked += sequence_upper_masked
@@ -1521,6 +1689,8 @@ class PolicyTrainerRayProcess(RayProcess):
                     self.local_metrics["actor/ppo_tv"] = float(tvpo_tv)
                 if grad_norms:
                     self.local_metrics["optim/grad_norm"] = sum(grad_norms) / len(grad_norms)
+                if getattr(self.args, "log_momentum_diagnostics", False):
+                    self._log_momentum_diagnostics()
                 array_metrics = {}
                 for key, value in batch_metrics.items():
                     if value is None:
@@ -1530,6 +1700,291 @@ class PolicyTrainerRayProcess(RayProcess):
                     else:
                         array_metrics[key] = value
                 return self.local_metrics.get_metrics_list(), array_metrics
+
+    def _leaky_snapshot_moments(self) -> tuple[dict, dict]:
+        """Snapshot exp_avg (m0) and exp_avg_sq (v0) per param before the full step.
+        Returns {id(param): tensor}. Missing state (very first step) -> absent key (treated as 0)."""
+        from deepspeed.utils import safe_get_local_optimizer_state
+
+        m0, v0 = {}, {}
+        for p in self.model.module.parameters():
+            if not p.requires_grad:
+                continue
+            try:
+                m0[id(p)] = safe_get_local_optimizer_state(p, "exp_avg").clone()
+                v0[id(p)] = safe_get_local_optimizer_state(p, "exp_avg_sq").clone()
+            except Exception:
+                pass  # state not yet initialized (first step) -> treat as zeros
+        return m0, v0
+
+    def _robust_momentum_surgery(self, m0: dict) -> None:
+        """Outlier-robust momentum (spikiness-filtered), pure post-step arithmetic, no extra backward.
+        After the normal full-gradient AdamW step, recover the gradient from the exp_avg delta
+        (g = (exp_avg - beta1*m0)/(1-beta1)), Winsorize it per-coordinate to +/- c*sqrt(v_hat), and
+        rewrite the STORED momentum exp_avg <- beta1*m0 + (1-beta1)*g_clip. theta and exp_avg_sq (full v)
+        are left as the normal step produced them (so the current step + v use the full gradient)."""
+        from deepspeed.utils import safe_get_local_optimizer_state, safe_set_local_optimizer_state
+
+        opt = getattr(self.optimizer, "optimizer", self.optimizer)
+        beta1, beta2 = opt.param_groups[0]["betas"]
+        c = float(getattr(self.args, "robust_momentum_c", 4.0))
+        # global step count for bias correction (from any state entry)
+        t = 1.0
+        for st in opt.state.values():
+            sv = st.get("step")
+            if sv is not None:
+                t = float(sv.item()) if torch.is_tensor(sv) else float(sv)
+                break
+        t = max(t, 1.0)
+        bc2 = 1.0 - beta2 ** t
+        n_clipped = torch.zeros((), dtype=torch.float64, device=torch.device(f"cuda:{self.local_rank}"))
+        n_total = torch.zeros((), dtype=torch.float64, device=torch.device(f"cuda:{self.local_rank}"))
+        for p in self.model.module.parameters():
+            if not p.requires_grad:
+                continue
+            m0p = m0.get(id(p))
+            if m0p is None:
+                continue  # first step: no prior momentum -> leave full
+            m_after = safe_get_local_optimizer_state(p, "exp_avg")
+            v_after = safe_get_local_optimizer_state(p, "exp_avg_sq")
+            if m_after is None or v_after is None:
+                continue
+            m_after = m_after.to(torch.float32)
+            v_after = v_after.to(torch.float32)
+            g = (m_after - beta1 * m0p.to(torch.float32)) / (1.0 - beta1)  # recovered (clipped) gradient
+            scale = c * (v_after / bc2).sqrt()  # c * sqrt(v_hat), per-coordinate
+            g_clip = torch.clamp(g, -scale, scale)
+            m_robust = beta1 * m0p.to(torch.float32) + (1.0 - beta1) * g_clip
+            safe_set_local_optimizer_state(p, m_robust, "exp_avg")
+            n_clipped += (g.abs() > scale).sum()
+            n_total += g.numel()
+        try:
+            dist.all_reduce(n_clipped, op=dist.ReduceOp.SUM)
+            dist.all_reduce(n_total, op=dist.ReduceOp.SUM)
+            if float(n_total) > 0:
+                self.local_metrics["robust/frac_coords_clipped"] = float(n_clipped) / float(n_total)
+        except Exception:
+            pass
+
+    def _grad_spike_clip(self) -> float:
+        """Skip-step-on-spike: EMA-relative adaptive gradient clamp, applied BEFORE model.step().
+
+        Computes the global pre-step grad norm gn; if gn exceeds k * EMA(grad_norm), rescale the
+        accumulated gradient so its norm == k * EMA (neutralizing the spike before it reaches
+        theta / m / v). The EMA is updated with the post-clamp norm so a spike cannot inflate the
+        reference. Returns the pre-clamp gn (for logging). No-op when grad_spike_clip_k <= 0.
+
+        The absolute value of gn may include a sequence-parallel replication factor, but the spike
+        decision and the applied scale are both ratios (gn / EMA), so that factor cancels.
+        """
+        from deepspeed.utils import safe_get_local_grad, safe_set_local_grad
+
+        k = float(getattr(self.args, "grad_spike_clip_k", 0.0))
+        if k <= 0:
+            return float("nan")
+        dev = torch.device(f"cuda:{self.local_rank}")
+        sq = torch.zeros((), dtype=torch.float64, device=dev)
+        grads = []
+        for p in self.model.module.parameters():
+            if not p.requires_grad:
+                continue
+            g = safe_get_local_grad(p)
+            if g is None:
+                continue
+            sq += (g.to(torch.float64) ** 2).sum()
+            grads.append((p, g))
+        dist.all_reduce(sq, op=dist.ReduceOp.SUM)
+        gn = float(sq.sqrt())
+        ema = getattr(self, "_gradnorm_ema", None)
+        beta = float(getattr(self.args, "grad_spike_ema_beta", 0.98))
+        spiked = ema is not None and gn > k * ema
+        if spiked:
+            thresh = k * ema
+            scale = thresh / max(gn, 1e-12)
+            for p, g in grads:
+                safe_set_local_grad(p, (g.to(torch.float32) * scale))
+            gn_eff = thresh
+            self._grad_spike_count = getattr(self, "_grad_spike_count", 0) + 1
+        else:
+            gn_eff = gn
+        self._gradnorm_ema = gn_eff if ema is None else beta * ema + (1.0 - beta) * gn_eff
+        self._grad_spike_seen = getattr(self, "_grad_spike_seen", 0) + 1
+        self.local_metrics["optim/gradnorm_ema"] = self._gradnorm_ema
+        self.local_metrics["optim/gradnorm_preclip"] = gn
+        self.local_metrics["optim/grad_spike_clipped"] = 1.0 if spiked else 0.0
+        self.local_metrics["optim/grad_spike_frac"] = getattr(self, "_grad_spike_count", 0) / max(
+            getattr(self, "_grad_spike_seen", 1), 1
+        )
+        return gn
+
+    def _leaky_capture_grads(self) -> dict:
+        """Snapshot the current reduced local gradient (g_full) per param."""
+        from deepspeed.utils import safe_get_local_grad
+
+        out = {}
+        for p in self.model.module.parameters():
+            if not p.requires_grad:
+                continue
+            g = safe_get_local_grad(p)
+            if g is not None:
+                out[id(p)] = g.detach().clone()
+        return out
+
+    def _leaky_positive_grads(self, group_kwargs: list) -> dict:
+        """Re-run the accumulation group in positive-advantage-only mode (BEFORE the optimizer
+        step, so no overlap with the inflight weight-sync thread) and return g_pos per param.
+        Overwrites .grad with g_pos; caller must restore g_full before stepping."""
+        from deepspeed.utils import safe_get_local_grad
+
+        self.model.zero_grad()
+        self._leaky_force_positive_only = True
+        try:
+            n = len(group_kwargs)
+            for k, kw in enumerate(group_kwargs):
+                self.model.set_gradient_accumulation_boundary(k + 1 == n)
+                loss, _ = self._compute_tiled_dapo_loss(**kw)
+                self.model.backward(loss)
+        finally:
+            self._leaky_force_positive_only = False
+        out = {}
+        for p in self.model.module.parameters():
+            if not p.requires_grad:
+                continue
+            g = safe_get_local_grad(p)
+            if g is not None:
+                out[id(p)] = g.detach().clone()
+        return out
+
+    def _leaky_restore_grads(self, g_full: dict) -> None:
+        """Restore the full gradient so the real optimizer step uses it."""
+        from deepspeed.utils import safe_set_local_grad
+
+        for p in self.model.module.parameters():
+            if not p.requires_grad:
+                continue
+            g = g_full.get(id(p))
+            if g is not None:
+                safe_set_local_grad(p, g)
+
+    def _leaky_surgery(self, m0: dict, v0: dict, g_pos: dict) -> None:
+        """Overwrite the STORED moments with positive-only values (arithmetic only, no fwd/bwd,
+        so safe to run after the step alongside the weight-sync thread):
+            exp_avg    <- beta1*m0 + (1-beta1)*g_pos
+            exp_avg_sq <- beta2*v0 + (1-beta2)*g_pos^2 ."""
+        from deepspeed.utils import safe_set_local_optimizer_state
+
+        opt = getattr(self.optimizer, "optimizer", self.optimizer)
+        beta1, beta2 = opt.param_groups[0]["betas"]
+        for p in self.model.module.parameters():
+            if not p.requires_grad:
+                continue
+            gp = g_pos.get(id(p))
+            if gp is None:
+                continue
+            gp = gp.to(torch.float32)
+            m0p = m0.get(id(p))
+            v0p = v0.get(id(p))
+            m_new = (1 - beta1) * gp if m0p is None else beta1 * m0p + (1 - beta1) * gp
+            safe_set_local_optimizer_state(p, m_new, "exp_avg")
+            if not getattr(self.args, "leaky_full_v", False):
+                v_new = (1 - beta2) * gp * gp if v0p is None else beta2 * v0p + (1 - beta2) * gp * gp
+                safe_set_local_optimizer_state(p, v_new, "exp_avg_sq")
+
+    def _leaky_log_decomp(self, m0: dict, g_full: dict, g_pos: dict) -> None:
+        """Log how the stored (positive-only) momentum correlates with the current-step
+        positive vs negative gradient parts (g_neg = g_full - g_pos). All-reduced global
+        cosines/norms. Answers: does g_neg oppose the accumulated momentum (a brake)? is
+        g_pos reinforcing it (self-amplification)?"""
+        try:
+            dev = torch.device(f"cuda:{self.local_rank}")
+            acc = torch.zeros(8, dtype=torch.float64, device=dev)  # |m|2,|gp|2,|gn|2, m.gp, m.gn, gp.gn, |gf|2, gf.m
+            for p in self.model.module.parameters():
+                if not p.requires_grad:
+                    continue
+                gf = g_full.get(id(p))
+                gp = g_pos.get(id(p))
+                if gf is None or gp is None:
+                    continue
+                gf = gf.to(torch.float32).flatten()
+                gp = gp.to(torch.float32).flatten()
+                gn = gf - gp
+                m = m0.get(id(p))
+                m = m.to(torch.float32).flatten() if m is not None else torch.zeros_like(gf)
+                acc[0] += (m * m).sum(); acc[1] += (gp * gp).sum(); acc[2] += (gn * gn).sum()
+                acc[3] += (m * gp).sum(); acc[4] += (m * gn).sum(); acc[5] += (gp * gn).sum()
+                acc[6] += (gf * gf).sum(); acc[7] += (gf * m).sum()
+            dist.all_reduce(acc, op=dist.ReduceOp.SUM)
+            mn, gpn, gnn, m_gp, m_gn, gp_gn, gfn, gf_m = acc.tolist()
+            eps = 1e-30
+            self.local_metrics["leaky/gpos_norm"] = gpn ** 0.5
+            self.local_metrics["leaky/gneg_norm"] = gnn ** 0.5
+            self.local_metrics["leaky/gneg_over_gpos"] = (gnn ** 0.5) / (gpn ** 0.5 + eps)
+            self.local_metrics["leaky/cos_m_gpos"] = m_gp / ((mn ** 0.5) * (gpn ** 0.5) + eps)
+            self.local_metrics["leaky/cos_m_gneg"] = m_gn / ((mn ** 0.5) * (gnn ** 0.5) + eps)
+            self.local_metrics["leaky/cos_gpos_gneg"] = gp_gn / ((gpn ** 0.5) * (gnn ** 0.5) + eps)
+        except Exception as e:
+            logger.warning(f"leaky_log_decomp failed (non-fatal): {e}")
+
+    def _log_momentum_diagnostics(self) -> None:
+        """Analysis-only: log global AdamW optimizer-state diagnostics for this step.
+
+        Computes bias-corrected Adam directedness rho = |m_hat| / (sqrt(v_hat) + eps)
+        over the whole (ZeRO-partitioned) optimizer state, plus momentum RMS/norm and a
+        step-to-step momentum persistence cosine. Wrapped in try/except so it can never
+        interrupt training. Reported quantities that are ratios (rho, rms, cos) are
+        invariant to any sequence-parallel replication of the partitions.
+        """
+        try:
+            beta1, beta2 = 0.9, 0.999
+            opt = getattr(self.optimizer, "optimizer", self.optimizer)
+            device = torch.device(f"cuda:{self.local_rank}")
+            acc = torch.zeros(9, dtype=torch.float64, device=device)  # on-GPU accumulators (1 sync total)
+            prev = getattr(self, "_prev_momentum_flat", None)
+            new_prev = []
+            pi = 0
+            for st in opt.state.values():
+                m = st.get("exp_avg")
+                v = st.get("exp_avg_sq")
+                if m is None or v is None:
+                    continue
+                step_t = st.get("step")
+                t = float(step_t.item()) if torch.is_tensor(step_t) else float(step_t or 1)
+                t = max(t, 1.0)
+                bc1 = 1.0 - beta1**t
+                bc2 = 1.0 - beta2**t
+                mf = m.detach().to(torch.float32).flatten()
+                vf = v.detach().to(torch.float32).flatten()
+                mhat = mf / bc1
+                sv = (vf / bc2).sqrt() + 1e-8
+                rho = mhat.abs() / sv
+                acc[0] += (mhat * mhat).sum()
+                acc[1] += mhat.abs().sum()
+                acc[2] += vf.sum()
+                acc[3] += rho.sum()
+                acc[4] += (rho > 0.5).sum()
+                acc[5] += (rho > 0.8).sum()
+                acc[6] += mf.numel()
+                if prev is not None and pi < len(prev) and prev[pi].numel() == mf.numel():
+                    pm = prev[pi].to(mf.device, non_blocking=True)
+                    acc[7] += (mf * pm).sum()
+                    acc[8] += (pm * pm).sum()
+                new_prev.append(mf.detach().to("cpu"))
+                pi += 1
+            self._prev_momentum_flat = new_prev
+            dist.all_reduce(acc, op=dist.ReduceOp.SUM)
+            sum_m2, sum_absm, sum_v, sum_rho, sum_r05, sum_r08, count, dot_prev, prev_n2 = acc.tolist()
+            if count > 0:
+                self.local_metrics["optim/m_rms"] = (sum_m2 / count) ** 0.5
+                self.local_metrics["optim/m_absmean"] = sum_absm / count
+                self.local_metrics["optim/m_l2"] = sum_m2**0.5
+                self.local_metrics["optim/v_rms"] = (sum_v / count) ** 0.5
+                self.local_metrics["optim/rho_mean"] = sum_rho / count
+                self.local_metrics["optim/frac_rho_gt0.5"] = sum_r05 / count
+                self.local_metrics["optim/frac_rho_gt0.8"] = sum_r08 / count
+            if prev_n2 > 0 and sum_m2 > 0:
+                self.local_metrics["optim/momentum_persist_cos"] = dot_prev / ((sum_m2**0.5) * (prev_n2**0.5))
+        except Exception as e:
+            logger.warning(f"log_momentum_diagnostics failed (non-fatal): {e}")
 
     def dummy_optimizer_step(self) -> None:
         """Run one zero-loss optimizer step to initialize ZeRO-3's internal NCCL
@@ -1966,6 +2421,8 @@ def setup_datasets(
         system_prompt_override=system_prompt_override,
     )
 
+    _fail_on_orphaned_exclusion_knobs()
+
     _validate_and_log_dataset_tools(train_dataset, configured_tool_call_names, "train_dataset")
 
     if len(streaming_config.dataset_mixer_eval_list) > 0:
@@ -2102,7 +2559,12 @@ def create_model_and_optimizer(
 ]:
     """Create the model, optimizer, and vLLM engines."""
     # Create placement group
-    bundles = [{"GPU": actor_num_gpus, "CPU": actor_num_gpus * 10} for actor_num_gpus in args.num_learners_per_node]
+    trainer_cpus_per_gpu = float(os.environ.get("GRPO_TRAINER_CPUS_PER_GPU", "10"))
+    bundles = [
+        {"GPU": actor_num_gpus, "CPU": actor_num_gpus * trainer_cpus_per_gpu}
+        for actor_num_gpus in args.num_learners_per_node
+    ]
+    logger.info("Trainer placement group bundles: %s", bundles)
     pg = placement_group(bundles, strategy="STRICT_SPREAD")
     ray_get_with_progress([pg.ready()], desc="Waiting for placement group")
 
@@ -2245,7 +2707,7 @@ def create_model_and_optimizer(
     # Wait for policy models to finish loading
     results, _ = ray_get_with_progress(inits, desc="Initializing models")
     resume_training_step = results[0]["optimization_steps_done"] + 1
-    checkpoint_state = results[0]["checkpoint_state"]
+    checkpoint_state = _apply_debug_resume_data_skip(results[0]["checkpoint_state"])
     episode = (
         (resume_training_step - 1)
         * streaming_config.num_unique_prompts_rollout
@@ -2495,6 +2957,9 @@ def one_training_step(
         "val/ratio",
         "val/ratio_var",
         "debug/tis_mask_frac_kept",
+        "debug/sequence_tis_mask_lower_frac",
+        "debug/sequence_tis_mask_upper_frac",
+        "debug/sequence_tis_mask_frac_kept",
         "debug/dppo_mask_frac_kept",
         "debug/tvpo_mask_frac_kept",
         "actor/ppo_tv",
@@ -3123,6 +3588,13 @@ def run_training(
     save_final_model(args, policy_group, tokenizer, training_step, wandb_url, tc.chat_template_name)
 
 
+def _hf_offline_mode_enabled() -> bool:
+    return any(
+        os.environ.get(var, "").lower() in {"1", "true", "yes", "on"}
+        for var in ("HF_HUB_OFFLINE", "HF_DATASETS_OFFLINE", "TRANSFORMERS_OFFLINE")
+    )
+
+
 def _discover_tools_from_datasets(dataset_mixer_list: list[str], dataset_mixer_list_splits: list[str]) -> set[str]:
     """Scan datasets for tool names referenced in 'tools' and 'env_config' columns."""
     tool_names: set[str] = set()
@@ -3135,7 +3607,19 @@ def _discover_tools_from_datasets(dataset_mixer_list: list[str], dataset_mixer_l
     for i in range(0, len(dataset_mixer_list), 2):
         dataset_name = dataset_mixer_list[i]
         split = splits[i // 2]
-        ds = datasets.load_dataset(dataset_name, split=split)
+        try:
+            ds = datasets.load_dataset(dataset_name, split=split)
+        except Exception as e:
+            if _hf_offline_mode_enabled() or "OfflineModeIsEnabled" in repr(e):
+                logger.warning(
+                    "Skipping dataset tool auto-discovery for %s (%s) because the dataset "
+                    "could not be resolved while HF offline mode is enabled: %s",
+                    dataset_name,
+                    split,
+                    e,
+                )
+                continue
+            raise
         if TOOLS_COLUMN_KEY in ds.column_names:
             for tools in ds[TOOLS_COLUMN_KEY]:
                 if tools:
@@ -3277,8 +3761,11 @@ def main(
     hf_cache = os.environ.get("HF_HUB_CACHE", os.path.expanduser("~/.cache/huggingface/hub"))
     barrier_file = os.path.join(hf_cache, f".model_download_done_{os.environ.get('BEAKER_JOB_ID', 'local')}")
     if rank == 0:
-        logger.info(f"Pre-downloading model {model_config.model_name_or_path}...")
-        snapshot_download(model_config.model_name_or_path, revision=model_config.model_revision)
+        if os.path.exists(model_config.model_name_or_path):
+            logger.info(f"Using local model path {model_config.model_name_or_path}; skipping HF pre-download.")
+        else:
+            logger.info(f"Pre-downloading model {model_config.model_name_or_path}...")
+            snapshot_download(model_config.model_name_or_path, revision=model_config.model_revision)
         open(barrier_file, "w").close()
         logger.info("Model pre-download complete.")
     else:
@@ -3300,12 +3787,11 @@ def main(
     beaker_config, wandb_url = setup_experiment_tracking(args, tc, model_config, streaming_config, vllm_config)
 
     # We have to initialize ray earlier for constructing Tools (they are implemented as ray actors).
-    ray.init(
-        runtime_env={
-            "excludes": [".git/"],
-            "env_vars": {k: v for k, v in os.environ.items() if k not in EXCLUDED_ENV_VARS},
-        }
-    )
+    runtime_env = _ray_runtime_env_from_environment()
+    if runtime_env is None:
+        ray.init()
+    else:
+        ray.init(runtime_env=runtime_env)
 
     pool_size = tools_config.pool_size
     if pool_size is None:
@@ -3483,6 +3969,8 @@ def main(
 
 
 if __name__ == "__main__":
+    utils.check_oe_eval_internal()
+
     parser = ArgumentParserPlus(
         (
             grpo_utils.GRPOExperimentConfig,
