@@ -114,6 +114,43 @@ sys.exit(1)
 PY
 [ $? -eq 0 ] || fail=1
 
+# ---- Gate 7: required launch files exist and are readable --------------------
+# Trainer 11141229 died 19 s into an 8-node allocation because the canonical tree
+# did not contain scripts/train/debug/envs/checkpoint_env.sh, which the launcher
+# sources at line 41. Neither that file nor ray_node_setup_slurm.sh (sourced at
+# line 331) had ever been committed to this repo — the launcher was only ever run
+# from an open-instruct working copy that had them untracked-but-present.
+#
+# Deliberately a FIXED LIST, not a parser. A recursive shell-source walker was
+# written and validated during triage, but it has to reason about guarded sources
+# (`elif [ -f X ]; then source X`) and mentions-vs-executions, and a parser bug in
+# the production path could either block a good launch or wave a bad one through.
+# The two files the launcher hard-sources are known and stable, so an explicit
+# existence + readability check is deterministic and cannot misjudge. The parser
+# stays out of the production path pending the hardening pass (hamishivi ruling,
+# tmax-private#1).
+REQUIRED_LAUNCH_FILES=(
+  "scripts/train/debug/envs/checkpoint_env.sh"
+  "scripts/train/debug/envs/ray_node_setup_slurm.sh"
+)
+_missing_launch=0
+for rel in "${REQUIRED_LAUNCH_FILES[@]}"; do
+  f="$TREE/$rel"
+  if [ ! -f "$f" ]; then
+    note FAIL "required launch file absent: $rel"
+    _missing_launch=1
+  elif [ ! -r "$f" ]; then
+    note FAIL "required launch file not readable: $rel"
+    _missing_launch=1
+  fi
+done
+if [ $_missing_launch -eq 0 ]; then
+  note PASS "required launch files present and readable (${#REQUIRED_LAUNCH_FILES[@]})"
+else
+  echo "       the launcher sources these; a miss is a 19 s death after the allocation"
+  fail=1
+fi
+
 echo
 if [ $fail -ne 0 ]; then
   echo "PREFLIGHT: BLOCK — not requesting an allocation."

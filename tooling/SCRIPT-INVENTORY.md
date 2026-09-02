@@ -17,6 +17,8 @@ the cluster; named here so nothing is invisible.
 | `probes/inspect_all.sh` | ✔ `tooling/preflight/` | 32-way `apptainer inspect` over the whole pool |
 | `scripts/launch.sh` | ✔ as `launch.sh.oscar-wrapper` | launch wrapper; shows where the gate is wired |
 | `probes/patches/test_fail_closed_sif.py` | ✔ `tooling/audit/` | 6 regression tests for the guard |
+| `tooling/audit/test_required_launch_files.sh` | ✔ (in-tree) | 7 neg/pos tests for preflight gate 7; regression for trainer 11141229 |
+| `probes/dep_gate.py` | local — **deliberately NOT in the production path** | recursive launcher-dependency walker built during 11141229 triage. Correct in both directions, but it must reason about guarded sources and mentions-vs-executions, so a parser bug could block a good launch or pass a bad one. Gate 7 uses a fixed two-file list instead. Parked for the hardening pass (hamishivi ruling) |
 | `probes/tool_audit.py` | ✔ `tooling/audit/` | per-rollout classifier for 11096823 |
 | `probes/reward_csv.py` | ✔ `tooling/audit/` | steps 1–100 reward CSV, both step keys |
 | `probes/curve_bundle.py` | ✔ `run-evidence/11096823/` | W&B history → PNG panels + tidy CSV/JSON |
