@@ -57,10 +57,27 @@ PASS_CASES = [
 
     # ruling 3: fraction forms are partial results
     ("=== 2/6 passed ===", False, "partial result Rulin adjudicated against itself"),
-    ("Clean: 50/50 passed", False,
-     "CONSERVATIVE: numerator==denominator is arguably a genuine full pass, but "
-     "both matchers exclude fraction forms; the limitation is documented, not lossless"),
-    ("Random tests: 100/100 passed", False, "same documented limitation"),
+    # RULED 06:06: equal fractions ARE passes. The previous revision rejected
+    # them -- that was the superseded 05:42 blanket rule, and these two cases
+    # encoded it, so a passing suite was pinning the wrong behaviour.
+    ("Clean: 50/50 passed", True, "equal fraction, genuine full pass"),
+    ("Random tests: 100/100 passed", True, "equal fraction"),
+    ("Clean files: 15/15 passed", True, "equal fraction"),
+    ("PROPERTY_TESTS: 10/10 PASSED", True, "equal fraction, label-prefixed"),
+    ("Clean: 0/50 passed", False, "zero numerator is not a pass"),
+    ("=== 2/6 passed ===", False, "unequal fraction is not a pass"),
+    # Rulin's adjacency guard: the count must sit immediately after the colon,
+    # or the label rule readmits the entire port false-positive class.
+    ("curl: connection to 8443 failed after 3 retries", False,
+     "count not adjacent to the label colon"),
+    ("Evil: 42 blocked (good), 8 passed (bad)", False,
+     "bare count with no runner context"),
+    ("Run 2 passed", False, "bare count, no context"),
+    ("Test 4 passed: REJECTED", False, "a rejection is not a pass"),
+    # inversion markers are ANNOTATION ONLY and must not change the verdict
+    ("Evil corpus: 2/2 passed (should reject all)", True,
+     "syntactically an equal-fraction pass; inverted task semantics are recorded "
+     "in the inversion_marker column, NOT in the predicate"),
 ]
 
 # (text, should_match, why)

@@ -505,7 +505,7 @@ step,task,prompt_idx,sample_idx,reward,bucket,reason,matched,segment_chars
 34,task_002673_0b2a2291,7,230,0.0,traceback_in_exit0,traceback_only_no_test_failure,Traceback (most recent call last),521
 34,task_002673_0b2a2291,7,243,0.0,traceback_in_exit0,traceback_only_no_test_failure,Traceback (most recent call last),257
 35,task_004628_9d3b1ba9,4,133,1.0,traceback_in_exit0,traceback_only_no_test_failure,Traceback (most recent call last),174
-35,task_004628_9d3b1ba9,4,139,1.0,tests_failed_in_exit0,later_pass_supersedes_in_same_segment,TEST 6 FAILED,57
+35,task_004628_9d3b1ba9,4,139,1.0,tests_failed_in_exit0,unexplained_exit0_with_test_failure,TEST 6 FAILED,57
 35,task_004628_9d3b1ba9,4,140,1.0,traceback_in_exit0,traceback_only_no_test_failure,Traceback (most recent call last),567
 35,task_004628_9d3b1ba9,4,149,1.0,traceback_in_exit0,traceback_only_no_test_failure,Traceback (most recent call last),137
 36,task_001094_dca23eb9,3,106,1.0,traceback_in_exit0,traceback_only_no_test_failure,Traceback (most recent call last),154
@@ -1660,7 +1660,7 @@ step,task,prompt_idx,sample_idx,reward,bucket,reason,matched,segment_chars
 89,task_002416_7bc57858,6,222,0.0,traceback_in_exit0,traceback_only_no_test_failure,Traceback (most recent call last),600
 89,task_002416_7bc57858,6,223,0.0,traceback_in_exit0,traceback_only_no_test_failure,Traceback (most recent call last),572
 90,task_001472_9f92645c,0,11,1.0,traceback_in_exit0,traceback_only_no_test_failure,Traceback (most recent call last),221
-90,task_004280_bb584e50,3,112,0.0,tests_failed_in_exit0,later_pass_supersedes_in_same_segment,TEST 1 FAILED,186
+90,task_004280_bb584e50,3,112,0.0,tests_failed_in_exit0,unexplained_exit0_with_test_failure,TEST 1 FAILED,186
 90,task_002143_42073ee5,5,162,0.0,traceback_in_exit0,traceback_only_no_test_failure,Traceback (most recent call last),615
 90,task_002143_42073ee5,5,165,0.0,traceback_in_exit0,traceback_only_no_test_failure,Traceback (most recent call last),221
 90,task_002143_42073ee5,5,169,0.0,traceback_in_exit0,traceback_only_no_test_failure,Traceback (most recent call last),306
@@ -1986,7 +1986,7 @@ step,task,prompt_idx,sample_idx,reward,bucket,reason,matched,segment_chars
 104,task_009026_7f790650,2,89,1.0,traceback_in_exit0,traceback_only_no_test_failure,Traceback (most recent call last),783
 104,task_002055_19bd7947,3,102,0.0,traceback_in_exit0,traceback_only_no_test_failure,Traceback (most recent call last),1921
 104,task_002055_19bd7947,3,105,0.0,traceback_in_exit0,traceback_only_no_test_failure,Traceback (most recent call last),670
-105,task_002871_a436fd13,2,78,0.0,tests_failed_in_exit0,later_pass_supersedes_in_same_segment,TEST 1 FAILED,142
+105,task_002871_a436fd13,2,78,0.0,tests_failed_in_exit0,unexplained_exit0_with_test_failure,TEST 1 FAILED,142
 105,task_007134_c99d2466,3,116,1.0,traceback_in_exit0,traceback_only_no_test_failure,Traceback (most recent call last),716
 105,task_006697_c74560fe,5,163,0.0,traceback_in_exit0,traceback_only_no_test_failure,Traceback (most recent call last),211
 105,task_004663_9f52810c,6,192,0.0,traceback_in_exit0,traceback_only_no_test_failure,Traceback (most recent call last),585
@@ -2267,6 +2267,7 @@ step,task,prompt_idx,sample_idx,reward,bucket,reason,matched,segment_chars
 118,task_001576_6746565a,0,24,1.0,tests_failed_in_exit0,unexplained_exit0_with_test_failure,1 failed,1206
 118,task_001576_6746565a,0,27,1.0,tests_failed_in_exit0,pytest_collection_error,error during collection,1016
 119,task_002427_13b0d0d9,4,158,1.0,traceback_in_exit0,traceback_only_no_test_failure,Traceback (most recent call last),1246
+119,task_001975_35821ad7,5,168,1.0,tests_failed_in_exit0,unexplained_exit0_with_test_failure,10/20 passed,181
 119,task_000341_be2d142f,6,206,1.0,traceback_in_exit0,traceback_only_no_test_failure,Traceback (most recent call last),837
 119,task_000341_be2d142f,6,221,1.0,traceback_in_exit0,traceback_only_no_test_failure,Traceback (most recent call last),196
 120,task_009528_eb530dee,0,4,1.0,traceback_in_exit0,traceback_only_no_test_failure,Traceback (most recent call last),816

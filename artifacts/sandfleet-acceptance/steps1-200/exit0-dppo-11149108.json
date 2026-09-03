@@ -12,9 +12,9 @@
  "reasons": {
   "traceback_only_no_test_failure": 4772,
   "unexplained_exit0_with_test_failure_with_traceback": 16,
-  "unexplained_exit0_with_test_failure": 162,
+  "unexplained_exit0_with_test_failure": 164,
   "pytest_collection_error": 50,
-  "later_pass_supersedes_in_same_segment": 3
+  "later_pass_supersedes_in_same_segment": 1
  },
  "bucket_pct": {
   "traceback_in_exit0": 95.38,
@@ -23,9 +23,9 @@
  "reason_pct": {
   "traceback_only_no_test_failure": 95.38,
   "unexplained_exit0_with_test_failure_with_traceback": 0.32,
-  "unexplained_exit0_with_test_failure": 3.24,
+  "unexplained_exit0_with_test_failure": 3.28,
   "pytest_collection_error": 1.0,
-  "later_pass_supersedes_in_same_segment": 0.06
+  "later_pass_supersedes_in_same_segment": 0.02
  },
  "matched_strings_by_reason": {
   "traceback_only_no_test_failure": {
@@ -40,9 +40,9 @@
    "1 failed": 86,
    "2 failed": 18,
    "3 failed": 10,
+   "test 1 failed": 9,
    "50 failed": 8,
    "4 failed": 7,
-   "test 1 failed": 7,
    "5 failed": 6,
    "test 3 failed": 3,
    "test 5 failed": 2,
@@ -63,7 +63,6 @@
    "error during collection": 50
   },
   "later_pass_supersedes_in_same_segment": {
-   "test 1 failed": 2,
    "50 failed": 1
   }
  },
@@ -159,19 +158,9 @@
   ],
   "later_pass_supersedes_in_same_segment": [
    {
-    "step": 25,
-    "matched": "Test 1 failed",
-    "context": "=== Testing Valid Cases ===\n\u2717 Test 1 failed\n\u2717 Test 2 failed\n\u2717 Test 3 failed\n\u2717 Test 4 failed\n\n=== Testing Invalid Cases ===\n\u2713 Test 5 passed\n\u2713 Test 6 passed\n\u2713 Test 7 passed\n\u2713 Test 8 passed\n\u2713 Test 9 passed\n"
-   },
-   {
     "step": 71,
     "matched": "50 failed",
     "context": "ACCEPT, got REJECT\nFAIL: /app/corpus/clean/clean_8.sql should ACCEPT, got REJECT\nFAIL: /app/corpus/clean/clean_9.sql should ACCEPT, got REJECT\nClean: 0 passed, 50 failed\n=== Testing evil queries ===\nEvil: 50 passed, 0 failed\n=== Also create the required .c file ===\nDone\n\n\n"
-   },
-   {
-    "step": 193,
-    "matched": "Test 1 FAILED",
-    "context": "-rwxrwx---. 1 root root 1575 Sep  2 18:22 /home/user/token_validator\nINVALID\nTest 1 FAILED\nINVALID\nTest 2 PASSED (correctly rejected)\n\n_: line 3: file: command not found\n\n\n"
    }
   ]
  }

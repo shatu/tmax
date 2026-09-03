@@ -144,6 +144,65 @@ against data here precisely because the by-construction argument was wrong.
 SGD is now an exact match. DPPO sits 7 below theirs — I have not adjudicated
 that residual and am not claiming it is theirs rather than mine.
 
+## Defect 3, corrected again — the ruled JOINT semantics (hamishivi 06:06)
+
+The first pass at defect 3 implemented the **05:42** rule, which excluded every
+fraction. That was superseded at **06:06** while the rerun was in flight, and I
+committed without re-polling the thread — so `2aae548a7` shipped a predicate and
+a matching test suite that pinned the wrong behaviour. hamishivi caught it from
+the PROVENANCE prose before the code. The lesson is not the regex: **a
+long-running job should re-check its charter at the WRITE, not just the READ.**
+
+Ruled predicate, now implemented:
+
+| form | verdict | why |
+|---|---|---|
+| `Clean: 50/50 passed` | **pass** | equal fraction, genuine full pass |
+| `=== 2/6 passed ===` | **failed** | unequal fraction *under clear summary context* |
+| `2/6 passed` (bare) | unclassified | no runner context; do not infer from prose |
+| `Clean configs: 50 passed` | pass | label-prefixed positive count |
+| `curl: connection to 8443 failed after 3 retries` | no verdict | count not adjacent to the colon |
+| `=== ALL TESTS PASSED ===` | no verdict | digitless banner = model echo |
+| `Evil configs: 0 passed` | no verdict | zero count |
+
+| class | 05:42 rule | **06:06 ruled** | Rulin job 11186729 |
+|---|---:|---:|---:|
+| `zero_reward_though_final_tests_passed` DPPO | 96 | **103** | 115 |
+| `zero_reward_though_final_tests_passed` SGD | 104 | **122** | 133 |
+| `zero_reward_model_own_tests_passed` | 13 / 19 | **12 / 12** | 12 / 13 |
+| `exit0_with_failure_in_same_call` | 5,003 / 3,831 | **5,003 / 3,832** | — |
+
+`full_reward_though_final_tests_failed` remains **0 on both arms** — and now it
+survives a rule that could have moved it, since unequal fractions under summary
+context score as failures. That is worth more than a zero obtained by exclusion.
+
+**Residual against the independent matcher: −12 DPPO, −11 SGD.** A consistent
+offset on both arms, so it is systematic rather than noise. It is not
+adjudicated and is not claimed to be theirs rather than mine.
+
+Two bugs were caught by measurement before this shipped, not by review:
+
+* the unequal-fraction rule had the **same circularity** just fixed on the pass
+  side — `2/6 passed` contains `6 passed`, which satisfies the summary-context
+  test, so every bare fraction vouched for its own context. The fraction is now
+  stripped before context is evaluated.
+* the `inversion_marker` annotation scanned the whole transcript and flagged
+  **5,666 rows (11% of the arm)**, because "evil"/"malicious" are everywhere in
+  these corpora. It now inspects only the line that DECIDED the verdict: 9 and
+  11 rows (0.02%), of which 7 DPPO / 11 SGD are `zrfp` rows.
+
+### `inversion_marker`: annotation, never a verdict input
+
+Some harnesses invert the sense of "passed" — `Evil corpus: 2/2 passed (should
+reject all)` is syntactically an equal-fraction pass, but the task EXPECTED
+rejection, so the pass means the task failed. I proposed excluding these by
+vocabulary. Rulin argued that bakes one corpus's idiom into the canonical
+predicate: it catches this dataset's "Evil" and silently misses the next one's
+"Adversarial", **while looking semantics-aware**. That argument is better than
+mine and the ruling stands as written. The predicate is purely syntactic; the
+corpus-specific knowledge lives in a column where it can be wrong safely, and
+pre-highlights those rows for the manual inspection this class already needs.
+
 ## What did not change
 
 The curves. Neither overlay consults `TESTS_FAILED`: the rollout series is

@@ -384,7 +384,7 @@ step,task,prompt_idx,sample_idx,reward,bucket,reason,matched,segment_chars
 24,task_004942_0660bcde,6,197,1.0,traceback_in_exit0,traceback_only_no_test_failure,Traceback (most recent call last),139
 25,task_002425_6dec18bc,1,49,0.0,traceback_in_exit0,traceback_only_no_test_failure,Traceback (most recent call last),2336
 25,task_001914_63936762,2,65,1.0,tests_failed_in_exit0,unexplained_exit0_with_test_failure,20 failed,1045
-25,task_001914_63936762,2,69,1.0,tests_failed_in_exit0,later_pass_supersedes_in_same_segment,Test 1 failed,290
+25,task_001914_63936762,2,69,1.0,tests_failed_in_exit0,unexplained_exit0_with_test_failure,Test 1 failed,290
 25,task_001914_63936762,2,70,1.0,tests_failed_in_exit0,unexplained_exit0_with_test_failure,2 failed,841
 25,task_001914_63936762,2,73,1.0,tests_failed_in_exit0,unexplained_exit0_with_test_failure,1 failed,1152
 25,task_001914_63936762,2,75,1.0,tests_failed_in_exit0,unexplained_exit0_with_test_failure,TEST1 FAILED,15
@@ -4605,7 +4605,7 @@ step,task,prompt_idx,sample_idx,reward,bucket,reason,matched,segment_chars
 193,task_001071_d6a8e8bb,0,31,1.0,traceback_in_exit0,traceback_only_no_test_failure,Traceback (most recent call last),337
 193,task_000701_e6a7864c,1,41,0.0,traceback_in_exit0,traceback_only_no_test_failure,Traceback (most recent call last),877
 193,task_000701_e6a7864c,1,55,0.0,traceback_in_exit0,traceback_only_no_test_failure,Traceback (most recent call last),412
-193,task_000701_e6a7864c,1,60,0.0,tests_failed_in_exit0,later_pass_supersedes_in_same_segment,Test 1 FAILED,172
+193,task_000701_e6a7864c,1,60,0.0,tests_failed_in_exit0,unexplained_exit0_with_test_failure,Test 1 FAILED,172
 193,task_000701_e6a7864c,1,61,1.0,traceback_in_exit0,traceback_only_no_test_failure,Traceback (most recent call last),583
 193,task_002459_2f0d0d16,2,65,0.0,traceback_in_exit0,traceback_only_no_test_failure,Traceback (most recent call last),1843
 193,task_002459_2f0d0d16,2,68,0.0,traceback_in_exit0,traceback_only_no_test_failure,Traceback (most recent call last),1991

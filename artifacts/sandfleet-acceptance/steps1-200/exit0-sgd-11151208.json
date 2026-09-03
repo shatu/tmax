@@ -2,30 +2,30 @@
  "tag": "sgd-11151208",
  "max_step": 200,
  "records_in_window": 51200,
- "class_total_recomputed": 3831,
- "class_total_published": 3831,
+ "class_total_recomputed": 3832,
+ "class_total_published": 3832,
  "reconciles_with_published": true,
  "buckets": {
   "traceback_in_exit0": 3610,
-  "tests_failed_in_exit0": 221
+  "tests_failed_in_exit0": 222
  },
  "reasons": {
   "traceback_only_no_test_failure": 3610,
-  "unexplained_exit0_with_test_failure": 133,
+  "unexplained_exit0_with_test_failure": 137,
   "pytest_collection_error": 74,
-  "later_pass_supersedes_in_same_segment": 6,
-  "unexplained_exit0_with_test_failure_with_traceback": 8
+  "unexplained_exit0_with_test_failure_with_traceback": 8,
+  "later_pass_supersedes_in_same_segment": 3
  },
  "bucket_pct": {
-  "traceback_in_exit0": 94.23,
-  "tests_failed_in_exit0": 5.77
+  "traceback_in_exit0": 94.21,
+  "tests_failed_in_exit0": 5.79
  },
  "reason_pct": {
-  "traceback_only_no_test_failure": 94.23,
-  "unexplained_exit0_with_test_failure": 3.47,
+  "traceback_only_no_test_failure": 94.21,
+  "unexplained_exit0_with_test_failure": 3.58,
   "pytest_collection_error": 1.93,
-  "later_pass_supersedes_in_same_segment": 0.16,
-  "unexplained_exit0_with_test_failure_with_traceback": 0.21
+  "unexplained_exit0_with_test_failure_with_traceback": 0.21,
+  "later_pass_supersedes_in_same_segment": 0.08
  },
  "matched_strings_by_reason": {
   "traceback_only_no_test_failure": {
@@ -36,7 +36,7 @@
    "2 failed": 19,
    "50 failed": 16,
    "3 failed": 13,
-   "test 1 failed": 6,
+   "test 1 failed": 8,
    "6 failed": 2,
    "5 failed": 2,
    "10 failed": 2,
@@ -44,9 +44,11 @@
    "12 failed": 2,
    "check 3 failed": 1,
    "20 failed": 1,
+   "test 6 failed": 1,
    "test 3 failed": 1,
    "9 failed": 1,
    "test 4 failed": 1,
+   "10/20 passed": 1,
    "1000 failed": 1,
    "103 failed": 1,
    "73 failed": 1,
@@ -55,14 +57,12 @@
   "pytest_collection_error": {
    "error during collection": 74
   },
-  "later_pass_supersedes_in_same_segment": {
-   "50 failed": 3,
-   "test 1 failed": 2,
-   "test 6 failed": 1
-  },
   "unexplained_exit0_with_test_failure_with_traceback": {
    "1 failed": 7,
    "4 failed": 1
+  },
+  "later_pass_supersedes_in_same_segment": {
+   "50 failed": 3
   }
  },
  "method": "Full population, not a sample. Mirrors tool_audit.py's first-triggering-segment keying (it breaks on the first hit), so these sub-buckets partition the published class count exactly.",
@@ -133,28 +133,6 @@
     "context": "=========================\nERROR test_server.py - AttributeError: module 'hypothesis' has no attribute 'register_strategies'\n!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!\n=============================== 1 error in 0.78s ===============================\n\n\n"
    }
   ],
-  "later_pass_supersedes_in_same_segment": [
-   {
-    "step": 35,
-    "matched": "TEST 6 FAILED",
-    "context": "TEST 6 FAILED\nTEST 7 PASSED: exact 12 alphanum matched\n\n\n"
-   },
-   {
-    "step": 90,
-    "matched": "TEST 1 FAILED",
-    "context": "=== Test Suite ===\nTEST 1 FAILED: TLSv1.2/TLSv1.3 should be accepted\nTEST 2 PASSED: TLSv1.1 correctly rejected\nTEST 3 PASSED: bare TLSv1 correctly rejected\n\n=== All Tests Complete ===\n\n\n"
-   },
-   {
-    "step": 96,
-    "matched": "50 failed",
-    "context": "44 got 1\nFAIL: clean_45 got 1\nFAIL: clean_46 got 1\nFAIL: clean_47 got 1\nFAIL: clean_48 got 1\nFAIL: clean_49 got 1\nFAIL: clean_50 got 1\nClean samples: 0 passed, 50 failed\n\n=== Testing evil samples ===\nEvil samples: 50 passed, 0 failed\n\n\n"
-   },
-   {
-    "step": 105,
-    "matched": "TEST 1 FAILED",
-    "context": "TEST 1 FAILED\nTEST 2 PASSED\nTEST 3 PASSED\nTEST 4 PASSED\nTEST 5 PASSED\nTEST 6 PASSED\n\ndiff: /app/test_output1.csv: No such file or directory\n\n\n"
-   }
-  ],
   "unexplained_exit0_with_test_failure_with_traceback": [
    {
     "step": 46,
@@ -175,6 +153,23 @@
     "step": 160,
     "matched": "1 failed",
     "context": " test_migrate.py::test_migrate_with_random_data - Failed: Property test failed: Hypothesis found 2 distinct failures. (2 sub-...\n============================== 1 failed in 1.95s ===============================\n\n\n"
+   }
+  ],
+  "later_pass_supersedes_in_same_segment": [
+   {
+    "step": 96,
+    "matched": "50 failed",
+    "context": "44 got 1\nFAIL: clean_45 got 1\nFAIL: clean_46 got 1\nFAIL: clean_47 got 1\nFAIL: clean_48 got 1\nFAIL: clean_49 got 1\nFAIL: clean_50 got 1\nClean samples: 0 passed, 50 failed\n\n=== Testing evil samples ===\nEvil samples: 50 passed, 0 failed\n\n\n"
+   },
+   {
+    "step": 109,
+    "matched": "50 failed",
+    "context": "L: /app/corpora/clean/payload_8.dat (expected 0, got Valid payload\n0)\nFAIL: /app/corpora/clean/payload_9.dat (expected 0, got Valid payload\n0)\nClean: 0 passed, 50 failed\n\nTesting evil corpus...\nEvil: 50 passed, 0 failed\n\n\n"
+   },
+   {
+    "step": 138,
+    "matched": "50 failed",
+    "context": ".wav (expected 0, got 1)\nFAIL: /app/corpus/clean/clean_8.wav (expected 0, got 1)\nFAIL: /app/corpus/clean/clean_9.wav (expected 0, got 1)\nClean files: 0 passed, 50 failed\n\nTesting all evil files (50 files)...\nEvil files: 50 passed, 0 failed\n\n\n"
    }
   ]
  }

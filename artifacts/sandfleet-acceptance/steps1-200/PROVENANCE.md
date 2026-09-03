@@ -59,7 +59,7 @@ previously under-returned without erroring.
 | `tool_audit-*-steps1-200.csv.gz` | per-rollout classification, 51,200 rows/arm |
 | `exit0-*.{json,csv}` | full-population apportionment of `exit0_with_failure_in_same_call` |
 | `lostconn-*.{json,csv}` | `lost connection to sandbox` rows reconciled into incidents |
-| `CLASSIFIER-CORRECTIONS.md` | both `TESTS_FAILED` defects, before/after per class per arm |
+| `CLASSIFIER-CORRECTIONS.md` | all three verdict-detector defects, before/after per class per arm |
 | `TIMEOUT-PARTITION.md` | six-phase timeout partition and the measured per-tool ceiling |
 | `LOST-CONNECTION.md` | the 2-vs-16 reconciliation, rows vs incidents |
 | `acceptance-steps1-200-panels.png`, `wandb-steps1-200-panels.png` | the curves |
@@ -99,15 +99,30 @@ OOM-kill or sandbox-loss claim is made from this data.
 belonging to one task family, is 100% false as an infrastructure signal, and is
 absent entirely from the SGD arm.
 
-**`INFRA:transport_error` is mostly task-internal networking.** Breakdown:
-1,266 localhost "connection refused" from the task's own services, 296
-in-sandbox download resets, **2** genuine "lost connection to sandbox", and
-**0** "Could not reach Sandfleet endpoint".
+**`INFRA:transport_error` is mostly task-internal networking.** The breakdown
+first posted for this class — 1,266 localhost "connection refused" from the
+task's own services, 296 in-sandbox download resets, 2 genuine "lost connection
+to sandbox", 0 "Could not reach Sandfleet endpoint" — was measured on the
+**11096823** corpus and does not transfer to this window. For steps 1–200 of
+these two arms the lost-connection figures are **16 (DPPO) / 20 (SGD)** rows,
+and "Could not reach Sandfleet endpoint" is **0 on both arms**; see
+`LOST-CONNECTION.md`. The qualitative reading (this class is dominated by
+task-internal networking, not Sandfleet control-plane failure) still holds, but
+the per-component counts above should not be quoted for this bundle.
 
-**Classifier corrections applied.** Two defects were found in the
-test-failure detector and both are fixed here; see `CLASSIFIER-CORRECTIONS.md`
-for the before/after table. Both corrections are subtractive — they remove
-false failures — and neither touches the curves, which never consult it.
+**Classifier corrections applied.** **Three** defects were found in the verdict
+detector and all are fixed here; see `CLASSIFIER-CORRECTIONS.md` for the
+before/after table per class per arm. Two were on the failure side (`0 failed`
+scoring as a failure; any digits before "failed" reading as a count) and the
+third was the mirror of the first on the pass side — which is the real finding:
+**the first fix was applied to one side of a symmetric pattern and not the
+other, and the asymmetry itself became the bug.**
+
+Relative to the *original* detector every correction is subtractive: measured
+against the full corpus, **0 lines are newly matched on either arm**. Relative
+to the intermediate revision `2aae548a7` the pass side deliberately re-adds
+equal fractions, because that revision implemented a superseded rule. None of
+the three touches the curves, which never consult the detector.
 
 **A known limitation, left in on purpose.** A bare `FAILED tests/x.py::test_y`
 with no count is recognised by neither the old detector nor the new one. Adding
@@ -122,12 +137,23 @@ model's own claim rather than a runner's. It was the majority kind among the
 adjudicated false passes. A terminal pass requires a strictly positive,
 non-fractional count from a runner.
 
-**Fraction exclusion is conservative and NOT lossless.** `2/6 passed` is
-correctly rejected as a partial result, but the same rule also rejects
-numerator==denominator forms such as `Random tests: 100/100 passed`, which is
-arguably a genuine full pass. Both this matcher and Rulin's independent one
-share the exclusion, so the two agree — but a reader should not take it as
-exact. Named here rather than left to be discovered.
+**Fraction handling, under the ruled joint semantics.** An **equal** fraction
+(`Clean: 50/50 passed`, `Random tests: 100/100 passed`) IS a terminal pass. An
+**unequal** fraction (`=== 2/6 passed ===`) is a **failure**, but only where the
+line is clearly a test summary; outside that it is left unclassified rather than
+inferred from arbitrary prose. An earlier revision of this bundle blanket-
+rejected every fraction — that was the superseded rule and it is corrected here.
+
+**`inversion_marker` is an annotation, never a verdict input.** Some harnesses
+invert the sense of the word: `Evil corpus: 2/2 passed (should reject all)` is
+syntactically an equal-fraction pass, but the task expected rejection, so the
+"pass" is the task failing. The predicate stays purely syntactic and this
+vocabulary knowledge lives in a separate column, because a vocabulary rule
+inside the classifier would catch this corpus's "Evil" and silently miss the
+next one's "Adversarial" while appearing semantics-aware. The column flags the
+line that DECIDED the verdict, not the transcript: 9 (DPPO) and 11 (SGD) rows,
+of which 7 and 11 are `zero_reward_though_final_tests_passed`. Those rows are
+counted in the headline and pre-highlighted for manual inspection.
 
 **One figure of mine was wrong and is corrected here.** I previously reported
 **2** `lost connection to sandbox` rollouts. For this window the count is **16**
