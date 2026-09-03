@@ -44,11 +44,32 @@ task-internal address as if it identified a worker.
 
 So every incident here is grouped by **step alone**, which *merges* rows that may
 well be separate events. The incident counts are a **lower bound** on
-distinctness, not an established count. Multi-row steps are the only ones where
-grouping does any work:
+distinctness, not an established count.
 
-- **production (DPPO) 11149108**: step 137 (4 rows, 1 distinct task(s)), step 173 (2 rows, 1 distinct task(s))
-- **control (SGD) 11151208**: step 62 (2 rows, 1 distinct task(s)), step 83 (2 rows, 1 distinct task(s)), step 151 (3 rows, 1 distinct task(s))
+### Correction: the per-step task check was vacuous when first published
+
+An earlier revision of this file said "every multi-row step is a single task".
+That was read off a `task` column populated by `r["task_id"]` -- a field this
+schema does not have. It returned `""` for every record without erroring, so
+"distinct tasks per step" was computing `len({""}) == 1` for every step. The
+statement was not evidence; it was an artifact of an empty column.
+The task id actually lives in `ground_truth[0]`. With the field read correctly,
+the claim does hold -- but it holds on evidence that did not exist when it was
+first made:
+
+- **production (DPPO) 11149108**:
+  - step 137: 4 rows, 1 distinct task — `task_001838_5ad95d97`
+  - step 173: 2 rows, 1 distinct task — `task_003391_f8b99429`
+- **control (SGD) 11151208**:
+  - step 62: 2 rows, 1 distinct task — `task_004568_aad28eb7`
+  - step 83: 2 rows, 1 distinct task — `task_006433_70340fff`
+  - step 151: 3 rows, 1 distinct task — `task_000820_650d9059`
+
+Multiple samples of one prompt hitting the same failure at the same step is
+consistent with one sandbox loss per step, which is what the step-only grouping
+assumes. It does not prove it: without worker identity in the record, two
+distinct workers failing on the same step at the same time remain
+indistinguishable from one.
 
 Per-row detail with task, reward, `num_calls` and timeout flag is in
 `lostconn-<arm>.csv`; the incident table is in `lostconn-<arm>.json`.

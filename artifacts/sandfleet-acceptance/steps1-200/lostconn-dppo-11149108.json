@@ -18,7 +18,7 @@
    "identity": "",
    "rows": 1,
    "tasks": [
-    ""
+    "task_001316_5366e63c"
    ]
   },
   {
@@ -27,7 +27,7 @@
    "identity": "",
    "rows": 1,
    "tasks": [
-    ""
+    "task_003870_f0baa35c"
    ]
   },
   {
@@ -36,7 +36,7 @@
    "identity": "",
    "rows": 1,
    "tasks": [
-    ""
+    "task_005133_d7d8bc98"
    ]
   },
   {
@@ -45,7 +45,7 @@
    "identity": "",
    "rows": 4,
    "tasks": [
-    ""
+    "task_001838_5ad95d97"
    ]
   },
   {
@@ -54,7 +54,7 @@
    "identity": "",
    "rows": 1,
    "tasks": [
-    ""
+    "task_004528_b639a284"
    ]
   },
   {
@@ -63,7 +63,7 @@
    "identity": "",
    "rows": 1,
    "tasks": [
-    ""
+    "task_004851_a4156401"
    ]
   },
   {
@@ -72,7 +72,7 @@
    "identity": "",
    "rows": 1,
    "tasks": [
-    ""
+    "task_000512_fd4e1e98"
    ]
   },
   {
@@ -81,7 +81,7 @@
    "identity": "",
    "rows": 1,
    "tasks": [
-    ""
+    "task_000426_f78f3fbf"
    ]
   },
   {
@@ -90,7 +90,7 @@
    "identity": "",
    "rows": 1,
    "tasks": [
-    ""
+    "task_007947_aacd9ad7"
    ]
   },
   {
@@ -99,7 +99,7 @@
    "identity": "",
    "rows": 2,
    "tasks": [
-    ""
+    "task_003391_f8b99429"
    ]
   },
   {
@@ -108,7 +108,7 @@
    "identity": "",
    "rows": 1,
    "tasks": [
-    ""
+    "task_000632_65c17fe2"
    ]
   },
   {
@@ -117,10 +117,9 @@
    "identity": "",
    "rows": 1,
    "tasks": [
-    ""
+    "task_002823_41b727f0"
    ]
   }
  ],
- "note": "Row counts per pattern are reported separately and deliberately not merged: 'Lost connection to sandbox step' and the looser 'lost connection to sandbox' are different strings and were the source of a 2-vs-16 disagreement. 'Could not reach Sandfleet endpoint' is kept in its own column. Incidents grouped step-only carry no worker identity in the saved record, so that grouping is a lower bound on distinctness, not an established fact.",
- "identity_note": "No record in either arm carries a sandbox worker URL, lease id or sandbox id. Loopback addresses appearing in transcripts are the task's own services and are excluded from identity. Every incident is therefore grouped by STEP ALONE, which MERGES rows that may be separate events: the incident count is a LOWER BOUND on distinctness, not an established count."
+ "note": "Row counts per pattern are reported separately and deliberately not merged: 'Lost connection to sandbox step' and the looser 'lost connection to sandbox' are different strings and were the source of a 2-vs-16 disagreement. 'Could not reach Sandfleet endpoint' is kept in its own column. Incidents grouped step-only carry no worker identity in the saved record, so that grouping is a lower bound on distinctness, not an established fact."
 }

@@ -60,6 +60,21 @@ LEASE_ID = re.compile(r"lease[_ ]?id[\"'=: ]+([0-9a-fA-F-]{8,})", re.I)
 SANDBOX_ID = re.compile(r"sandbox[_ ]?id[\"'=: ]+([0-9a-fA-F-]{8,})", re.I)
 
 
+def _task_id(r) -> str:
+    """Task id lives in ground_truth[0].
+
+    A previous version read r["task_id"], which does not exist in this schema.
+    It returned "" for every record without erroring, so a per-step check of
+    "how many distinct tasks?" answered 1 for every step -- len({""}) -- and
+    that vacuous 1 was briefly published as though it were evidence that
+    multi-row steps share a task.
+    """
+    gt = r.get("ground_truth")
+    if isinstance(gt, list) and gt:
+        return str(gt[0])
+    return str(gt or "")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("rollouts_dir")
@@ -91,7 +106,7 @@ def main() -> int:
         sbx = SANDBOX_ID.search(blob)
         rows.append({
             "step": step,
-            "task": r.get("task_id") or r.get("dataset_index") or "",
+            "task": _task_id(r),
             "prompt_idx": r.get("prompt_idx", ""),
             "sample_idx": r.get("sample_idx", ""),
             "reward": r.get("reward", ""),

@@ -112,6 +112,21 @@ def adjudicate(body: str) -> tuple[str, str]:
             "unexplained_exit0_with_test_failure" + ("_with_traceback" if tb else ""))
 
 
+def _task_id(r) -> str:
+    """Task id lives in ground_truth[0].
+
+    A previous version read r["task_id"], which does not exist in this schema.
+    It returned "" for every record without erroring, so a per-step check of
+    "how many distinct tasks?" answered 1 for every step -- len({""}) -- and
+    that vacuous 1 was briefly published as though it were evidence that
+    multi-row steps share a task.
+    """
+    gt = r.get("ground_truth")
+    if isinstance(gt, list) and gt:
+        return str(gt[0])
+    return str(gt or "")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("rollouts_dir")
@@ -147,7 +162,17 @@ def main() -> int:
         bucket, reason = adjudicate(body)
         buckets[bucket] = buckets.get(bucket, 0) + 1
         reasons[reason] = reasons.get(reason, 0) + 1
-        rows.append({"step": step, "bucket": bucket, "reason": reason,
+        # Keyed by the full record identity, not just the step. The first
+        # version emitted step alone, which cannot support a row-level diff
+        # against another implementation -- and the rows where two independent
+        # matchers disagree are the most informative sample available.
+        rows.append({"step": step,
+                     "task": _task_id(r),
+                     "prompt_idx": r.get("prompt_idx", ""),
+                     "sample_idx": r.get("sample_idx", ""),
+                     "reward": r.get("reward", ""),
+                     "bucket": bucket, "reason": reason,
+                     "matched": (m.group(0) if (m := TESTS_FAILED.search(body) or TRACEBACK.search(body)) else ""),
                      "segment_chars": len(body)})
         # Record the text that ACTUALLY FIRED, not the segment tail. Sampling
         # tails was useless here: the trigger is often thousands of characters
@@ -167,7 +192,9 @@ def main() -> int:
 
     os.makedirs(os.path.dirname(args.out_prefix) or ".", exist_ok=True)
     with open(f"{args.out_prefix}-{args.tag}.csv", "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=["step", "bucket", "reason", "segment_chars"])
+        w = csv.DictWriter(fh, fieldnames=["step", "task", "prompt_idx", "sample_idx",
+                                           "reward", "bucket", "reason", "matched",
+                                           "segment_chars"])
         w.writeheader()
         w.writerows(rows)
 
