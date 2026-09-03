@@ -144,6 +144,23 @@ line is clearly a test summary; outside that it is left unclassified rather than
 inferred from arbitrary prose. An earlier revision of this bundle blanket-
 rejected every fraction — that was the superseded rule and it is corrected here.
 
+**Canonical verdict figures, and the independent ceiling.**
+`zero_reward_though_final_tests_passed` is **103 (DPPO) / 120 (control)**.
+Rulin's independently-written matcher reports **115 / 133**; that is recorded as
+the independent ceiling rather than averaged away. The whole 12 / 13 gap is
+attributed: predominantly the documented indexed-`Test N failed` difference
+(this detector accepts an indexed harness verdict, theirs does not, per the
+scope ruling), plus 2 `inversion_marker` rows and 1–2 decorative edges. On DPPO
+the canonical set is a strict subset of the independent one — zero rows flagged
+here that theirs does not flag.
+
+**Unequal fractions with a label are failures; the rule is fraction-scoped.**
+`Clean: 0/50 passed` and `Results: 10/11 passed` score as failures. The label
+clause deliberately applies **only** to fractions: extending it to plain
+`N failed` would readmit `Connection to localhost:27017 failed` (a port) and
+`Final result: 4 failed downstream nodes` (a task-domain count) as test
+failures. Both are permanent negative regression cases.
+
 **`inversion_marker` is an annotation, never a verdict input.** Some harnesses
 invert the sense of the word: `Evil corpus: 2/2 passed (should reject all)` is
 syntactically an equal-fraction pass, but the task expected rejection, so the

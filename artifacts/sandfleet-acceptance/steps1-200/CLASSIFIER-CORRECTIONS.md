@@ -203,6 +203,58 @@ mine and the ruling stands as written. The predicate is purely syntactic; the
 corpus-specific knowledge lives in a column where it can be wrong safely, and
 pre-highlights those rows for the manual inspection this class already needs.
 
+## Final: fraction-scoped label context, and the canonical zrfp figures
+
+Ruled 10:32 after the cross-matcher intersection. **Unequal fractions only**: an
+anchored short label immediately followed by `N / M passed` is sufficient
+summary context, and whitespace around the slash is tolerated on both sides.
+
+Scoped to fractions **on purpose**. Broadening plain `N failed` into an
+arbitrary-label rule is what made the independent matcher score
+
+```
+'Connection to localhost:27017 failed: [Errno 111] ...'   <- a PORT read as a count
+'Final result: 4 failed downstream nodes'                 <- task-domain quantity
+```
+
+as test failures — the exact false-positive class defect 2 removed, re-entering
+through a different door. Requiring a *fraction* is what keeps them out: neither
+is one. Both are pinned as permanent negative regression cases.
+
+| class | previous | **final** |
+|---|---:|---:|
+| `zero_reward_though_final_tests_passed` DPPO | 103 | **103** |
+| `zero_reward_though_final_tests_passed` SGD | 122 | **120** |
+| `zero_reward_model_own_tests_passed` | 12 / 12 | **12 / 13** |
+| `exit0_with_failure_in_same_call` | 5,003 / 3,832 | **5,007 / 3,846** |
+
+The two SGD rows that moved are `Results: 10/11 passed` and
+`Size 8192: 0/50 passed` — unequal fractions under explicit label context, which
+the ruling scores as failures. They were the only ruling-conformance deviations
+the intersection found on this side, and they resolve as a *consequence* of the
+fraction-label rule rather than needing a separate patch. `exit0` moved because
+more lines now register as failures inside exit-0 segments; both arms still
+reconcile exactly.
+
+### Canonical figures and the independent ceiling
+
+**Canonical: zrfp 103 (DPPO) / 120 (control).** Rulin's independently-written
+matcher reports **115 / 133**, recorded as the independent ceiling.
+
+The entire 12 / 13 gap is named, none of it unexplained:
+
+* the dominant share is the **documented indexed-`Test N failed` difference** —
+  this detector accepts an indexed harness verdict, theirs does not, per the
+  scope ruling. Where a rollout ends on such a line, this detector flips the
+  final verdict to failed and drops the row from `zrfp`;
+* 2 rows carry `inversion_marker` (`Evil: 50 passed`) — annotation-lane
+  candidates under either matcher;
+* 1–2 decorative edges (`--- 8 / 8 passed ---`).
+
+On DPPO the canonical set is a **strict subset** of the independent one: zero
+rows flagged here that the other does not flag. The difference is one-directional
+and fully attributed.
+
 ## What did not change
 
 The curves. Neither overlay consults `TESTS_FAILED`: the rollout series is

@@ -74,6 +74,9 @@ PASS_CASES = [
      "bare count with no runner context"),
     ("Run 2 passed", False, "bare count, no context"),
     ("Test 4 passed: REJECTED", False, "a rejection is not a pass"),
+    # RULED 10:32 -- fraction-scoped label context. Equal fractions with a
+    # spaced slash must still be passes.
+    ("Clean: 50 / 50 passed", True, "equal fraction, whitespace around the slash"),
     # inversion markers are ANNOTATION ONLY and must not change the verdict
     ("Evil corpus: 2/2 passed (should reject all)", True,
      "syntactically an equal-fraction pass; inverted task semantics are recorded "
@@ -115,6 +118,22 @@ CASES = [
     ("# If UTF-8 failed or detected as UTF-16 without BOM", False,
      "the '8' belongs to UTF-8; a source comment is not a verdict"),
     ("Rule 4 failed: No path exists between A and Z", False, "rule index"),
+
+    # --- RULED 10:32: unequal fraction + anchored short label = failure ----
+    # Scoped to FRACTIONS ONLY. Broadening plain "N failed" to an arbitrary
+    # label rule is what made the independent matcher score a PORT
+    # ("Connection to localhost:27017 failed") and a task-domain quantity
+    # ("Final result: 4 failed downstream nodes") as test failures. Requiring a
+    # fraction is precisely what keeps those two out, and both are pinned below.
+    ("Clean: 0/50 passed", True, "unequal fraction, anchored label"),
+    ("Total: 8/9 passed", True, "unequal fraction, anchored label"),
+    ("Clean: 0 / 5 passed", True, "whitespace around the slash"),
+    ("Clean files: 0/20 passed", True, "multi-word short label"),
+    ("2/6 passed", False, "bare unequal fraction, no context -- unclassified"),
+    ("Connection to localhost:27017 failed: [Errno 111] Connection refused",
+     False, "PORT. must NOT become a failure via any label rule"),
+    ("Final result: 4 failed downstream nodes", False,
+     "task-domain count, not tests; no fraction, so the label rule cannot fire"),
 
     # --- indexed harness verdicts: kept ON PURPOSE ------------------------
     # The old pattern caught these by misreading the index as a count. They are

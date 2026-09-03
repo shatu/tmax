@@ -117,7 +117,16 @@ _FAIL_INDEXED = re.compile(
 _FAIL_PATCH_NOISE = re.compile(r"\bhunk\b|\bout of \d+ hunks?\b|\.rej\b", re.I)
 # Unequal-fraction pass counts ("2/6 passed") read as a failing run under
 # clear summary context; see the ruled boundary in TESTS_FAILED._match_line.
-_FAIL_UNEQUAL_FRAC = re.compile(r"(?<![\w/.\-])(\d+)/(\d+) passed\b", re.I)
+_FAIL_UNEQUAL_FRAC = re.compile(r"(?<![\w/.\-])(\d+)\s*/\s*(\d+)\s+passed\b", re.I)
+# Ruled 10:32, deliberately narrow: for UNEQUAL FRACTIONS ONLY, an anchored
+# short label immediately followed by "N / M passed" is sufficient summary
+# context. Scoped this way on purpose -- broadening plain "N failed" into an
+# arbitrary-label rule is what let Rulin's matcher score
+#   "Connection to localhost:27017 failed"   (a PORT, read as a count)
+#   "Final result: 4 failed downstream nodes" (task-domain quantity)
+# as failures. Requiring a FRACTION is what keeps those out: neither is one.
+_FRAC_LABEL_CTX = re.compile(
+    r"^\s*[A-Za-z][\w .\-]{0,30}:\s*\d+\s*/\s*\d+\s+passed\b", re.I)
 
 
 class _ShiftedMatch:
@@ -175,7 +184,7 @@ class TESTS_FAILED:  # noqa: N801 - kept as a name so call sites are unchanged
             # on the pass side; caught by the same kind of unit case. Strip the
             # match, then ask.
             rest = line[:m.start()] + " " + line[m.end():]
-            if _FAIL_SUMMARY_CTX.search(rest):
+            if _FAIL_SUMMARY_CTX.search(rest) or _FRAC_LABEL_CTX.search(line):
                 return m
         return None
 
@@ -236,13 +245,13 @@ class TESTS_FAILED:  # noqa: N801 - kept as a name so call sites are unchanged
 # rule and was superseded while the rerun was in flight. Equal fractions are
 # genuine full passes and must be accepted; only UNEQUAL ones are partial.
 _PASS_PLAIN = re.compile(r"(?<![\w/.\-])(?!0+\b)\d+ passed\b", re.I)
-_ANY_FRAC_PASS = re.compile(r"(?<![\w/.\-])(\d+)/(\d+) passed\b", re.I)
+_ANY_FRAC_PASS = re.compile(r"(?<![\w/.\-])(\d+)\s*/\s*(\d+)\s+passed\b", re.I)
 # A label-prefixed count is a verdict, but Rulin's adjacency guard is required:
 # the count must sit IMMEDIATELY after the label colon. Without it,
 # "curl: connection to 8443 failed after 3 retries" regains context through the
 # label rule and the entire port false-positive class walks back in sideways.
 _PASS_LABEL = re.compile(
-    r"[A-Za-z][\w .\-]*:\s*(?!0+\b)(\d+)(?:/(\d+))? passed\b", re.I)
+    r"[A-Za-z][\w .\-]*:\s*(?!0+\b)(\d+)(?:\s*/\s*(\d+))?\s+passed\b", re.I)
 _PASS_CONTEXT = re.compile(
     r"\b\d+\s+(failed|skipped|deselected|xfailed|xpassed|error|errors|warning|warnings)\b"
     r"|\bin\s+\d+(\.\d+)?\s*s(ec|econds)?\b"

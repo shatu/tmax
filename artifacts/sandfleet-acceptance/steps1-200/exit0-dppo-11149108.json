@@ -2,30 +2,30 @@
  "tag": "dppo-11149108",
  "max_step": 200,
  "records_in_window": 51200,
- "class_total_recomputed": 5003,
- "class_total_published": 5003,
+ "class_total_recomputed": 5007,
+ "class_total_published": 5007,
  "reconciles_with_published": true,
  "buckets": {
   "traceback_in_exit0": 4772,
-  "tests_failed_in_exit0": 231
+  "tests_failed_in_exit0": 235
  },
  "reasons": {
   "traceback_only_no_test_failure": 4772,
   "unexplained_exit0_with_test_failure_with_traceback": 16,
-  "unexplained_exit0_with_test_failure": 164,
+  "unexplained_exit0_with_test_failure": 167,
   "pytest_collection_error": 50,
-  "later_pass_supersedes_in_same_segment": 1
+  "later_pass_supersedes_in_same_segment": 2
  },
  "bucket_pct": {
-  "traceback_in_exit0": 95.38,
-  "tests_failed_in_exit0": 4.62
+  "traceback_in_exit0": 95.31,
+  "tests_failed_in_exit0": 4.69
  },
  "reason_pct": {
-  "traceback_only_no_test_failure": 95.38,
+  "traceback_only_no_test_failure": 95.31,
   "unexplained_exit0_with_test_failure_with_traceback": 0.32,
-  "unexplained_exit0_with_test_failure": 3.28,
+  "unexplained_exit0_with_test_failure": 3.34,
   "pytest_collection_error": 1.0,
-  "later_pass_supersedes_in_same_segment": 0.02
+  "later_pass_supersedes_in_same_segment": 0.04
  },
  "matched_strings_by_reason": {
   "traceback_only_no_test_failure": {
@@ -51,19 +51,23 @@
    "10 failed": 2,
    "20 failed": 1,
    "test1 failed": 1,
+   "0/1 passed": 1,
+   "4/10 passed": 1,
    "100 failed": 1,
    "test 7 failed": 1,
    "102 failed": 1,
    "11 failed": 1,
    "9 failed": 1,
    "25 failed": 1,
-   "30 failed": 1
+   "30 failed": 1,
+   "0/4 passed": 1
   },
   "pytest_collection_error": {
    "error during collection": 50
   },
   "later_pass_supersedes_in_same_segment": {
-   "50 failed": 1
+   "50 failed": 1,
+   "0/50 passed": 1
   }
  },
  "method": "Full population, not a sample. Mirrors tool_audit.py's first-triggering-segment keying (it breaks on the first hit), so these sub-buckets partition the published class count exactly.",
@@ -161,6 +165,11 @@
     "step": 71,
     "matched": "50 failed",
     "context": "ACCEPT, got REJECT\nFAIL: /app/corpus/clean/clean_8.sql should ACCEPT, got REJECT\nFAIL: /app/corpus/clean/clean_9.sql should ACCEPT, got REJECT\nClean: 0 passed, 50 failed\n=== Testing evil queries ===\nEvil: 50 passed, 0 failed\n=== Also create the required .c file ===\nDone\n\n\n"
+   },
+   {
+    "step": 179,
+    "matched": "0/50 passed",
+    "context": "0, got \nFAIL: 5.txt expected 0, got \nFAIL: 6.txt expected 0, got \nFAIL: 7.txt expected 0, got \nFAIL: 8.txt expected 0, got \nFAIL: 9.txt expected 0, got \nClean: 0/50 passed\n\n=== Testing all evil tokens ===\nEvil: 50/50 passed\n\nSOME TESTS FAILED\n\n_: line 9: [: : integer expression expected\n_: line 9: [: : integer expression expected"
    }
   ]
  }

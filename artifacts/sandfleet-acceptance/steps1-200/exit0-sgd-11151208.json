@@ -2,34 +2,34 @@
  "tag": "sgd-11151208",
  "max_step": 200,
  "records_in_window": 51200,
- "class_total_recomputed": 3832,
- "class_total_published": 3832,
+ "class_total_recomputed": 3846,
+ "class_total_published": 3846,
  "reconciles_with_published": true,
  "buckets": {
-  "traceback_in_exit0": 3610,
-  "tests_failed_in_exit0": 222
+  "traceback_in_exit0": 3609,
+  "tests_failed_in_exit0": 237
  },
  "reasons": {
-  "traceback_only_no_test_failure": 3610,
-  "unexplained_exit0_with_test_failure": 137,
+  "traceback_only_no_test_failure": 3609,
+  "unexplained_exit0_with_test_failure": 150,
   "pytest_collection_error": 74,
-  "unexplained_exit0_with_test_failure_with_traceback": 8,
-  "later_pass_supersedes_in_same_segment": 3
+  "unexplained_exit0_with_test_failure_with_traceback": 9,
+  "later_pass_supersedes_in_same_segment": 4
  },
  "bucket_pct": {
-  "traceback_in_exit0": 94.21,
-  "tests_failed_in_exit0": 5.79
+  "traceback_in_exit0": 93.84,
+  "tests_failed_in_exit0": 6.16
  },
  "reason_pct": {
-  "traceback_only_no_test_failure": 94.21,
-  "unexplained_exit0_with_test_failure": 3.58,
-  "pytest_collection_error": 1.93,
-  "unexplained_exit0_with_test_failure_with_traceback": 0.21,
-  "later_pass_supersedes_in_same_segment": 0.08
+  "traceback_only_no_test_failure": 93.84,
+  "unexplained_exit0_with_test_failure": 3.9,
+  "pytest_collection_error": 1.92,
+  "unexplained_exit0_with_test_failure_with_traceback": 0.23,
+  "later_pass_supersedes_in_same_segment": 0.1
  },
  "matched_strings_by_reason": {
   "traceback_only_no_test_failure": {
-   "traceback (most recent call last)": 3610
+   "traceback (most recent call last)": 3609
   },
   "unexplained_exit0_with_test_failure": {
    "1 failed": 60,
@@ -37,32 +37,38 @@
    "50 failed": 16,
    "3 failed": 13,
    "test 1 failed": 8,
+   "0/50 passed": 4,
+   "0/20 passed": 3,
    "6 failed": 2,
    "5 failed": 2,
    "10 failed": 2,
    "4 failed": 2,
    "12 failed": 2,
    "check 3 failed": 1,
+   "14/15 passed": 1,
    "20 failed": 1,
    "test 6 failed": 1,
+   "9/10 passed": 1,
+   "8/10 passed": 1,
    "test 3 failed": 1,
+   "40/50 passed": 1,
    "9 failed": 1,
    "test 4 failed": 1,
    "10/20 passed": 1,
    "1000 failed": 1,
-   "103 failed": 1,
-   "73 failed": 1,
-   "24 failed": 1
+   "53/54 passed": 1
   },
   "pytest_collection_error": {
    "error during collection": 74
   },
   "unexplained_exit0_with_test_failure_with_traceback": {
    "1 failed": 7,
-   "4 failed": 1
+   "4 failed": 1,
+   "0/20 passed": 1
   },
   "later_pass_supersedes_in_same_segment": {
-   "50 failed": 3
+   "50 failed": 3,
+   "7/10 passed": 1
   }
  },
  "method": "Full population, not a sample. Mirrors tool_audit.py's first-triggering-segment keying (it breaks on the first hit), so these sub-buckets partition the published class count exactly.",
@@ -96,19 +102,19 @@
     "context": "Device bytes: 43464721020000000000000000000000686f73746e616d6520727472310a4465\nCheck 1 passed: header\nCheck 2 passed: byte 4\nTail11: 0000000000000000000000\nCheck 3 failed: tail\n\n\n"
    },
    {
+    "step": 2,
+    "matched": "14/15 passed",
+    "context": "ASS: Four hops\n\u2713 PASS: Multiple edges\n\u2713 PASS: Complex shortest\n\u2717 FAIL: Complex alt path (expected=3, got=2)\n\u2713 PASS: With comments\n\u2713 PASS: With blanks\n\nResults: 14/15 passed\nSome tests failed\n\n\n"
+   },
+   {
+    "step": 8,
+    "matched": "0/20 passed",
+    "context": "Running comprehensive tests:\n\nSummary: 0/20 passed\n\n_: line 15: ( (F:16) * 16 + (2:16)): missing `)' (error token is \":16) * 16 + (2:16))\")\n\n\n"
+   },
+   {
     "step": 14,
     "matched": "1 failed",
     "context": "==================\nFAILED tests/test_migrate.py::test_migration_process - TypeError: 'MockDatabaseCursor' object is not callable\n============================== 1 failed in 0.06s ===============================\n\n\n"
-   },
-   {
-    "step": 16,
-    "matched": "1 failed",
-    "context": "===============\nFAILED ../home/user/log_processor/tests/test_start.py::test_should_fail - AssertionError: This is a test failure\n============================== 1 failed in 0.04s ===============================\nExit code: 1\n\n\n"
-   },
-   {
-    "step": 18,
-    "matched": "1 failed",
-    "context": "==\nFAILED test_server.py::test_string_repetition_property - hypothesis.errors.DeadlineExceeded: Test took 505.28ms, which exceeds the d...\n==================== 1 failed, 1 passed in 93.07s (0:01:33) ====================\n\n\n"
    }
   ],
   "pytest_collection_error": [
@@ -156,6 +162,11 @@
    }
   ],
   "later_pass_supersedes_in_same_segment": [
+   {
+    "step": 55,
+    "matched": "7/10 passed",
+    "context": "estamp >= '2023-01-01'' -> True\n  PASS: 'timestamp <= '2023-12-31'' -> True\n  PASS: 'db_name = 'billing'' -> True\n  PASS: 'backup_size_mb = 0' -> True\n  Clean: 7/10 passed\n\n=== Testing EVIL filters (should all return False) ===\n  PASS: '1=1; DROP TABLE backups;' -> False\n  PASS: 'db_name = 'auth' UNION SELECT sqlite_version()' ->"
+   },
    {
     "step": 96,
     "matched": "50 failed",
