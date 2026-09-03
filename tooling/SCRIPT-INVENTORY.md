@@ -88,6 +88,18 @@ Kept in the record because the retraction is part of the evidence:
   (63%) were ports (`bind() to 0.0.0.0:8080 failed`, 11,385 alone), indices
   (`Drive 3 failed`), patch hunks, and the `8` inside `UTF-8 failed`. Both fixed;
   the class fell 5,907 → 5,003 across the two corrections.
+- The same detector was then wrong a third time, on the *other* side: I fixed
+  `0 failed` and never checked `0 passed`, and left the PASS token bare while
+  tightening FAILED. A strict FAILED against a loose PASSED biased every rollout
+  toward `final_passed`. Corrected to require a strictly positive, non-fractional
+  count and to reject digitless model-echo banners; `zero_reward_though_final_
+  tests_passed` fell 120 → 96 (DPPO) and 158 → 104 (SGD). **The asymmetry was the
+  bug — fixing one side of a symmetric pattern is not fixing it.**
+- The first attempt at that fix claimed to be "purely subtractive by
+  construction" and was not: a `[\d/.]` lookbehind instead of `[\w/.-]` matched
+  the `1` in `test_..._defaults_to_1 PASSED` and **added** 198 lines.
+  `subtractive_check.py` caught it against the real corpus. Subtractiveness is
+  now measured, never argued from the regex shape.
 - I reported **2** `lost connection to sandbox` rollouts for the steps 1–200
   window. The correct figures are **16** (DPPO) / **20** (SGD), matching Rulin's
   independent scan; the 2 came from the 11096823 corpus and was carried across

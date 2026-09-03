@@ -25,7 +25,43 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from tool_audit import TESTS_FAILED, _verdict_positions  # noqa: E402
+from tool_audit import TESTS_FAILED, _PASSED_TOKEN, _verdict_positions  # noqa: E402
+
+# --- the PASS side ----------------------------------------------------------
+# Added after Rulin's row-level adjudication of the 87 one-sided
+# zero_reward_though_final_tests_passed rows and hamishivi's four-point ruling.
+# Same defect family as the failure side, and the same lesson: `0 failed` was
+# fixed on one side only, so the asymmetry became the bug.
+# Every string is real corpus text from the adjudication set.
+PASS_CASES = [
+    # must REMAIN recognised
+    ("test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured", True,
+     "Rust cargo summary; a positive count with zeros beside it is still a pass"),
+    ("Results: 50 passed, 0 failed out of 50 random tests", True,
+     "Results-prefix form Rulin's matcher accepts and mine must too"),
+    ("===== 3 passed in 0.04s =====", True, "ordinary pytest summary"),
+    ("========================= 1 failed, 2 passed in 0.04s ==================",
+     True, "mixed line: the pass token matches, failure dominance is separate"),
+    ("Tests: 5 passed, 0 failed", True, "jest-style"),
+
+    # ruling 2: digitless decorated banners are MODEL ECHO, not verdicts
+    ("=== ALL TESTS PASSED ===", False,
+     "model's own claim banner; 11096823 precedent says echo, not verdict"),
+    ("=== All checks passed! ===", False, "same, majority kind in the 87 rows"),
+
+    # ruling 1: strictly positive count
+    ("Evil configs: 0 passed", False, "zero is not a pass"),
+    ("test result: ok. 0 passed; 0 failed; 0 ignored", False,
+     "Rust reporting that NO tests ran; 'ok' here is not a pass verdict"),
+    ("00 passed", False, "padded zero is still zero"),
+
+    # ruling 3: fraction forms are partial results
+    ("=== 2/6 passed ===", False, "partial result Rulin adjudicated against itself"),
+    ("Clean: 50/50 passed", False,
+     "CONSERVATIVE: numerator==denominator is arguably a genuine full pass, but "
+     "both matchers exclude fraction forms; the limitation is documented, not lossless"),
+    ("Random tests: 100/100 passed", False, "same documented limitation"),
+]
 
 # (text, should_match, why)
 CASES = [
@@ -82,7 +118,18 @@ def main() -> int:
         else:
             nfail += 1
             print(f"  FAIL  want={want} got={got}  {text[:88]!r}\n        ({why})")
-    print(f"  {npass} passed, {nfail} failed  [pattern cases]")
+    print(f"  {npass} passed, {nfail} failed  [failure-side cases]")
+
+    ppass = pfail = 0
+    for text, want, why in PASS_CASES:
+        got = _PASSED_TOKEN.search(text) is not None
+        if got == want:
+            ppass += 1
+        else:
+            pfail += 1
+            print(f"  FAIL  want={want} got={got}  {text[:88]!r}\n        ({why})")
+    print(f"  {ppass} passed, {pfail} failed  [pass-side cases]")
+    nfail += pfail
 
     # --- the reason it matters: terminal verdict must not flip ------------
     extra = 0
@@ -98,6 +145,16 @@ def main() -> int:
         extra += 1
     else:
         print("  PASS  trailing port-bind noise no longer overrides a passing verdict")
+
+    # a digitless banner must NOT override a real failing summary
+    t3 = ("========================= 1 failed, 1 passed in 0.04s ==========\n"
+          "=== ALL TESTS PASSED ===\n")
+    lp3, lf3 = _verdict_positions(t3)
+    if not (lf3 is not None and (lp3 is None or lf3 > lp3)):
+        print("  FAIL  a model echo banner still overrides a real failing summary")
+        extra += 1
+    else:
+        print("  PASS  model echo banner no longer overrides a real failing summary")
 
     transcript2 = (
         "========================= 2 passed in 0.10s ==========================\n"

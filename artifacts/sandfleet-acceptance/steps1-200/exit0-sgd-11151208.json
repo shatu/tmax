@@ -11,9 +11,9 @@
  },
  "reasons": {
   "traceback_only_no_test_failure": 3610,
-  "unexplained_exit0_with_test_failure": 132,
+  "unexplained_exit0_with_test_failure": 133,
   "pytest_collection_error": 74,
-  "later_pass_supersedes_in_same_segment": 7,
+  "later_pass_supersedes_in_same_segment": 6,
   "unexplained_exit0_with_test_failure_with_traceback": 8
  },
  "bucket_pct": {
@@ -22,9 +22,9 @@
  },
  "reason_pct": {
   "traceback_only_no_test_failure": 94.23,
-  "unexplained_exit0_with_test_failure": 3.45,
+  "unexplained_exit0_with_test_failure": 3.47,
   "pytest_collection_error": 1.93,
-  "later_pass_supersedes_in_same_segment": 0.18,
+  "later_pass_supersedes_in_same_segment": 0.16,
   "unexplained_exit0_with_test_failure_with_traceback": 0.21
  },
  "matched_strings_by_reason": {
@@ -36,7 +36,7 @@
    "2 failed": 19,
    "50 failed": 16,
    "3 failed": 13,
-   "test 1 failed": 5,
+   "test 1 failed": 6,
    "6 failed": 2,
    "5 failed": 2,
    "10 failed": 2,
@@ -56,8 +56,8 @@
    "error during collection": 74
   },
   "later_pass_supersedes_in_same_segment": {
-   "test 1 failed": 3,
    "50 failed": 3,
+   "test 1 failed": 2,
    "test 6 failed": 1
   },
   "unexplained_exit0_with_test_failure_with_traceback": {

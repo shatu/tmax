@@ -169,7 +169,48 @@ class TESTS_FAILED:  # noqa: N801 - kept as a name so call sites are unchanged
         return None
 
 
-_PASSED_TOKEN = re.compile(r"\b\d+ passed\b|=+ .*passed.* =+", re.I)
+# The PASS side, corrected to hamishivi's four-point ruling after Rulin's
+# row-level adjudication of the zero_reward_though_final_tests_passed
+# disagreement set. The old pattern was
+#
+#     \b\d+ passed\b | =+ .*passed.* =+
+#
+# and it was the mirror image of the `0 failed` bug: I tightened the FAILURE
+# side to require a non-zero count in a summary context and left the PASS side
+# bare, so a strict FAILED ran against a loose PASSED and every rollout was
+# biased toward final_passed. Adjudication of the 87 one-sided rows found the
+# false passes fall into these kinds:
+#
+#   1. DIGITLESS DECORATED BANNERS, the majority: "=== ALL TESTS PASSED ===",
+#      "=== All checks passed! ===". These are the MODEL'S OWN claim banners,
+#      not a test runner's verdict. The 11096823 audit already adjudicated this
+#      class as model echo; the `=+ .*passed.* =+` alternative contradicted that
+#      precedent, so it is removed outright.
+#   2. ZERO COUNTS: "Evil configs: 0 passed", and Rust's
+#      "test result: ok. 0 passed; 0 failed; ..." which means NO tests ran.
+#   3. FRACTION FORMS: "=== 2/6 passed ===" is a partial result, not a pass.
+#
+# Rule: a terminal pass verdict requires a STRICTLY POSITIVE, NON-FRACTIONAL
+# passed count. The lookbehind rejects a count preceded by a digit, "/" or "."
+# so the denominator of "2/6 passed" cannot be read as the count.
+#
+# Documented limitation, shared with Rulin's independent matcher so the two
+# agree: blanket fraction exclusion also drops numerator==denominator forms
+# such as "Random tests: 100/100 passed", which is arguably a genuine full
+# pass. Both matchers are conservative here; the exclusion is NOT lossless and
+# PROVENANCE says so rather than letting a reader assume it is.
+#
+# Purely subtractive by construction: every alternative is strictly narrower
+# than the old pattern and no new form is recognised.
+# NOTE the lookbehind is [\\w/.-], not [\\d/.]. A first attempt used the
+# narrower class and the subtractive check caught it immediately: it ADDED
+# 198 lines on DPPO, because dropping \\b let the count match a digit glued to
+# an identifier -- "test_empty_multiplier_defaults_to_1 PASSED" fired on the
+# "1" of "to_1", and "TEST1 PASSED" on the "1" of "TEST1". Those are pytest
+# per-test verbose lines, not summaries, and the old pattern never matched
+# them; recognising them would be scope expansion, not a bug fix. This is why
+# subtractiveness is MEASURED here and not argued from the regex shape.
+_PASSED_TOKEN = re.compile(r"(?<![\w/.\-])(?!0+\b)\d+ passed\b", re.I)
 
 
 def _verdict_positions(text: str):

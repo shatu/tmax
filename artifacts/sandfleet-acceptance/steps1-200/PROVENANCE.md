@@ -114,6 +114,21 @@ with no count is recognised by neither the old detector nor the new one. Adding
 it would be a scope expansion rather than a bug fix, and hamishivi ruled it out
 of this acceptance pass; it is recorded here as an open classifier limitation.
 
+**The banner-vs-verdict rule.** A *decorated digitless banner* — `=== ALL TESTS
+PASSED ===`, `=== All checks passed! ===` — is **model echo, not a test-runner
+verdict**, and does not establish a terminal pass. This follows the precedent
+already set in the 11096823 audit, where that class was adjudicated as the
+model's own claim rather than a runner's. It was the majority kind among the
+adjudicated false passes. A terminal pass requires a strictly positive,
+non-fractional count from a runner.
+
+**Fraction exclusion is conservative and NOT lossless.** `2/6 passed` is
+correctly rejected as a partial result, but the same rule also rejects
+numerator==denominator forms such as `Random tests: 100/100 passed`, which is
+arguably a genuine full pass. Both this matcher and Rulin's independent one
+share the exclusion, so the two agree — but a reader should not take it as
+exact. Named here rather than left to be discovered.
+
 **One figure of mine was wrong and is corrected here.** I previously reported
 **2** `lost connection to sandbox` rollouts. For this window the count is **16**
 (DPPO) and **20** (SGD), matching Rulin's independent scan; the earlier figure

@@ -95,6 +95,55 @@ Per-reason breakdown, both arms:
 | `unexplained_exit0_with_test_failure_with_traceback` | 8 | 0.2% |
 | `later_pass_supersedes_in_same_segment` | 7 | 0.2% |
 
+## Defect 3 — the PASS side, corrected under hamishivi's four-point ruling
+
+Found after Rulin's row-level adjudication of the 87 one-sided
+`zero_reward_though_final_tests_passed` rows. Defects 1 and 2 tightened the
+FAILURE side; the PASS side was never touched, so a strict FAILED ran against a
+loose PASSED and every rollout was biased toward `final_passed`. **The lesson is
+the asymmetry, not the individual bug: `0 failed` was fixed on one side only.**
+
+Three rulings, all applied:
+
+1. **strictly positive count** — `0 passed` is not a pass. Rust's
+   `test result: ok. 0 passed; 0 failed; ...` means NO tests ran.
+2. **digitless decorated banners excluded** — `=== ALL TESTS PASSED ===` is the
+   *model's own claim banner*, and the 11096823 audit already adjudicated that
+   class as model echo rather than a runner verdict. This was the majority kind
+   in the adjudicated rows.
+3. **fraction forms excluded** — `=== 2/6 passed ===` is a partial result.
+
+| class | before | after | Δ |
+|---|---:|---:|---:|
+| `zero_reward_though_final_tests_passed` (DPPO) | 120 | **96** | −24 |
+| `zero_reward_though_final_tests_passed` (SGD) | 158 | **104** | −54 |
+| `zero_reward_model_own_tests_passed` (DPPO) | 19 | **13** | −6 |
+| `zero_reward_model_own_tests_passed` (SGD) | 30 | **19** | −11 |
+
+Every other class is **unchanged**, including both exit0 sub-buckets
+(4,772 / 231 and 3,610 / 221) and the class totals 5,003 / 3,831. One SGD row
+moved between exit0 *reasons* (`later_pass_supersedes` → `unexplained`) because
+its superseding line no longer reads as a pass; buckets unaffected.
+
+**Purely subtractive, measured not argued.** `probes/subtractive_check.py`
+compares old and new against the full corpus: **0 lines added** on both arms
+(1,101 dropped DPPO, 1,230 SGD). This check earned its place — a first attempt
+at the fix used a lookbehind of `[\d/.]` instead of `[\w/.-]`, which silently
+**added 198 lines** by matching the `1` in
+`test_empty_multiplier_defaults_to_1 PASSED`. Subtractiveness is verified
+against data here precisely because the by-construction argument was wrong.
+
+### Convergence with the independent matcher
+
+| | mine | Rulin v3 |
+|---|---:|---:|
+| zrfp DPPO | 96 | 103 |
+| zrfp SGD | **104** | **104** |
+| `full_reward_though_final_tests_failed` | 0 / 0 | 0 / 0 |
+
+SGD is now an exact match. DPPO sits 7 below theirs — I have not adjudicated
+that residual and am not claiming it is theirs rather than mine.
+
 ## What did not change
 
 The curves. Neither overlay consults `TESTS_FAILED`: the rollout series is
