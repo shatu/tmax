@@ -1,0 +1,178 @@
+{
+ "tag": "dppo-11149108",
+ "max_step": 200,
+ "records_in_window": 51200,
+ "class_total_recomputed": 5003,
+ "class_total_published": 5003,
+ "reconciles_with_published": true,
+ "buckets": {
+  "traceback_in_exit0": 4772,
+  "tests_failed_in_exit0": 231
+ },
+ "reasons": {
+  "traceback_only_no_test_failure": 4772,
+  "unexplained_exit0_with_test_failure_with_traceback": 16,
+  "unexplained_exit0_with_test_failure": 162,
+  "pytest_collection_error": 50,
+  "later_pass_supersedes_in_same_segment": 3
+ },
+ "bucket_pct": {
+  "traceback_in_exit0": 95.38,
+  "tests_failed_in_exit0": 4.62
+ },
+ "reason_pct": {
+  "traceback_only_no_test_failure": 95.38,
+  "unexplained_exit0_with_test_failure_with_traceback": 0.32,
+  "unexplained_exit0_with_test_failure": 3.24,
+  "pytest_collection_error": 1.0,
+  "later_pass_supersedes_in_same_segment": 0.06
+ },
+ "matched_strings_by_reason": {
+  "traceback_only_no_test_failure": {
+   "traceback (most recent call last)": 4772
+  },
+  "unexplained_exit0_with_test_failure_with_traceback": {
+   "1 failed": 12,
+   "2 failed": 3,
+   "test 1 failed": 1
+  },
+  "unexplained_exit0_with_test_failure": {
+   "1 failed": 86,
+   "2 failed": 18,
+   "3 failed": 10,
+   "50 failed": 8,
+   "4 failed": 7,
+   "test 1 failed": 7,
+   "5 failed": 6,
+   "test 3 failed": 3,
+   "test 5 failed": 2,
+   "8 failed": 2,
+   "6 failed": 2,
+   "10 failed": 2,
+   "20 failed": 1,
+   "test1 failed": 1,
+   "100 failed": 1,
+   "test 7 failed": 1,
+   "102 failed": 1,
+   "11 failed": 1,
+   "9 failed": 1,
+   "25 failed": 1,
+   "30 failed": 1
+  },
+  "pytest_collection_error": {
+   "error during collection": 50
+  },
+  "later_pass_supersedes_in_same_segment": {
+   "test 1 failed": 2,
+   "50 failed": 1
+  }
+ },
+ "method": "Full population, not a sample. Mirrors tool_audit.py's first-triggering-segment keying (it breaks on the first hit), so these sub-buckets partition the published class count exactly.",
+ "samples": {
+  "traceback_only_no_test_failure": [
+   {
+    "step": 1,
+    "matched": "Traceback (most recent call last)",
+    "context": "Error: 'AudioData' object has no attribute 'get_duration'\n\nTraceback (most recent call last):\n  File \"<stdin>\", line 10, in <module>\nAttributeError: 'AudioData' object has no attribute 'get_duration'\n\n\n"
+   },
+   {
+    "step": 1,
+    "matched": "Traceback (most recent call last)",
+    "context": "Traceback (most recent call last):\n  File \"<string>\", line 1, in <module>\nModuleNotFoundError: No module named 'SpeechRecognition'\nNot available\n\n\n"
+   },
+   {
+    "step": 1,
+    "matched": "Traceback (most recent call last)",
+    "context": "Error with Sphinx: RequestError: missing PocketSphinx module: ensure that PocketSphinx is set up correctly.\n\nTraceback (most recent call last):\n  File \"/usr/local/lib/python3.10/dist-packages/speech_recognition/recognizers/pocketsphinx.py\", line 45, in recognize\n    from pocketsphinx import FsgModel, "
+   },
+   {
+    "step": 1,
+    "matched": "Traceback (most recent call last)",
+    "context": "Traceback (most recent call last):\n  File \"<string>\", line 1, in <module>\nModuleNotFoundError: No module named 'speech_recognition'\n\n\n"
+   }
+  ],
+  "unexplained_exit0_with_test_failure_with_traceback": [
+   {
+    "step": 9,
+    "matched": "2 failed",
+    "context": "===\nFAILED test_server.py::test_fibo_endpoint - assert 500 == 200\nFAILED test_server.py::test_prime_endpoint - assert 500 == 200\n============================== 2 failed in 0.19s ===============================\n\n\n"
+   },
+   {
+    "step": 46,
+    "matched": "1 failed",
+    "context": "===\nFAILED test_solver.py::test_build_order_no_cycle - exceptiongroup.ExceptionGroup: Hypothesis found 2 distinct failures. (2 sub...\n========================= 1 failed, 5 passed in 2.40s ==========================\n\n\n"
+   },
+   {
+    "step": 47,
+    "matched": "2 failed",
+    "context": "/home/user/math_pipeline/test_pipeline.py::test_wav_parser - FileNotFoundError: [Errno 2] No such file or directory: 'test_18byte.wav'\n======================== 2 failed, 21 warnings in 0.07s ========================\n\n\n"
+   },
+   {
+    "step": 47,
+    "matched": "1 failed",
+    "context": "ort test summary info ============================\nFAILED test_pipeline.py::test_race_condition - RuntimeError: can't start new thread\n======================== 1 failed, 13 warnings in 0.07s ========================\n\n\n"
+   }
+  ],
+  "unexplained_exit0_with_test_failure": [
+   {
+    "step": 12,
+    "matched": "Test 5 failed",
+    "context": "Test passed\nTest passed\nTest passed\nTest passed\nTest failed: oracle=[1], custom=[1], expected=[1, 66]\nTest 5 failed!\n\n\n"
+   },
+   {
+    "step": 12,
+    "matched": "4 failed",
+    "context": "bbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff'\nResults: 151 passed, 4 failed out of 155 tests\n\n\n"
+   },
+   {
+    "step": 15,
+    "matched": "2 failed",
+    "context": "Error: 130 not less than or equal to 128\nFAILED tests/test_router.py::TestParseUrl::test_lru_cache_working - AssertionError: 131 != 1\n========================= 2 failed, 1 passed in 0.04s ==========================\n\n\n"
+   },
+   {
+    "step": 18,
+    "matched": "2 failed",
+    "context": "ED test_server.py::test_string_processing_length_property - Failed: Test failed: <_InactiveRpcError of RPC that terminated with:\n============================== 2 failed in 7.04s ===============================\n\n\n"
+   }
+  ],
+  "pytest_collection_error": [
+   {
+    "step": 18,
+    "matched": "error during collection",
+    "context": "e named 'service_pb2'\n=========================== short test summary info ============================\nERROR test_server.py\n!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!\n=============================== 1 error in 0.79s ===============================\n\n\n"
+   },
+   {
+    "step": 18,
+    "matched": "error during collection",
+    "context": "=====================\nERROR test_server.py - Failed: In test_string_multiplier_deterministic: function uses no argument ...\n!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!\n=============================== 1 error in 0.66s ===============================\n\n\n"
+   },
+   {
+    "step": 18,
+    "matched": "error during collection",
+    "context": "module named 'grpcio'\n=========================== short test summary info ============================\nERROR test_server.py\n!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!\n=============================== 1 error in 0.78s ===============================\n\n\n"
+   },
+   {
+    "step": 18,
+    "matched": "error during collection",
+    "context": "module named 'google'\n=========================== short test summary info ============================\nERROR test_server.py\n!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!\n=============================== 1 error in 0.63s ===============================\n\n\n"
+   }
+  ],
+  "later_pass_supersedes_in_same_segment": [
+   {
+    "step": 25,
+    "matched": "Test 1 failed",
+    "context": "=== Testing Valid Cases ===\n\u2717 Test 1 failed\n\u2717 Test 2 failed\n\u2717 Test 3 failed\n\u2717 Test 4 failed\n\n=== Testing Invalid Cases ===\n\u2713 Test 5 passed\n\u2713 Test 6 passed\n\u2713 Test 7 passed\n\u2713 Test 8 passed\n\u2713 Test 9 passed\n"
+   },
+   {
+    "step": 71,
+    "matched": "50 failed",
+    "context": "ACCEPT, got REJECT\nFAIL: /app/corpus/clean/clean_8.sql should ACCEPT, got REJECT\nFAIL: /app/corpus/clean/clean_9.sql should ACCEPT, got REJECT\nClean: 0 passed, 50 failed\n=== Testing evil queries ===\nEvil: 50 passed, 0 failed\n=== Also create the required .c file ===\nDone\n\n\n"
+   },
+   {
+    "step": 193,
+    "matched": "Test 1 FAILED",
+    "context": "-rwxrwx---. 1 root root 1575 Sep  2 18:22 /home/user/token_validator\nINVALID\nTest 1 FAILED\nINVALID\nTest 2 PASSED (correctly rejected)\n\n_: line 3: file: command not found\n\n\n"
+   }
+  ]
+ }
+}

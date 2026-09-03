@@ -1,0 +1,162 @@
+{
+ "tag": "sgd-11151208",
+ "records_in_window": 51200,
+ "row_counts_by_pattern": {
+  "lost_connection_to_sandbox_step": 20,
+  "lost_connection_to_sandbox_any": 20
+ },
+ "rows_matching_any_pattern": 20,
+ "incident_count_total": 16,
+ "incident_count_by_basis": {
+  "step+worker": 0,
+  "step_only_weak": 16
+ },
+ "incidents": [
+  {
+   "basis": "step-only",
+   "step": 31,
+   "identity": "",
+   "rows": 1,
+   "tasks": [
+    ""
+   ]
+  },
+  {
+   "basis": "step-only",
+   "step": 58,
+   "identity": "",
+   "rows": 1,
+   "tasks": [
+    ""
+   ]
+  },
+  {
+   "basis": "step-only",
+   "step": 62,
+   "identity": "",
+   "rows": 2,
+   "tasks": [
+    ""
+   ]
+  },
+  {
+   "basis": "step-only",
+   "step": 83,
+   "identity": "",
+   "rows": 2,
+   "tasks": [
+    ""
+   ]
+  },
+  {
+   "basis": "step-only",
+   "step": 106,
+   "identity": "",
+   "rows": 1,
+   "tasks": [
+    ""
+   ]
+  },
+  {
+   "basis": "step-only",
+   "step": 112,
+   "identity": "",
+   "rows": 1,
+   "tasks": [
+    ""
+   ]
+  },
+  {
+   "basis": "step-only",
+   "step": 118,
+   "identity": "",
+   "rows": 1,
+   "tasks": [
+    ""
+   ]
+  },
+  {
+   "basis": "step-only",
+   "step": 127,
+   "identity": "",
+   "rows": 1,
+   "tasks": [
+    ""
+   ]
+  },
+  {
+   "basis": "step-only",
+   "step": 141,
+   "identity": "",
+   "rows": 1,
+   "tasks": [
+    ""
+   ]
+  },
+  {
+   "basis": "step-only",
+   "step": 151,
+   "identity": "",
+   "rows": 3,
+   "tasks": [
+    ""
+   ]
+  },
+  {
+   "basis": "step-only",
+   "step": 157,
+   "identity": "",
+   "rows": 1,
+   "tasks": [
+    ""
+   ]
+  },
+  {
+   "basis": "step-only",
+   "step": 160,
+   "identity": "",
+   "rows": 1,
+   "tasks": [
+    ""
+   ]
+  },
+  {
+   "basis": "step-only",
+   "step": 164,
+   "identity": "",
+   "rows": 1,
+   "tasks": [
+    ""
+   ]
+  },
+  {
+   "basis": "step-only",
+   "step": 167,
+   "identity": "",
+   "rows": 1,
+   "tasks": [
+    ""
+   ]
+  },
+  {
+   "basis": "step-only",
+   "step": 175,
+   "identity": "",
+   "rows": 1,
+   "tasks": [
+    ""
+   ]
+  },
+  {
+   "basis": "step-only",
+   "step": 196,
+   "identity": "",
+   "rows": 1,
+   "tasks": [
+    ""
+   ]
+  }
+ ],
+ "note": "Row counts per pattern are reported separately and deliberately not merged: 'Lost connection to sandbox step' and the looser 'lost connection to sandbox' are different strings and were the source of a 2-vs-16 disagreement. 'Could not reach Sandfleet endpoint' is kept in its own column. Incidents grouped step-only carry no worker identity in the saved record, so that grouping is a lower bound on distinctness, not an established fact.",
+ "identity_note": "No record in either arm carries a sandbox worker URL, lease id or sandbox id. Loopback addresses appearing in transcripts are the task's own services and are excluded from identity. Every incident is therefore grouped by STEP ALONE, which MERGES rows that may be separate events: the incident count is a LOWER BOUND on distinctness, not an established count."
+}

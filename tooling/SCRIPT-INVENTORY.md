@@ -19,7 +19,12 @@ the cluster; named here so nothing is invisible.
 | `probes/patches/test_fail_closed_sif.py` | ✔ `tooling/audit/` | 6 regression tests for the guard |
 | `tooling/audit/test_required_launch_files.sh` | ✔ (in-tree) | 7 neg/pos tests for preflight gate 7; regression for trainer 11141229 |
 | `probes/dep_gate.py` | local — **deliberately NOT in the production path** | recursive launcher-dependency walker built during 11141229 triage. Correct in both directions, but it must reason about guarded sources and mentions-vs-executions, so a parser bug could block a good launch or pass a bad one. Gate 7 uses a fixed two-file list instead. Parked for the hardening pass (hamishivi ruling) |
-| `probes/tool_audit.py` | ✔ `tooling/audit/` | per-rollout classifier for 11096823 |
+| `probes/tool_audit.py` | ✔ `tooling/audit/` | per-rollout classifier; two `TESTS_FAILED` defects fixed (see `tooling/audit/tests/`) |
+| `probes/exit0_adjudicate.py` | ✔ `tooling/audit/` | full-population apportionment of `exit0_with_failure_in_same_call`; asserts reconciliation against the published class count |
+| `probes/calibrate_failed.py` | ✔ `tooling/audit/` | calibrates the test-verdict regex against the real corpus and prints the behavioural diff both ways |
+| `probes/lostconn_incidents.py` | ✔ `tooling/audit/` | counts each `lost connection` phrasing separately and groups rows into incidents |
+| `probes/patches/test_tests_failed_regex.py` | ✔ `tooling/audit/tests/` | 25 regression cases for the verdict detector, all drawn from real corpus text |
+| `probes/scrub_bundle.py` | local | structural redaction of internal identifiers before publication |
 | `probes/reward_csv.py` | ✔ `tooling/audit/` | steps 1–100 reward CSV, both step keys |
 | `probes/curve_bundle.py` | ✔ `run-evidence/11096823/` | W&B history → PNG panels + tidy CSV/JSON |
 | `probes/reward_curves.py` | ✔ `run-evidence/11096823/` | reward curves from the CSV |
@@ -75,3 +80,15 @@ Kept in the record because the retraction is part of the evidence:
   concluded `rollout_state` was absent, and would have justified dropping a
   column (`done`, genuinely 18,043 True / 1,669 False) as fake. It now descends
   through `request_info`.
+- `TESTS_FAILED` has been wrong twice, the same way both times — it matched text
+  that is not a test verdict, and because `_verdict_positions()` is line-wise and
+  failure-dominant, one bad line set a whole rollout's terminal verdict.
+  (a) `0 failed` scored as a failure, so a clean pass read as terminal failure.
+  (b) any digits before "failed" scored as a count: 19,727 of 31,169 DPPO matches
+  (63%) were ports (`bind() to 0.0.0.0:8080 failed`, 11,385 alone), indices
+  (`Drive 3 failed`), patch hunks, and the `8` inside `UTF-8 failed`. Both fixed;
+  the class fell 5,907 → 5,003 across the two corrections.
+- I reported **2** `lost connection to sandbox` rollouts for the steps 1–200
+  window. The correct figures are **16** (DPPO) / **20** (SGD), matching Rulin's
+  independent scan; the 2 came from the 11096823 corpus and was carried across
+  without recounting.

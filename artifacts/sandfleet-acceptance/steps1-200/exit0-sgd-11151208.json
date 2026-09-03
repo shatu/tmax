@@ -1,0 +1,181 @@
+{
+ "tag": "sgd-11151208",
+ "max_step": 200,
+ "records_in_window": 51200,
+ "class_total_recomputed": 3831,
+ "class_total_published": 3831,
+ "reconciles_with_published": true,
+ "buckets": {
+  "traceback_in_exit0": 3610,
+  "tests_failed_in_exit0": 221
+ },
+ "reasons": {
+  "traceback_only_no_test_failure": 3610,
+  "unexplained_exit0_with_test_failure": 132,
+  "pytest_collection_error": 74,
+  "later_pass_supersedes_in_same_segment": 7,
+  "unexplained_exit0_with_test_failure_with_traceback": 8
+ },
+ "bucket_pct": {
+  "traceback_in_exit0": 94.23,
+  "tests_failed_in_exit0": 5.77
+ },
+ "reason_pct": {
+  "traceback_only_no_test_failure": 94.23,
+  "unexplained_exit0_with_test_failure": 3.45,
+  "pytest_collection_error": 1.93,
+  "later_pass_supersedes_in_same_segment": 0.18,
+  "unexplained_exit0_with_test_failure_with_traceback": 0.21
+ },
+ "matched_strings_by_reason": {
+  "traceback_only_no_test_failure": {
+   "traceback (most recent call last)": 3610
+  },
+  "unexplained_exit0_with_test_failure": {
+   "1 failed": 60,
+   "2 failed": 19,
+   "50 failed": 16,
+   "3 failed": 13,
+   "test 1 failed": 5,
+   "6 failed": 2,
+   "5 failed": 2,
+   "10 failed": 2,
+   "4 failed": 2,
+   "12 failed": 2,
+   "check 3 failed": 1,
+   "20 failed": 1,
+   "test 3 failed": 1,
+   "9 failed": 1,
+   "test 4 failed": 1,
+   "1000 failed": 1,
+   "103 failed": 1,
+   "73 failed": 1,
+   "24 failed": 1
+  },
+  "pytest_collection_error": {
+   "error during collection": 74
+  },
+  "later_pass_supersedes_in_same_segment": {
+   "test 1 failed": 3,
+   "50 failed": 3,
+   "test 6 failed": 1
+  },
+  "unexplained_exit0_with_test_failure_with_traceback": {
+   "1 failed": 7,
+   "4 failed": 1
+  }
+ },
+ "method": "Full population, not a sample. Mirrors tool_audit.py's first-triggering-segment keying (it breaks on the first hit), so these sub-buckets partition the published class count exactly.",
+ "samples": {
+  "traceback_only_no_test_failure": [
+   {
+    "step": 1,
+    "matched": "Traceback (most recent call last)",
+    "context": "Traceback (most recent call last):\n  File \"<string>\", line 1, in <module>\nModuleNotFoundError: No module named 'H5Cpp'\nH5Cpp not available to python\n\n\n"
+   },
+   {
+    "step": 1,
+    "matched": "Traceback (most recent call last)",
+    "context": "Report written to /home/user/qa_report.json\nPeak memory: 210699 bytes\nPrime count: 0\nTop 5 primes: []\n\nProcess Process-4:\nTraceback (most recent call last):\n  File \"/home/user/benchmark_processor.py\", line 68, in consumer\n    result[\"value\"] = value\nTypeError: 'int' object does not support item assignment\n\nDuring "
+   },
+   {
+    "step": 1,
+    "matched": "Traceback (most recent call last)",
+    "context": "lete!\nTotal expressions processed: 0\nPrimes found: 0\nPeak memory used: 1020150 bytes\nTop 5 primes: []\n\nProcess Process-3:\nProcess Process-5:\nProcess Process-4:\nTraceback (most recent call last):\n  File \"/usr/lib/python3.10/multiprocessing/process.py\", line 314, in _bootstrap\n    self.run()\n  File \"/usr/lib/python3.10/multiprocessing/process.py\", line "
+   },
+   {
+    "step": 1,
+    "matched": "Traceback (most recent call last)",
+    "context": "Processing complete!\nPrime count: 2\nPeak memory: 1020254 bytes\nTop 5 primes: [103, 19]\nReport written to /home/user/qa_report.json\n\nProcess Process-1:\nTraceback (most recent call last):\n  File \"/home/user/benchmark_processor.py\", line 60, in consumer_worker\n    jobs_queue.task_done()\nAttributeError: 'Queue' object has no attribute 'task_done'"
+   }
+  ],
+  "unexplained_exit0_with_test_failure": [
+   {
+    "step": 2,
+    "matched": "Check 3 failed",
+    "context": "Device bytes: 43464721020000000000000000000000686f73746e616d6520727472310a4465\nCheck 1 passed: header\nCheck 2 passed: byte 4\nTail11: 0000000000000000000000\nCheck 3 failed: tail\n\n\n"
+   },
+   {
+    "step": 14,
+    "matched": "1 failed",
+    "context": "==================\nFAILED tests/test_migrate.py::test_migration_process - TypeError: 'MockDatabaseCursor' object is not callable\n============================== 1 failed in 0.06s ===============================\n\n\n"
+   },
+   {
+    "step": 16,
+    "matched": "1 failed",
+    "context": "===============\nFAILED ../home/user/log_processor/tests/test_start.py::test_should_fail - AssertionError: This is a test failure\n============================== 1 failed in 0.04s ===============================\nExit code: 1\n\n\n"
+   },
+   {
+    "step": 18,
+    "matched": "1 failed",
+    "context": "==\nFAILED test_server.py::test_string_repetition_property - hypothesis.errors.DeadlineExceeded: Test took 505.28ms, which exceeds the d...\n==================== 1 failed, 1 passed in 93.07s (0:01:33) ====================\n\n\n"
+   }
+  ],
+  "pytest_collection_error": [
+   {
+    "step": 16,
+    "matched": "error during collection",
+    "context": "rt test summary info ============================\nERROR ../../tmp/test_failure.py - NameError: name 'pytest' is not defined\n!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!\n=============================== 1 error in 0.10s ===============================\nExit code: 2\n\n\n"
+   },
+   {
+    "step": 18,
+    "matched": "error during collection",
+    "context": "=====================\nERROR test_server.py - AttributeError: module 'hypothesis.strategies' has no attribute 'text_alpha...\n!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!\n=============================== 1 error in 0.68s ===============================\n\n\n"
+   },
+   {
+    "step": 18,
+    "matched": "error during collection",
+    "context": "======= short test summary info ============================\nERROR test_server.py - NameError: name 'string' is not defined\n!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!\n=============================== 1 error in 0.68s ===============================\n\n\n"
+   },
+   {
+    "step": 18,
+    "matched": "error during collection",
+    "context": "=========================\nERROR test_server.py - AttributeError: module 'hypothesis' has no attribute 'register_strategies'\n!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!\n=============================== 1 error in 0.78s ===============================\n\n\n"
+   }
+  ],
+  "later_pass_supersedes_in_same_segment": [
+   {
+    "step": 35,
+    "matched": "TEST 6 FAILED",
+    "context": "TEST 6 FAILED\nTEST 7 PASSED: exact 12 alphanum matched\n\n\n"
+   },
+   {
+    "step": 90,
+    "matched": "TEST 1 FAILED",
+    "context": "=== Test Suite ===\nTEST 1 FAILED: TLSv1.2/TLSv1.3 should be accepted\nTEST 2 PASSED: TLSv1.1 correctly rejected\nTEST 3 PASSED: bare TLSv1 correctly rejected\n\n=== All Tests Complete ===\n\n\n"
+   },
+   {
+    "step": 96,
+    "matched": "50 failed",
+    "context": "44 got 1\nFAIL: clean_45 got 1\nFAIL: clean_46 got 1\nFAIL: clean_47 got 1\nFAIL: clean_48 got 1\nFAIL: clean_49 got 1\nFAIL: clean_50 got 1\nClean samples: 0 passed, 50 failed\n\n=== Testing evil samples ===\nEvil samples: 50 passed, 0 failed\n\n\n"
+   },
+   {
+    "step": 105,
+    "matched": "TEST 1 FAILED",
+    "context": "TEST 1 FAILED\nTEST 2 PASSED\nTEST 3 PASSED\nTEST 4 PASSED\nTEST 5 PASSED\nTEST 6 PASSED\n\ndiff: /app/test_output1.csv: No such file or directory\n\n\n"
+   }
+  ],
+  "unexplained_exit0_with_test_failure_with_traceback": [
+   {
+    "step": 46,
+    "matched": "1 failed",
+    "context": "ILED test_solver.py::test_valid_topological_property - exceptiongroup.ExceptionGroup: Hypothesis found 2 distinct failures. (2 sub...\n========================= 1 failed, 3 passed in 2.25s ==========================\n\n\n"
+   },
+   {
+    "step": 115,
+    "matched": "1 failed",
+    "context": "==\nFAILED test_organizer.py::test_decode_encode - exceptiongroup.ExceptionGroup: Hypothesis found 2 distinct failures. (2 sub...\n============================== 1 failed in 1.31s ===============================\n\n\n"
+   },
+   {
+    "step": 160,
+    "matched": "1 failed",
+    "context": "ED test_migrate.py::test_migrate_property_based - exceptiongroup.ExceptionGroup: Hypothesis found 2 distinct failures. (2 sub...\n============================== 1 failed in 2.16s ===============================\n\n\n"
+   },
+   {
+    "step": 160,
+    "matched": "1 failed",
+    "context": " test_migrate.py::test_migrate_with_random_data - Failed: Property test failed: Hypothesis found 2 distinct failures. (2 sub-...\n============================== 1 failed in 1.95s ===============================\n\n\n"
+   }
+  ]
+ }
+}

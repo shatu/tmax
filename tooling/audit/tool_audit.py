@@ -67,7 +67,108 @@ TASK_FAIL_PATTERNS = re.compile(
 # line. Matching "passed" anywhere would score that line as a pass. So a line
 # containing "N failed" is a FAILED line regardless of any passed count on it,
 # and the passed regex is evaluated only on lines with no failure count.
-TESTS_FAILED = re.compile(r"\b\d+ failed\b|\berror(s)? during collection\b", re.I)
+# NOTE the (?!0\b): "0 failed" is a PASS, not a failure. The original pattern
+# (hamishivi refinement (1), to make "1 failed, 3 passed" score as failed) was
+# right in intent but matched zero too, so lines like
+#   "Results: 50 passed, 0 failed out of 50 random tests"
+#   "All tests passed! ... 0 failed"
+# were scored as terminal FAILURES. Measured at 0.6% of records in the DPPO
+# steps 1-200 window (45 of a 8,000-record sample), and it feeds
+# _verdict_positions, so it distorts zero_reward_though_final_tests_passed,
+# full_reward_though_final_tests_failed and exit0_with_failure_in_same_call.
+#
+# SECOND DEFECT, same family, found while apportioning the exit0 class: the
+# pattern took ANY digits before "failed", so it was matching ports and indices
+# rather than test counts. Calibrated over the full steps 1-200 corpus
+# (probes/calibrate_failed.py), the old pattern fired 31,169 times on DPPO and
+# 19,727 of those (63%) were not test verdicts at all:
+#
+#   11,385  nginx: [emerg] bind() to 0.0.0.0:8080 failed (98: Unknown error)
+#      578  psql: ... port 5432 failed: FATAL: password authentication failed
+#      136  Drive 3 failed.
+#       ..  "Attempt 2 failed", "User 5678 failed", "1 out of 1 hunk FAILED",
+#           and "8 failed" matched out of the middle of "UTF-8 failed"
+#
+# Because _verdict_positions is line-wise and FAILURE-DOMINANT, one stray
+# "bind() to 0.0.0.0:8080 failed" anywhere in a transcript set that rollout's
+# terminal verdict to failed. A test verdict is a COUNT IN A TEST-SUMMARY
+# CONTEXT, or an indexed verdict like "Test 8 failed", so require that.
+#
+# Ports are excluded by the context requirement rather than by capping digits,
+# so a real "1024 failed, 1 passed in 3s" still matches. Calibration reported
+# ZERO lines newly caught on either arm: the change is purely subtractive
+# relative to the old pattern, which is the only shape of change that cannot
+# invent new findings.
+_FAIL_COUNT = re.compile(r"(?<![\w.\-])(?!0\b)\d{1,4} failed\b", re.I)
+_FAIL_SUMMARY_CTX = re.compile(
+    r"\b\d+\s+(passed|skipped|deselected|xfailed|xpassed|error|errors|warning|warnings)\b"
+    r"|\bin\s+\d+(\.\d+)?\s*s(ec|econds)?\b"
+    r"|={3,}|\bTests?\b\s*:|\btest session\b|\bshort test summary\b|\bFAILED\s+\S+::",
+    re.I,
+)
+_FAIL_COLLECTION = re.compile(r"\berror(s)? during collection\b", re.I)
+# An indexed verdict from a model-written harness ("Test 8 failed") is a real
+# failure, just not a count. The old pattern caught these by accident (reading
+# the index as a count); keeping them deliberately is what makes this change
+# subtractive-only. 128 occurrences on DPPO, 8 on SGD.
+_FAIL_INDEXED = re.compile(
+    r"\b(?:property\s+)?(?:test|check|case|assertion)\s*#?\s*\d+\s+failed\b", re.I)
+# patch(1) output is never a test verdict.
+_FAIL_PATCH_NOISE = re.compile(r"\bhunk\b|\bout of \d+ hunks?\b|\.rej\b", re.I)
+
+
+class _ShiftedMatch:
+    """A match reported in the coordinates of the full text, not of its line."""
+
+    __slots__ = ("_m", "_off")
+
+    def __init__(self, m, off):
+        self._m, self._off = m, off
+
+    def start(self):
+        return self._m.start() + self._off
+
+    def end(self):
+        return self._m.end() + self._off
+
+    def group(self, *a):
+        return self._m.group(*a)
+
+
+class TESTS_FAILED:  # noqa: N801 - kept as a name so call sites are unchanged
+    """Line-wise test-failure verdict detector.
+
+    Judged per line because the summary context ("N passed", "in 0.04s", the
+    ==== banner) lives on the same line as the count. Offsets are shifted back
+    into the caller's coordinates so `.start()`/`.end()` still address the
+    original text -- exit0_adjudicate.py slices a context window around them.
+    """
+
+    @staticmethod
+    def _match_line(line: str):
+        if _FAIL_COLLECTION.search(line):
+            return _FAIL_COLLECTION.search(line)
+        if _FAIL_PATCH_NOISE.search(line):
+            return None
+        m = _FAIL_INDEXED.search(line)
+        if m:
+            return m
+        m = _FAIL_COUNT.search(line)
+        if m and _FAIL_SUMMARY_CTX.search(line):
+            return m
+        return None
+
+    @classmethod
+    def search(cls, text: str):
+        off = 0
+        for line in text.splitlines(keepends=True):
+            m = cls._match_line(line)
+            if m is not None:
+                return _ShiftedMatch(m, off)
+            off += len(line)
+        return None
+
+
 _PASSED_TOKEN = re.compile(r"\b\d+ passed\b|=+ .*passed.* =+", re.I)
 
 
@@ -111,6 +212,11 @@ def load(rollouts_dir: str):
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("rollouts_dir")
+    # Bound the audit to a step range. Without this the audit would cover every
+    # record on disk -- production is at 220 while the control is at 200, so an
+    # unbounded run would compare 1-220 against 1-201 and call it matched.
+    ap.add_argument("--max-step", type=int, default=None,
+                    help="inclusive 1-based upper bound on training step")
     ap.add_argument("--out-prefix", default="logs/tool_audit")
     ap.add_argument("--sample", type=int, default=3)
     args = ap.parse_args()
@@ -134,9 +240,16 @@ def main() -> int:
     info_keys = Counter()
     n = 0
 
+    skipped_out_of_range = 0
     for r in load(args.rollouts_dir):
-        n += 1
         step = int(r.get("step", -1)) + 1          # rollout step is 0-based
+        if args.max_step is not None and step > args.max_step:
+            skipped_out_of_range += 1
+            continue
+        # count AFTER the range filter: n is the denominator for every class
+        # percentage, so counting skipped records here would deflate every rate
+        # by the size of the excluded tail.
+        n += 1
         task = (r.get("ground_truth") or ["?"])[0]
         reward = r.get("reward")
         ri = r.get("request_info") or {}
@@ -278,6 +391,8 @@ def main() -> int:
         w.writerows(rows)
     json.dump({
         "records": n,
+        "max_step": args.max_step,
+        "records_skipped_out_of_range": skipped_out_of_range,
         "schema_census": {
             "record_keys": dict(schema_keys.most_common()),
             "request_info_keys": dict(ri_keys.most_common()),
@@ -327,7 +442,9 @@ def main() -> int:
         "samples": {k: v for k, v in samples.items()},
     }, open(json_path, "w"), indent=1)
 
-    print(f"records audited: {n}")
+    print(f"records audited: {n}"
+          + (f"  (max_step={args.max_step}; {skipped_out_of_range} skipped beyond range)"
+             if args.max_step is not None else ""))
     print(f"wrote {csv_path} and {json_path}\n")
     print(f"{'class':<48} {'count':>7}  {'%':>6}  distinct_tasks")
     for cls, c in totals.most_common():

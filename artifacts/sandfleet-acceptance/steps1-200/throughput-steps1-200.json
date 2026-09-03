@@ -1,0 +1,79 @@
+{
+ "production-dppo": {
+  "run_id": "cfb5az1a",
+  "n_steps": 200,
+  "step_seconds": {
+   "n": 200,
+   "mean": 244.36,
+   "median": 225.16,
+   "p10": 150.51,
+   "p90": 356.76,
+   "min": 84.16,
+   "max": 1041.39
+  },
+  "episodes_per_step": 256,
+  "episodes_per_hour": 3771.4,
+  "step_seconds_1_100_mean": 245.68,
+  "step_seconds_101_200_mean": 243.04,
+  "wallclock_steps1_200_hours": 13.61,
+  "time/getting_response": {
+   "n": 200,
+   "mean": 646.27,
+   "median": 622.78
+  },
+  "time/trainer_idle_waiting_for_inference": {
+   "n": 200,
+   "mean": 41.79,
+   "median": 1.33
+  },
+  "time/generation_idle_waiting_for_trainer": {
+   "n": 200,
+   "mean": 0.0,
+   "median": 0.0
+  },
+  "time/weight_sync": {
+   "n": 199,
+   "mean": 1.82,
+   "median": 1.73
+  }
+ },
+ "sgd-control": {
+  "run_id": "o55y4lhh",
+  "n_steps": 200,
+  "step_seconds": {
+   "n": 200,
+   "mean": 241.36,
+   "median": 223.46,
+   "p10": 133.16,
+   "p90": 395.27,
+   "min": 81.72,
+   "max": 898.06
+  },
+  "episodes_per_step": 256,
+  "episodes_per_hour": 3818.4,
+  "step_seconds_1_100_mean": 247.6,
+  "step_seconds_101_200_mean": 235.11,
+  "wallclock_steps1_200_hours": 13.351,
+  "time/getting_response": {
+   "n": 200,
+   "mean": 662.49,
+   "median": 651.55
+  },
+  "time/trainer_idle_waiting_for_inference": {
+   "n": 200,
+   "mean": 61.75,
+   "median": 24.16
+  },
+  "time/generation_idle_waiting_for_trainer": {
+   "n": 200,
+   "mean": 0.0,
+   "median": 0.0
+  },
+  "time/weight_sync": {
+   "n": 199,
+   "mean": 2.2,
+   "median": 1.99
+  }
+ },
+ "_note": "Per-step wall time from the trainer's own time/total. weight_sync is absent on exactly one step per arm (no sync before the first optimizer step), so its n is 199 not 200; not filled."
+}
