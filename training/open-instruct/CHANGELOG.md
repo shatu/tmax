@@ -4,6 +4,7 @@ All notable changes to this project will be documented in this file.
 
 
 ### Changed
+- Fix population reward accounting before zero-std group removal: pre-filter includes all sampled completions; post-filter excludes configured overlong completions using actual per-completion sums/counts, including discarded constant-reward groups. Training selection is unchanged; empty populations report counts without a fabricated mean (https://github.com/hamishivi/tmax-private/pull/2).
 - Fix Qwen3.5 packing logprob mismatch: call `patch_qwen3_5_packing()` inside `PolicyTrainerRayProcess.from_pretrained()` so the GatedDeltaNet sequence-isolation patch is applied in the Ray worker process, not only in the main process. Without this, packed rows leaked state between sub-sequences, causing `vllm_vs_local_logprob_diff_mean` ~0.21 instead of the expected ~0.02.
 - Build FLA CP context per-batch with `fla.ops.cp.build_cp_context` so Qwen3.5 hybrid linear-attention correctly starts fresh state for packed sub-sequences that don't cross Ulysses SP rank boundaries; threads un-sharded `global_position_ids` through `UlyssesSPSplitter` → `CollatedBatchData` → `compute_logprobs` / `forward_for_logprobs`.
 - Pass `attention_mask=None` in GRPO `forward_for_logprobs` calls — HF constructs the correct 3D intra-document mask from `position_ids` internally (https://github.com/allenai/open-instruct/pull/1617).
