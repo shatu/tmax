@@ -1,0 +1,107 @@
+{
+ "window": "optimizer steps 1-400 inclusive",
+ "runs": {
+  "production-dppo": {
+   "run_id": "cfb5az1a",
+   "step_key": "training_step",
+   "n_steps": 400,
+   "keyed_scan_steps": 400,
+   "unkeyed_scan_steps": 400,
+   "steps_missing_from_unkeyed_scan": [],
+   "requested": {
+    "reward / post_filter_Reward": {
+     "val/avg_group_performance_post_filter": "PRESENT",
+     "val/avg_group_performance_pre_filter": "PRESENT",
+     "scores": "PRESENT"
+    },
+    "response length": {
+     "val/sequence_lengths": "PRESENT"
+    },
+    "tool-call count": {
+     "tools/aggregate/avg_calls_per_rollout": "PRESENT",
+     "tools/aggregate/failure_rate": "PRESENT"
+    },
+    "trainer logprob metrics": {
+     "debug/vllm_vs_local_logprob_diff_mean": "PRESENT",
+     "debug/vllm_vs_local_logprob_diff_max": "PRESENT",
+     "debug/vllm_vs_local_logprob_diff_std": "PRESENT",
+     "debug/vllm_local_reverse_kl": "PRESENT"
+    },
+    "debug/* (all available in BOTH runs)": {
+     "debug/dppo_mask_frac_kept": "PRESENT"
+    }
+   },
+   "sparse_not_absent": {
+    "env/swerl_vanillux_sandbox/infrastructure_failure": "202 of 400 steps carry no value (reported, never filled)",
+    "env/swerl_vanillux_sandbox/sandbox_lost": "202 of 400 steps carry no value (reported, never filled)",
+    "time/weight_sync": "1 of 400 steps carry no value (reported, never filled)",
+    "time/weight_sync_max": "1 of 400 steps carry no value (reported, never filled)",
+    "time/weight_sync_mean": "1 of 400 steps carry no value (reported, never filled)",
+    "time/weight_sync_median": "1 of 400 steps carry no value (reported, never filled)",
+    "time/weight_sync_min": "1 of 400 steps carry no value (reported, never filled)"
+   },
+   "all_debug_keys": [
+    "debug/dppo_mask_frac_kept",
+    "debug/vllm_local_reverse_kl",
+    "debug/vllm_vs_local_logprob_diff_max",
+    "debug/vllm_vs_local_logprob_diff_mean",
+    "debug/vllm_vs_local_logprob_diff_std"
+   ]
+  },
+  "sgd-control": {
+   "run_id": "o55y4lhh",
+   "step_key": "training_step",
+   "n_steps": 400,
+   "keyed_scan_steps": 400,
+   "unkeyed_scan_steps": 400,
+   "steps_missing_from_unkeyed_scan": [],
+   "requested": {
+    "reward / post_filter_Reward": {
+     "val/avg_group_performance_post_filter": "PRESENT",
+     "val/avg_group_performance_pre_filter": "PRESENT",
+     "scores": "PRESENT"
+    },
+    "response length": {
+     "val/sequence_lengths": "PRESENT"
+    },
+    "tool-call count": {
+     "tools/aggregate/avg_calls_per_rollout": "PRESENT",
+     "tools/aggregate/failure_rate": "PRESENT"
+    },
+    "trainer logprob metrics": {
+     "debug/vllm_vs_local_logprob_diff_mean": "PRESENT",
+     "debug/vllm_vs_local_logprob_diff_max": "PRESENT",
+     "debug/vllm_vs_local_logprob_diff_std": "PRESENT",
+     "debug/vllm_local_reverse_kl": "PRESENT"
+    },
+    "debug/* (all available in BOTH runs)": {
+     "debug/dppo_mask_frac_kept": "PRESENT"
+    }
+   },
+   "sparse_not_absent": {
+    "env/swerl_vanillux_sandbox/infrastructure_failure": "272 of 400 steps carry no value (reported, never filled)",
+    "env/swerl_vanillux_sandbox/sandbox_lost": "272 of 400 steps carry no value (reported, never filled)",
+    "time/weight_sync": "1 of 400 steps carry no value (reported, never filled)",
+    "time/weight_sync_max": "1 of 400 steps carry no value (reported, never filled)",
+    "time/weight_sync_mean": "1 of 400 steps carry no value (reported, never filled)",
+    "time/weight_sync_median": "1 of 400 steps carry no value (reported, never filled)",
+    "time/weight_sync_min": "1 of 400 steps carry no value (reported, never filled)"
+   },
+   "all_debug_keys": [
+    "debug/dppo_mask_frac_kept",
+    "debug/vllm_local_reverse_kl",
+    "debug/vllm_vs_local_logprob_diff_max",
+    "debug/vllm_vs_local_logprob_diff_mean",
+    "debug/vllm_vs_local_logprob_diff_std"
+   ]
+  }
+ },
+ "debug_keys_in_BOTH_runs": [
+  "debug/dppo_mask_frac_kept",
+  "debug/vllm_local_reverse_kl",
+  "debug/vllm_vs_local_logprob_diff_max",
+  "debug/vllm_vs_local_logprob_diff_mean",
+  "debug/vllm_vs_local_logprob_diff_std"
+ ],
+ "note": "PRESENT/ABSENT is stated for every requested field so a missing panel is never ambiguous between 'not logged' and 'forgotten'. Sparse keys are listed separately: they exist but are logged on a subset of steps, and the gaps are reported rather than filled."
+}

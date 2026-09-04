@@ -1,0 +1,1337 @@
+{
+ "rollout_derived": {
+  "control": {
+   "Q1_1_100": {
+    "steps": 100,
+    "samples": 25600,
+    "reward_mean": {
+     "n": 100,
+     "mean": 0.624336,
+     "median": 0.605469
+    },
+    "zero_fraction": {
+     "n": 100,
+     "mean": 0.375664,
+     "median": 0.394531
+    },
+    "resp_len_mean": {
+     "n": 100,
+     "mean": 14554.444219,
+     "median": 14304.574219
+    },
+    "resp_len_median": {
+     "n": 100,
+     "mean": 11362.615,
+     "median": 10878.0
+    },
+    "tool_calls_mean": {
+     "n": 100,
+     "mean": 28.747969,
+     "median": 28.955078
+    },
+    "timeout_fraction": {
+     "n": 100,
+     "mean": 0.121992,
+     "median": 0.113281
+    }
+   },
+   "Q2_101_200": {
+    "steps": 100,
+    "samples": 25600,
+    "reward_mean": {
+     "n": 100,
+     "mean": 0.634453,
+     "median": 0.648438
+    },
+    "zero_fraction": {
+     "n": 100,
+     "mean": 0.365547,
+     "median": 0.351562
+    },
+    "resp_len_mean": {
+     "n": 100,
+     "mean": 14577.372383,
+     "median": 14245.466797
+    },
+    "resp_len_median": {
+     "n": 100,
+     "mean": 11528.76,
+     "median": 10961.5
+    },
+    "tool_calls_mean": {
+     "n": 100,
+     "mean": 27.068555,
+     "median": 26.738281
+    },
+    "timeout_fraction": {
+     "n": 100,
+     "mean": 0.096328,
+     "median": 0.085938
+    }
+   },
+   "Q3_201_300": {
+    "steps": 100,
+    "samples": 25600,
+    "reward_mean": {
+     "n": 100,
+     "mean": 0.644687,
+     "median": 0.644531
+    },
+    "zero_fraction": {
+     "n": 100,
+     "mean": 0.355312,
+     "median": 0.355469
+    },
+    "resp_len_mean": {
+     "n": 100,
+     "mean": 13745.653398,
+     "median": 13383.890625
+    },
+    "resp_len_median": {
+     "n": 100,
+     "mean": 11429.405,
+     "median": 10561.75
+    },
+    "tool_calls_mean": {
+     "n": 100,
+     "mean": 26.343906,
+     "median": 25.84375
+    },
+    "timeout_fraction": {
+     "n": 100,
+     "mean": 0.096094,
+     "median": 0.082031
+    }
+   },
+   "Q4_301_400": {
+    "steps": 100,
+    "samples": 25600,
+    "reward_mean": {
+     "n": 100,
+     "mean": 0.647578,
+     "median": 0.644531
+    },
+    "zero_fraction": {
+     "n": 100,
+     "mean": 0.352422,
+     "median": 0.355469
+    },
+    "resp_len_mean": {
+     "n": 100,
+     "mean": 14824.209297,
+     "median": 14558.457031
+    },
+    "resp_len_median": {
+     "n": 100,
+     "mean": 12486.3,
+     "median": 11915.75
+    },
+    "tool_calls_mean": {
+     "n": 100,
+     "mean": 27.725313,
+     "median": 27.660156
+    },
+    "timeout_fraction": {
+     "n": 100,
+     "mean": 0.111875,
+     "median": 0.082031
+    }
+   },
+   "first_half_1_200": {
+    "steps": 200,
+    "samples": 51200,
+    "reward_mean": {
+     "n": 200,
+     "mean": 0.629395,
+     "median": 0.625
+    },
+    "zero_fraction": {
+     "n": 200,
+     "mean": 0.370605,
+     "median": 0.375
+    },
+    "resp_len_mean": {
+     "n": 200,
+     "mean": 14565.908301,
+     "median": 14298.339844
+    },
+    "resp_len_median": {
+     "n": 200,
+     "mean": 11445.6875,
+     "median": 10946.25
+    },
+    "tool_calls_mean": {
+     "n": 200,
+     "mean": 27.908262,
+     "median": 27.894531
+    },
+    "timeout_fraction": {
+     "n": 200,
+     "mean": 0.10916,
+     "median": 0.099609
+    }
+   },
+   "second_half_201_400": {
+    "steps": 200,
+    "samples": 51200,
+    "reward_mean": {
+     "n": 200,
+     "mean": 0.646133,
+     "median": 0.644531
+    },
+    "zero_fraction": {
+     "n": 200,
+     "mean": 0.353867,
+     "median": 0.355469
+    },
+    "resp_len_mean": {
+     "n": 200,
+     "mean": 14284.931348,
+     "median": 13932.089844
+    },
+    "resp_len_median": {
+     "n": 200,
+     "mean": 11957.8525,
+     "median": 11202.0
+    },
+    "tool_calls_mean": {
+     "n": 200,
+     "mean": 27.034609,
+     "median": 26.910156
+    },
+    "timeout_fraction": {
+     "n": 200,
+     "mean": 0.103984,
+     "median": 0.082031
+    }
+   },
+   "all_1_400": {
+    "steps": 400,
+    "samples": 102400,
+    "reward_mean": {
+     "n": 400,
+     "mean": 0.637764,
+     "median": 0.640625
+    },
+    "zero_fraction": {
+     "n": 400,
+     "mean": 0.362236,
+     "median": 0.359375
+    },
+    "resp_len_mean": {
+     "n": 400,
+     "mean": 14425.419824,
+     "median": 14067.658203
+    },
+    "resp_len_median": {
+     "n": 400,
+     "mean": 11701.77,
+     "median": 11039.5
+    },
+    "tool_calls_mean": {
+     "n": 400,
+     "mean": 27.471436,
+     "median": 27.492188
+    },
+    "timeout_fraction": {
+     "n": 400,
+     "mean": 0.106572,
+     "median": 0.089844
+    }
+   }
+  },
+  "production": {
+   "Q1_1_100": {
+    "steps": 100,
+    "samples": 25600,
+    "reward_mean": {
+     "n": 100,
+     "mean": 0.629141,
+     "median": 0.648438
+    },
+    "zero_fraction": {
+     "n": 100,
+     "mean": 0.370859,
+     "median": 0.351562
+    },
+    "resp_len_mean": {
+     "n": 100,
+     "mean": 14452.629648,
+     "median": 14236.695312
+    },
+    "resp_len_median": {
+     "n": 100,
+     "mean": 11696.705,
+     "median": 11200.25
+    },
+    "tool_calls_mean": {
+     "n": 100,
+     "mean": 26.42707,
+     "median": 25.804688
+    },
+    "timeout_fraction": {
+     "n": 100,
+     "mean": 0.119492,
+     "median": 0.111328
+    }
+   },
+   "Q2_101_200": {
+    "steps": 100,
+    "samples": 25600,
+    "reward_mean": {
+     "n": 100,
+     "mean": 0.650234,
+     "median": 0.644531
+    },
+    "zero_fraction": {
+     "n": 100,
+     "mean": 0.349766,
+     "median": 0.355469
+    },
+    "resp_len_mean": {
+     "n": 100,
+     "mean": 18214.810508,
+     "median": 18442.828125
+    },
+    "resp_len_median": {
+     "n": 100,
+     "mean": 16361.655,
+     "median": 16439.75
+    },
+    "tool_calls_mean": {
+     "n": 100,
+     "mean": 25.006172,
+     "median": 24.822266
+    },
+    "timeout_fraction": {
+     "n": 100,
+     "mean": 0.100391,
+     "median": 0.082031
+    }
+   },
+   "Q3_201_300": {
+    "steps": 100,
+    "samples": 25600,
+    "reward_mean": {
+     "n": 100,
+     "mean": 0.659531,
+     "median": 0.65625
+    },
+    "zero_fraction": {
+     "n": 100,
+     "mean": 0.340469,
+     "median": 0.34375
+    },
+    "resp_len_mean": {
+     "n": 100,
+     "mean": 19072.798359,
+     "median": 18893.423828
+    },
+    "resp_len_median": {
+     "n": 100,
+     "mean": 18148.425,
+     "median": 17658.25
+    },
+    "tool_calls_mean": {
+     "n": 100,
+     "mean": 25.685078,
+     "median": 25.162109
+    },
+    "timeout_fraction": {
+     "n": 100,
+     "mean": 0.113828,
+     "median": 0.107422
+    }
+   },
+   "Q4_301_400": {
+    "steps": 100,
+    "samples": 25600,
+    "reward_mean": {
+     "n": 100,
+     "mean": 0.66125,
+     "median": 0.658203
+    },
+    "zero_fraction": {
+     "n": 100,
+     "mean": 0.33875,
+     "median": 0.341797
+    },
+    "resp_len_mean": {
+     "n": 100,
+     "mean": 17219.752266,
+     "median": 17599.548828
+    },
+    "resp_len_median": {
+     "n": 100,
+     "mean": 15962.725,
+     "median": 16232.25
+    },
+    "tool_calls_mean": {
+     "n": 100,
+     "mean": 20.986055,
+     "median": 20.669922
+    },
+    "timeout_fraction": {
+     "n": 100,
+     "mean": 0.065039,
+     "median": 0.042969
+    }
+   },
+   "first_half_1_200": {
+    "steps": 200,
+    "samples": 51200,
+    "reward_mean": {
+     "n": 200,
+     "mean": 0.639687,
+     "median": 0.646484
+    },
+    "zero_fraction": {
+     "n": 200,
+     "mean": 0.360312,
+     "median": 0.353516
+    },
+    "resp_len_mean": {
+     "n": 200,
+     "mean": 16333.720078,
+     "median": 16336.306641
+    },
+    "resp_len_median": {
+     "n": 200,
+     "mean": 14029.18,
+     "median": 13845.75
+    },
+    "tool_calls_mean": {
+     "n": 200,
+     "mean": 25.716621,
+     "median": 25.314453
+    },
+    "timeout_fraction": {
+     "n": 200,
+     "mean": 0.109941,
+     "median": 0.097656
+    }
+   },
+   "second_half_201_400": {
+    "steps": 200,
+    "samples": 51200,
+    "reward_mean": {
+     "n": 200,
+     "mean": 0.660391,
+     "median": 0.65625
+    },
+    "zero_fraction": {
+     "n": 200,
+     "mean": 0.339609,
+     "median": 0.34375
+    },
+    "resp_len_mean": {
+     "n": 200,
+     "mean": 18146.275313,
+     "median": 18181.208984
+    },
+    "resp_len_median": {
+     "n": 200,
+     "mean": 17055.575,
+     "median": 17094.5
+    },
+    "tool_calls_mean": {
+     "n": 200,
+     "mean": 23.335566,
+     "median": 23.375
+    },
+    "timeout_fraction": {
+     "n": 200,
+     "mean": 0.089434,
+     "median": 0.066406
+    }
+   },
+   "all_1_400": {
+    "steps": 400,
+    "samples": 102400,
+    "reward_mean": {
+     "n": 400,
+     "mean": 0.650039,
+     "median": 0.652344
+    },
+    "zero_fraction": {
+     "n": 400,
+     "mean": 0.349961,
+     "median": 0.347656
+    },
+    "resp_len_mean": {
+     "n": 400,
+     "mean": 17239.997695,
+     "median": 17395.578125
+    },
+    "resp_len_median": {
+     "n": 400,
+     "mean": 15542.3775,
+     "median": 15605.75
+    },
+    "tool_calls_mean": {
+     "n": 400,
+     "mean": 24.526094,
+     "median": 24.476562
+    },
+    "timeout_fraction": {
+     "n": 400,
+     "mean": 0.099687,
+     "median": 0.082031
+    }
+   }
+  }
+ },
+ "trainer_side": {
+  "production-dppo": {
+   "run_id": "cfb5az1a",
+   "step_key": "training_step",
+   "Q1_1_100": {
+    "steps": 100,
+    "val/avg_group_performance_post_filter": {
+     "n": 100,
+     "mean": 0.476612,
+     "median": 0.477431
+    },
+    "val/avg_group_performance_pre_filter": {
+     "n": 100,
+     "mean": 0.476612,
+     "median": 0.477431
+    },
+    "scores": {
+     "n": 100,
+     "mean": 0.629141,
+     "median": 0.648438
+    },
+    "val/sequence_lengths": {
+     "n": 100,
+     "mean": 14452.629648,
+     "median": 14236.695312
+    },
+    "tools/aggregate/avg_calls_per_rollout": {
+     "n": 100,
+     "mean": 26.42707,
+     "median": 25.804688
+    },
+    "tools/aggregate/failure_rate": {
+     "n": 100,
+     "mean": 0.002348,
+     "median": 0.001947
+    },
+    "debug/dppo_mask_frac_kept": {
+     "n": 100,
+     "mean": 0.999865,
+     "median": 0.999906
+    },
+    "debug/vllm_vs_local_logprob_diff_mean": {
+     "n": 100,
+     "mean": 0.00988,
+     "median": 0.009995
+    },
+    "debug/vllm_local_reverse_kl": {
+     "n": 100,
+     "mean": 1.3e-05,
+     "median": 2.5e-05
+    },
+    "debug/vllm_vs_local_logprob_diff_max": {
+     "n": 100,
+     "mean": 0.531564,
+     "median": 0.506267
+    },
+    "debug/vllm_vs_local_logprob_diff_std": {
+     "n": 100,
+     "mean": 0.026054,
+     "median": 0.026109
+    }
+   },
+   "Q2_101_200": {
+    "steps": 100,
+    "val/avg_group_performance_post_filter": {
+     "n": 100,
+     "mean": 0.579451,
+     "median": 0.582589
+    },
+    "val/avg_group_performance_pre_filter": {
+     "n": 100,
+     "mean": 0.579451,
+     "median": 0.582589
+    },
+    "scores": {
+     "n": 100,
+     "mean": 0.650234,
+     "median": 0.644531
+    },
+    "val/sequence_lengths": {
+     "n": 100,
+     "mean": 18214.810508,
+     "median": 18442.828125
+    },
+    "tools/aggregate/avg_calls_per_rollout": {
+     "n": 100,
+     "mean": 25.006172,
+     "median": 24.822266
+    },
+    "tools/aggregate/failure_rate": {
+     "n": 100,
+     "mean": 0.002279,
+     "median": 0.002054
+    },
+    "debug/dppo_mask_frac_kept": {
+     "n": 100,
+     "mean": 0.999761,
+     "median": 0.999791
+    },
+    "debug/vllm_vs_local_logprob_diff_mean": {
+     "n": 100,
+     "mean": 0.012305,
+     "median": 0.012419
+    },
+    "debug/vllm_local_reverse_kl": {
+     "n": 100,
+     "mean": -4.8e-05,
+     "median": -3e-05
+    },
+    "debug/vllm_vs_local_logprob_diff_max": {
+     "n": 100,
+     "mean": 0.614106,
+     "median": 0.606158
+    },
+    "debug/vllm_vs_local_logprob_diff_std": {
+     "n": 100,
+     "mean": 0.031727,
+     "median": 0.031441
+    }
+   },
+   "Q3_201_300": {
+    "steps": 100,
+    "val/avg_group_performance_post_filter": {
+     "n": 100,
+     "mean": 0.59099,
+     "median": 0.588393
+    },
+    "val/avg_group_performance_pre_filter": {
+     "n": 100,
+     "mean": 0.59099,
+     "median": 0.588393
+    },
+    "scores": {
+     "n": 100,
+     "mean": 0.659531,
+     "median": 0.65625
+    },
+    "val/sequence_lengths": {
+     "n": 100,
+     "mean": 19072.798359,
+     "median": 18893.423828
+    },
+    "tools/aggregate/avg_calls_per_rollout": {
+     "n": 100,
+     "mean": 25.685078,
+     "median": 25.162109
+    },
+    "tools/aggregate/failure_rate": {
+     "n": 100,
+     "mean": 0.002646,
+     "median": 0.001838
+    },
+    "debug/dppo_mask_frac_kept": {
+     "n": 100,
+     "mean": 0.999841,
+     "median": 0.999883
+    },
+    "debug/vllm_vs_local_logprob_diff_mean": {
+     "n": 100,
+     "mean": 0.011448,
+     "median": 0.011356
+    },
+    "debug/vllm_local_reverse_kl": {
+     "n": 100,
+     "mean": 0.000512,
+     "median": 0.000464
+    },
+    "debug/vllm_vs_local_logprob_diff_max": {
+     "n": 100,
+     "mean": 0.607177,
+     "median": 0.598851
+    },
+    "debug/vllm_vs_local_logprob_diff_std": {
+     "n": 100,
+     "mean": 0.029451,
+     "median": 0.029016
+    }
+   },
+   "Q4_301_400": {
+    "steps": 100,
+    "val/avg_group_performance_post_filter": {
+     "n": 100,
+     "mean": 0.609824,
+     "median": 0.622842
+    },
+    "val/avg_group_performance_pre_filter": {
+     "n": 100,
+     "mean": 0.609824,
+     "median": 0.622842
+    },
+    "scores": {
+     "n": 100,
+     "mean": 0.66125,
+     "median": 0.658203
+    },
+    "val/sequence_lengths": {
+     "n": 100,
+     "mean": 17219.752266,
+     "median": 17599.548828
+    },
+    "tools/aggregate/avg_calls_per_rollout": {
+     "n": 100,
+     "mean": 20.986055,
+     "median": 20.669922
+    },
+    "tools/aggregate/failure_rate": {
+     "n": 100,
+     "mean": 0.001769,
+     "median": 0.001397
+    },
+    "debug/dppo_mask_frac_kept": {
+     "n": 100,
+     "mean": 0.999894,
+     "median": 0.999897
+    },
+    "debug/vllm_vs_local_logprob_diff_mean": {
+     "n": 100,
+     "mean": 0.011238,
+     "median": 0.011215
+    },
+    "debug/vllm_local_reverse_kl": {
+     "n": 100,
+     "mean": 0.000386,
+     "median": 0.000447
+    },
+    "debug/vllm_vs_local_logprob_diff_max": {
+     "n": 100,
+     "mean": 0.58935,
+     "median": 0.575854
+    },
+    "debug/vllm_vs_local_logprob_diff_std": {
+     "n": 100,
+     "mean": 0.028271,
+     "median": 0.028528
+    }
+   },
+   "first_half_1_200": {
+    "steps": 200,
+    "val/avg_group_performance_post_filter": {
+     "n": 200,
+     "mean": 0.528032,
+     "median": 0.537528
+    },
+    "val/avg_group_performance_pre_filter": {
+     "n": 200,
+     "mean": 0.528032,
+     "median": 0.537528
+    },
+    "scores": {
+     "n": 200,
+     "mean": 0.639687,
+     "median": 0.646484
+    },
+    "val/sequence_lengths": {
+     "n": 200,
+     "mean": 16333.720078,
+     "median": 16336.306641
+    },
+    "tools/aggregate/avg_calls_per_rollout": {
+     "n": 200,
+     "mean": 25.716621,
+     "median": 25.314453
+    },
+    "tools/aggregate/failure_rate": {
+     "n": 200,
+     "mean": 0.002313,
+     "median": 0.001989
+    },
+    "debug/dppo_mask_frac_kept": {
+     "n": 200,
+     "mean": 0.999813,
+     "median": 0.999882
+    },
+    "debug/vllm_vs_local_logprob_diff_mean": {
+     "n": 200,
+     "mean": 0.011093,
+     "median": 0.011003
+    },
+    "debug/vllm_local_reverse_kl": {
+     "n": 200,
+     "mean": -1.8e-05,
+     "median": 1.7e-05
+    },
+    "debug/vllm_vs_local_logprob_diff_max": {
+     "n": 200,
+     "mean": 0.572835,
+     "median": 0.551844
+    },
+    "debug/vllm_vs_local_logprob_diff_std": {
+     "n": 200,
+     "mean": 0.028891,
+     "median": 0.028162
+    }
+   },
+   "second_half_201_400": {
+    "steps": 200,
+    "val/avg_group_performance_post_filter": {
+     "n": 200,
+     "mean": 0.600407,
+     "median": 0.6
+    },
+    "val/avg_group_performance_pre_filter": {
+     "n": 200,
+     "mean": 0.600407,
+     "median": 0.6
+    },
+    "scores": {
+     "n": 200,
+     "mean": 0.660391,
+     "median": 0.65625
+    },
+    "val/sequence_lengths": {
+     "n": 200,
+     "mean": 18146.275313,
+     "median": 18181.208984
+    },
+    "tools/aggregate/avg_calls_per_rollout": {
+     "n": 200,
+     "mean": 23.335566,
+     "median": 23.375
+    },
+    "tools/aggregate/failure_rate": {
+     "n": 200,
+     "mean": 0.002207,
+     "median": 0.001639
+    },
+    "debug/dppo_mask_frac_kept": {
+     "n": 200,
+     "mean": 0.999867,
+     "median": 0.999891
+    },
+    "debug/vllm_vs_local_logprob_diff_mean": {
+     "n": 200,
+     "mean": 0.011343,
+     "median": 0.01125
+    },
+    "debug/vllm_local_reverse_kl": {
+     "n": 200,
+     "mean": 0.000449,
+     "median": 0.000463
+    },
+    "debug/vllm_vs_local_logprob_diff_max": {
+     "n": 200,
+     "mean": 0.598264,
+     "median": 0.58913
+    },
+    "debug/vllm_vs_local_logprob_diff_std": {
+     "n": 200,
+     "mean": 0.028861,
+     "median": 0.028773
+    }
+   },
+   "all_1_400": {
+    "steps": 400,
+    "val/avg_group_performance_post_filter": {
+     "n": 400,
+     "mean": 0.564219,
+     "median": 0.570833
+    },
+    "val/avg_group_performance_pre_filter": {
+     "n": 400,
+     "mean": 0.564219,
+     "median": 0.570833
+    },
+    "scores": {
+     "n": 400,
+     "mean": 0.650039,
+     "median": 0.652344
+    },
+    "val/sequence_lengths": {
+     "n": 400,
+     "mean": 17239.997695,
+     "median": 17395.578125
+    },
+    "tools/aggregate/avg_calls_per_rollout": {
+     "n": 400,
+     "mean": 24.526094,
+     "median": 24.476562
+    },
+    "tools/aggregate/failure_rate": {
+     "n": 400,
+     "mean": 0.00226,
+     "median": 0.001775
+    },
+    "debug/dppo_mask_frac_kept": {
+     "n": 400,
+     "mean": 0.99984,
+     "median": 0.999888
+    },
+    "debug/vllm_vs_local_logprob_diff_mean": {
+     "n": 400,
+     "mean": 0.011218,
+     "median": 0.011179
+    },
+    "debug/vllm_local_reverse_kl": {
+     "n": 400,
+     "mean": 0.000216,
+     "median": 0.000262
+    },
+    "debug/vllm_vs_local_logprob_diff_max": {
+     "n": 400,
+     "mean": 0.585549,
+     "median": 0.572565
+    },
+    "debug/vllm_vs_local_logprob_diff_std": {
+     "n": 400,
+     "mean": 0.028876,
+     "median": 0.028683
+    }
+   }
+  },
+  "sgd-control": {
+   "run_id": "o55y4lhh",
+   "step_key": "training_step",
+   "Q1_1_100": {
+    "steps": 100,
+    "val/avg_group_performance_post_filter": {
+     "n": 100,
+     "mean": 0.439331,
+     "median": 0.418336
+    },
+    "val/avg_group_performance_pre_filter": {
+     "n": 100,
+     "mean": 0.439331,
+     "median": 0.418336
+    },
+    "scores": {
+     "n": 100,
+     "mean": 0.624336,
+     "median": 0.605469
+    },
+    "val/sequence_lengths": {
+     "n": 100,
+     "mean": 14554.444219,
+     "median": 14304.574219
+    },
+    "tools/aggregate/avg_calls_per_rollout": {
+     "n": 100,
+     "mean": 28.747969,
+     "median": 28.955078
+    },
+    "tools/aggregate/failure_rate": {
+     "n": 100,
+     "mean": 0.002203,
+     "median": 0.001715
+    },
+    "debug/dppo_mask_frac_kept": {
+     "n": 100,
+     "mean": 0.999909,
+     "median": 0.999931
+    },
+    "debug/vllm_vs_local_logprob_diff_mean": {
+     "n": 100,
+     "mean": 0.008385,
+     "median": 0.008288
+    },
+    "debug/vllm_local_reverse_kl": {
+     "n": 100,
+     "mean": 9.8e-05,
+     "median": 7.8e-05
+    },
+    "debug/vllm_vs_local_logprob_diff_max": {
+     "n": 100,
+     "mean": 0.5545,
+     "median": 0.503488
+    },
+    "debug/vllm_vs_local_logprob_diff_std": {
+     "n": 100,
+     "mean": 0.024193,
+     "median": 0.023585
+    }
+   },
+   "Q2_101_200": {
+    "steps": 100,
+    "val/avg_group_performance_post_filter": {
+     "n": 100,
+     "mean": 0.493911,
+     "median": 0.491071
+    },
+    "val/avg_group_performance_pre_filter": {
+     "n": 100,
+     "mean": 0.493911,
+     "median": 0.491071
+    },
+    "scores": {
+     "n": 100,
+     "mean": 0.634453,
+     "median": 0.648438
+    },
+    "val/sequence_lengths": {
+     "n": 100,
+     "mean": 14577.372383,
+     "median": 14245.466797
+    },
+    "tools/aggregate/avg_calls_per_rollout": {
+     "n": 100,
+     "mean": 27.068555,
+     "median": 26.738281
+    },
+    "tools/aggregate/failure_rate": {
+     "n": 100,
+     "mean": 0.002016,
+     "median": 0.001543
+    },
+    "debug/dppo_mask_frac_kept": {
+     "n": 100,
+     "mean": 0.999922,
+     "median": 0.999935
+    },
+    "debug/vllm_vs_local_logprob_diff_mean": {
+     "n": 100,
+     "mean": 0.008712,
+     "median": 0.008632
+    },
+    "debug/vllm_local_reverse_kl": {
+     "n": 100,
+     "mean": 0.000137,
+     "median": 0.000129
+    },
+    "debug/vllm_vs_local_logprob_diff_max": {
+     "n": 100,
+     "mean": 0.510872,
+     "median": 0.486146
+    },
+    "debug/vllm_vs_local_logprob_diff_std": {
+     "n": 100,
+     "mean": 0.024051,
+     "median": 0.023999
+    }
+   },
+   "Q3_201_300": {
+    "steps": 100,
+    "val/avg_group_performance_post_filter": {
+     "n": 100,
+     "mean": 0.515795,
+     "median": 0.517788
+    },
+    "val/avg_group_performance_pre_filter": {
+     "n": 100,
+     "mean": 0.515795,
+     "median": 0.517788
+    },
+    "scores": {
+     "n": 100,
+     "mean": 0.644687,
+     "median": 0.644531
+    },
+    "val/sequence_lengths": {
+     "n": 100,
+     "mean": 13745.653398,
+     "median": 13383.890625
+    },
+    "tools/aggregate/avg_calls_per_rollout": {
+     "n": 100,
+     "mean": 26.343906,
+     "median": 25.84375
+    },
+    "tools/aggregate/failure_rate": {
+     "n": 100,
+     "mean": 0.002085,
+     "median": 0.001754
+    },
+    "debug/dppo_mask_frac_kept": {
+     "n": 100,
+     "mean": 0.999935,
+     "median": 0.999938
+    },
+    "debug/vllm_vs_local_logprob_diff_mean": {
+     "n": 100,
+     "mean": 0.008489,
+     "median": 0.008682
+    },
+    "debug/vllm_local_reverse_kl": {
+     "n": 100,
+     "mean": 0.000119,
+     "median": 0.00012
+    },
+    "debug/vllm_vs_local_logprob_diff_max": {
+     "n": 100,
+     "mean": 0.490808,
+     "median": 0.471712
+    },
+    "debug/vllm_vs_local_logprob_diff_std": {
+     "n": 100,
+     "mean": 0.023594,
+     "median": 0.023441
+    }
+   },
+   "Q4_301_400": {
+    "steps": 100,
+    "val/avg_group_performance_post_filter": {
+     "n": 100,
+     "mean": 0.526519,
+     "median": 0.524025
+    },
+    "val/avg_group_performance_pre_filter": {
+     "n": 100,
+     "mean": 0.526519,
+     "median": 0.524025
+    },
+    "scores": {
+     "n": 100,
+     "mean": 0.647578,
+     "median": 0.644531
+    },
+    "val/sequence_lengths": {
+     "n": 100,
+     "mean": 14824.209297,
+     "median": 14558.457031
+    },
+    "tools/aggregate/avg_calls_per_rollout": {
+     "n": 100,
+     "mean": 27.725313,
+     "median": 27.660156
+    },
+    "tools/aggregate/failure_rate": {
+     "n": 100,
+     "mean": 0.002571,
+     "median": 0.001945
+    },
+    "debug/dppo_mask_frac_kept": {
+     "n": 100,
+     "mean": 0.999932,
+     "median": 0.999935
+    },
+    "debug/vllm_vs_local_logprob_diff_mean": {
+     "n": 100,
+     "mean": 0.008394,
+     "median": 0.008488
+    },
+    "debug/vllm_local_reverse_kl": {
+     "n": 100,
+     "mean": 0.000101,
+     "median": 9.6e-05
+    },
+    "debug/vllm_vs_local_logprob_diff_max": {
+     "n": 100,
+     "mean": 0.485168,
+     "median": 0.479946
+    },
+    "debug/vllm_vs_local_logprob_diff_std": {
+     "n": 100,
+     "mean": 0.023632,
+     "median": 0.023879
+    }
+   },
+   "first_half_1_200": {
+    "steps": 200,
+    "val/avg_group_performance_post_filter": {
+     "n": 200,
+     "mean": 0.466621,
+     "median": 0.459077
+    },
+    "val/avg_group_performance_pre_filter": {
+     "n": 200,
+     "mean": 0.466621,
+     "median": 0.459077
+    },
+    "scores": {
+     "n": 200,
+     "mean": 0.629395,
+     "median": 0.625
+    },
+    "val/sequence_lengths": {
+     "n": 200,
+     "mean": 14565.908301,
+     "median": 14298.339844
+    },
+    "tools/aggregate/avg_calls_per_rollout": {
+     "n": 200,
+     "mean": 27.908262,
+     "median": 27.894531
+    },
+    "tools/aggregate/failure_rate": {
+     "n": 200,
+     "mean": 0.00211,
+     "median": 0.001628
+    },
+    "debug/dppo_mask_frac_kept": {
+     "n": 200,
+     "mean": 0.999916,
+     "median": 0.999932
+    },
+    "debug/vllm_vs_local_logprob_diff_mean": {
+     "n": 200,
+     "mean": 0.008549,
+     "median": 0.008467
+    },
+    "debug/vllm_local_reverse_kl": {
+     "n": 200,
+     "mean": 0.000117,
+     "median": 0.000114
+    },
+    "debug/vllm_vs_local_logprob_diff_max": {
+     "n": 200,
+     "mean": 0.532686,
+     "median": 0.496764
+    },
+    "debug/vllm_vs_local_logprob_diff_std": {
+     "n": 200,
+     "mean": 0.024122,
+     "median": 0.023829
+    }
+   },
+   "second_half_201_400": {
+    "steps": 200,
+    "val/avg_group_performance_post_filter": {
+     "n": 200,
+     "mean": 0.521157,
+     "median": 0.519709
+    },
+    "val/avg_group_performance_pre_filter": {
+     "n": 200,
+     "mean": 0.521157,
+     "median": 0.519709
+    },
+    "scores": {
+     "n": 200,
+     "mean": 0.646133,
+     "median": 0.644531
+    },
+    "val/sequence_lengths": {
+     "n": 200,
+     "mean": 14284.931348,
+     "median": 13932.089844
+    },
+    "tools/aggregate/avg_calls_per_rollout": {
+     "n": 200,
+     "mean": 27.034609,
+     "median": 26.910156
+    },
+    "tools/aggregate/failure_rate": {
+     "n": 200,
+     "mean": 0.002328,
+     "median": 0.001856
+    },
+    "debug/dppo_mask_frac_kept": {
+     "n": 200,
+     "mean": 0.999933,
+     "median": 0.999936
+    },
+    "debug/vllm_vs_local_logprob_diff_mean": {
+     "n": 200,
+     "mean": 0.008442,
+     "median": 0.008516
+    },
+    "debug/vllm_local_reverse_kl": {
+     "n": 200,
+     "mean": 0.00011,
+     "median": 0.000106
+    },
+    "debug/vllm_vs_local_logprob_diff_max": {
+     "n": 200,
+     "mean": 0.487988,
+     "median": 0.4763
+    },
+    "debug/vllm_vs_local_logprob_diff_std": {
+     "n": 200,
+     "mean": 0.023613,
+     "median": 0.023707
+    }
+   },
+   "all_1_400": {
+    "steps": 400,
+    "val/avg_group_performance_post_filter": {
+     "n": 400,
+     "mean": 0.493889,
+     "median": 0.492188
+    },
+    "val/avg_group_performance_pre_filter": {
+     "n": 400,
+     "mean": 0.493889,
+     "median": 0.492188
+    },
+    "scores": {
+     "n": 400,
+     "mean": 0.637764,
+     "median": 0.640625
+    },
+    "val/sequence_lengths": {
+     "n": 400,
+     "mean": 14425.419824,
+     "median": 14067.658203
+    },
+    "tools/aggregate/avg_calls_per_rollout": {
+     "n": 400,
+     "mean": 27.471436,
+     "median": 27.492188
+    },
+    "tools/aggregate/failure_rate": {
+     "n": 400,
+     "mean": 0.002219,
+     "median": 0.001718
+    },
+    "debug/dppo_mask_frac_kept": {
+     "n": 400,
+     "mean": 0.999925,
+     "median": 0.999934
+    },
+    "debug/vllm_vs_local_logprob_diff_mean": {
+     "n": 400,
+     "mean": 0.008495,
+     "median": 0.008485
+    },
+    "debug/vllm_local_reverse_kl": {
+     "n": 400,
+     "mean": 0.000114,
+     "median": 0.000108
+    },
+    "debug/vllm_vs_local_logprob_diff_max": {
+     "n": 400,
+     "mean": 0.510337,
+     "median": 0.486478
+    },
+    "debug/vllm_vs_local_logprob_diff_std": {
+     "n": 400,
+     "mean": 0.023867,
+     "median": 0.023746
+    }
+   }
+  }
+ },
+ "windows": {
+  "Q1_1_100": [
+   1,
+   100
+  ],
+  "Q2_101_200": [
+   101,
+   200
+  ],
+  "Q3_201_300": [
+   201,
+   300
+  ],
+  "Q4_301_400": [
+   301,
+   400
+  ],
+  "first_half_1_200": [
+   1,
+   200
+  ],
+  "second_half_201_400": [
+   201,
+   400
+  ],
+  "all_1_400": [
+   1,
+   400
+  ]
+ },
+ "note": "Inclusive on optimizer step. No interpolation, no forward-fill; a window's n is the number of steps that actually carry that metric."
+}
