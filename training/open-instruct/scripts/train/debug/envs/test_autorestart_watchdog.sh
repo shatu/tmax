@@ -147,6 +147,22 @@ else
     bad "6 expected the credential-exhaustion form to match BOTH classifiers; it did not"
 fi
 
+# --- 6b. the resubmit must override the launcher's unwritable --output ------
+# The launcher hardcodes #SBATCH --output into another account's directory.
+# Without a command-line override Slurm kills the job at ~3s (ExitCode 0:53)
+# with no log, and the watchdog's own classifier then reads a file that was
+# never written. Both replacements died this way on 2026-09-04.
+if grep -q 'IO_ARGS=(--output=' "$WD" && grep -q '"${IO_ARGS\[@\]}"' "$WD"; then
+    ok "6b resubmit passes an explicit --output/--error override"
+else
+    bad "6b resubmit does not override the launcher's hardcoded --output"
+fi
+if grep -q 'IO_ARGS=(--output="\${LOGDIR}' "$WD"; then
+    ok "6c override targets LOGDIR, the same path the classifier reads"
+else
+    bad "6c override does not target LOGDIR; classifier would read a missing file"
+fi
+
 # --- 7. no sbatch invocation may discard stderr -----------------------------
 if grep -n 'sbatch' "$WD" | grep -q '2>/dev/null'; then
     bad "7 an sbatch call still redirects stderr to /dev/null"

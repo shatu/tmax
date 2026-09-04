@@ -295,8 +295,24 @@ classify_and_maybe_resubmit() {
         # arms instead of one line.
         local submit_err submit_out submit_rc _l
         submit_err="$(mktemp -t wd-submit-err.XXXXXX)"
+        # DEFECT 4, found when the repaired resubmit finally worked: the
+        # launcher carries its own
+        #   #SBATCH --output=/checkpoint/comem/rulin/logs/.../%x-%j.out
+        # pointing at a directory THIS ACCOUNT CANNOT WRITE. launch.sh overrides
+        # it on the command line; this resubmit did not, so both replacements
+        # (11223547, 11223531) were killed by Slurm at 3s with ExitCode 0:53 and
+        # produced no log at all. Same family as the missing --account: something
+        # launch.sh passes and the resubmit did not.
+        #
+        # Compounding: the watchdog READS ${LOGDIR}/${JOB_NAME}-${jid}.err to
+        # classify failures. Without this override the resubmitted job's logs
+        # never land there, so even a surviving restart would have been
+        # classified against a file that does not exist.
+        local -a IO_ARGS=(--output="${LOGDIR}/${JOB_NAME}-%j.out"
+                          --error="${LOGDIR}/${JOB_NAME}-%j.err")
         local -a SUBMIT_CMD=(sbatch --parsable --job-name="${JOB_NAME}"
-                             "${SCHED_ARGS[@]}" "${QOS_ARG[@]}" "${EXCLUDE_ARG[@]}" "${LAUNCHER}")
+                             "${SCHED_ARGS[@]}" "${QOS_ARG[@]}" "${EXCLUDE_ARG[@]}"
+                             "${IO_ARGS[@]}" "${LAUNCHER}")
         submit_out="$(cd "${REPO_ROOT}" && "${SUBMIT_CMD[@]}" 2>"${submit_err}")"
         submit_rc=$?
 
