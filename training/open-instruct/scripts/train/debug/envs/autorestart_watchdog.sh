@@ -95,6 +95,15 @@ STARTUP_TRANSIENT_RE='vLLM engine initialization failed|Engine core initializati
 # terminal form -- all reset attempts spent WITH a credential cause -- is
 # permanent. Same presence-vs-universality distinction that separated the
 # routine 401 background from the failure that actually killed the arm.
+# ASYMMETRY, flagged by RulinShao in review and left deliberate: the credential
+# signature is EXHAUSTION-keyed ("Reset failed after N attempts: ...") whereas
+# `not used by the HfArgumentParser` and `MissingLocalSifError` are presence-
+# keyed, and this classifier greps the WHOLE err+out logs -- which include
+# rollout tool echoes from the sandbox. A task that happened to print the
+# HfArgumentParser phrase would therefore block a restartable run. Judged
+# acceptable because the phrases are trainer-specific and the failure direction
+# is safe (no restart plus a loud log summons a human, rather than a silent
+# retry loop). If either ever fires falsely, anchor it the same exhaustion way.
 DETERMINISTIC_RE='output tensor size must be equal to world_size|Policy and reference policy parameter (names|shapes) do not match|ZeRO-3 parameter .* is missing its local partition|You are using an untested ZeRO Optimizer|Reset failed after [0-9]+ attempts: Sandfleet PermissionError|not used by the HfArgumentParser|MissingLocalSifError'
 
 # --- scheduler arguments, recovered from the job being replaced -----------
