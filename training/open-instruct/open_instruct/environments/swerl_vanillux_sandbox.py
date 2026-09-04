@@ -1,7 +1,6 @@
 """SWERL sandbox environment with the Vanillux solver harness.
 
-Mirrors the offline harness at
-https://github.com/hamishivi/tmax/blob/master/rl_data/generator/vanillux_solver.py.
+Matches the shell and tool-call behavior of ``Vanillux2Agent``.
 
 Key properties (matching the reference solver):
 
@@ -22,11 +21,13 @@ import contextlib
 import io
 import os
 import random
+import re
 import shlex
 import shutil
 import subprocess
 import tarfile
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
@@ -41,7 +42,6 @@ from .apptainer_images import prefer_local_sif
 from .backends import SandboxBackend, SandboxLostError, SandboxOOMError, create_backend
 from .base import BaseEnvConfig, EnvCall, RLEnvironment, StepResult
 from .swerl_sandbox import LAST_STEP_WARNING, SUBMIT_MARKER, TIMING_LOG_THRESHOLD_S, TIMING_LOGS
-from .tools.utils import coerce_args
 
 logger = logger_utils.setup_logger(__name__)
 
@@ -52,37 +52,53 @@ _BASH_WRAPPER_PATH_QUOTED = shlex.quote(_BASH_WRAPPER_PATH)
 _BASH_CWD_PATH = "/tmp/.swerl_vanillux_cwd"
 _BASH_ENV_PATH = "/tmp/.swerl_vanillux_env"
 _BASH_WRAPPER = f"""#!/bin/bash
-set -a
-source {shlex.quote(_BASH_ENV_PATH)} 2>/dev/null || true
-set +a
-# Cap per-process address space inside the sandbox so a runaway model-issued
-# command (e.g. bytearray(35 GiB)) can be killed by the kernel instead of
-# bringing down the host and triggering Ray-level OOM cascades. Override via
-# SWERL_SANDBOX_ULIMIT_AS_KB (in KiB, ulimit -v unit); default 2 GiB.
+# Default address-space limit: 2 GiB, configurable in KiB.
 ulimit -v "${{SWERL_SANDBOX_ULIMIT_AS_KB:-2097152}}" 2>/dev/null || true
-_cwd="$(cat {shlex.quote(_BASH_CWD_PATH)} 2>/dev/null || echo /app)"
-cd "$_cwd" 2>/dev/null || cd /workspace || exit 1
 _stdout="$(mktemp /tmp/.swerl_vanillux_stdout.XXXXXX)"
 _stderr="$(mktemp /tmp/.swerl_vanillux_stderr.XXXXXX)"
-# Redirect the user command to regular files first. Background services started
-# by the command can otherwise inherit apptainer exec's stdout/stderr pipes and
-# keep the host-side subprocess waiting for EOF even after the shell returns.
-# Also redirect stdin from /dev/null and run in a new session so any background
-# daemon spawned by the command can't inherit the apptainer-exec pty/pipes.
-setsid bash -c 'eval "$1" >"$2" 2>"$3" </dev/null' _ "$1" "$_stdout" "$_stderr" </dev/null
-_exit_code=$?
-export -p > {shlex.quote(_BASH_ENV_PATH)}
+_command_pid=""
+_collect_output() {{
+    cat "$_stdout"
+    cat "$_stderr" >&2
+    rm -f "$_stdout" "$_stderr"
+}}
+_terminate_command() {{
+    trap '' HUP INT TERM
+    if [ -n "$_command_pid" ]; then
+        # Cancel the detached command group, including children that ignore TERM.
+        kill -TERM -- "-$_command_pid" 2>/dev/null || true
+        sleep 1
+        kill -KILL -- "-$_command_pid" 2>/dev/null || true
+        wait "$_command_pid" 2>/dev/null || true
+    fi
+    _collect_output
+    exit "$1"
+}}
+trap '_terminate_command 129' HUP
+trap '_terminate_command 130' INT
+trap '_terminate_command 143' TERM
+# Files prevent background services from holding Apptainer's output pipes open.
+# Restore, execute, and save in the same shell, as in Vanillux2Agent._wrap_command.
+(
+# Background shells inherit ignored SIGINT/SIGQUIT; reset them before exec.
+trap - HUP INT QUIT TERM
+exec setsid bash -c 'cd "$(cat {shlex.quote(_BASH_CWD_PATH)})" 2>/dev/null || true
+. {shlex.quote(_BASH_ENV_PATH)} 2>/dev/null || true
+'"$1"'
+_vanillux2_ec=$?
 pwd > {shlex.quote(_BASH_CWD_PATH)}
-cat "$_stdout"
-cat "$_stderr" >&2
-rm -f "$_stdout" "$_stderr"
-# Kill any child processes of this wrapper (e.g. backgrounded subshells like
-# "(while :; do ...; done) &") that inherited the apptainer-exec stdout/stderr
-# pipes. Without this, the host-side subprocess.run blocks until tool_call_timeout
-# waiting for EOF on a pipe a backgrounded subshell is still writing to.
-# Verified against /home/rulin/sandbox_repro/test_wrapper_fixes.py — only this
-# pattern actually unblocks the host call.
-pkill -P $$ 2>/dev/null
+export -p > {shlex.quote(_BASH_ENV_PATH)}
+exit $_vanillux2_ec'
+) >"$_stdout" 2>"$_stderr" </dev/null &
+_command_pid=$!
+wait "$_command_pid"
+_exit_code=$?
+# Record ordinary exit 124; cancellation exits without writing this marker.
+if [ "$_exit_code" -eq 124 ] && [ -n "${{2:-}}" ]; then
+    printf '%s\\n' "$_exit_code" > "$2"
+fi
+trap - HUP INT TERM
+_collect_output
 exit $_exit_code
 """
 
@@ -115,7 +131,17 @@ TOOL_CALL_FORMAT_ERROR_MESSAGE = (
     "Format error: Your last response did not include a valid `bash` tool call.\n\n"
     "Please always provide EXACTLY ONE call to the `bash` tool. If you want to\n"
     "end the task, please issue the command `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`\n"
-    "via the `bash` tool, with no other content in the command."
+    "via the `bash` tool, with no other content in the command.\n"
+)
+
+_COMPOSE_PROVIDER_RE = re.compile(
+    r"\x1b\[4m>>>> Executing external compose provider "
+    r'"[^"]*docker-compose"\. Please see podman-compose\(1\) for how to disable '
+    r"this message\. <<<<\n\n\x1b\[0m"
+)
+_DOCKER_EXEC_ERROR_RE = re.compile(
+    r"(?ms)^Error: executing [^\n]*(?:docker-compose|docker compose)"
+    r".*?: exit status \d+\s*$"
 )
 
 
@@ -167,7 +193,6 @@ class SWERLVanilluxSandboxEnv(RLEnvironment):
         timeout: int = 120,
         last_step_warning: bool = False,
         append_turns_remaining: bool = False,
-        tool_call_format_error_feedback: bool = False,
         **backend_kwargs: Any,
     ):
         backend_kwargs["image"] = image
@@ -184,7 +209,6 @@ class SWERLVanilluxSandboxEnv(RLEnvironment):
         self._test_timeout = max(test_timeout, self._MIN_TEST_TIMEOUT_S)
         self._last_step_warning = last_step_warning
         self._append_turns_remaining = append_turns_remaining
-        self._tool_call_format_error_feedback = tool_call_format_error_feedback
         self._max_steps: int | None = None
         self._instruction = ""
         self._tests_dir: str | None = None
@@ -237,9 +261,7 @@ class SWERLVanilluxSandboxEnv(RLEnvironment):
     def get_tool_definitions(cls) -> list[dict]:
         return list(cls._tool_definitions)
 
-    def get_tool_call_format_error_message(self) -> str | None:
-        if not self._tool_call_format_error_feedback:
-            return None
+    def get_tool_call_format_error_message(self) -> str:
         return TOOL_CALL_FORMAT_ERROR_MESSAGE
 
     async def reset(self, task_id: str | None = None, **kwargs: Any) -> tuple[StepResult, list[dict]]:
@@ -450,10 +472,11 @@ class SWERLVanilluxSandboxEnv(RLEnvironment):
         assert self._backend is not None
         init_result = self._backend.run_command(
             "mkdir -p /workspace /root && "
+            # Capture backend state before setup changes cwd.
+            f"pwd > {shlex.quote(_BASH_CWD_PATH)} && "
+            f"export -p > {shlex.quote(_BASH_ENV_PATH)} && "
             "cd /workspace && "
-            '[ -d /app ] || { _P="$(pwd)"; [ "$_P" != "/" ] && ln -sf "$_P" /app; } && '
-            f"printf '%s\\n' /app > {shlex.quote(_BASH_CWD_PATH)} && "
-            f": > {shlex.quote(_BASH_ENV_PATH)}"
+            '{ [ -d /app ] || { _P="$(pwd)"; [ "$_P" != "/" ] && ln -sf "$_P" /app; }; }'
         )
         # Restored (tmax-private#1 repair): a reset must not report success over an
         # unusable sandbox — the false-success class behind the poison-pill incident.
@@ -477,9 +500,8 @@ class SWERLVanilluxSandboxEnv(RLEnvironment):
         self._step_count += 1
 
         if call.name == "bash":
-            args = coerce_args(_BASH_TOOL["function"]["parameters"], call.args)
             try:
-                return self._with_last_step_warning(self._execute_bash(args))
+                return self._with_last_step_warning(self._execute_bash(call.args))
             except SandboxOOMError as e:
                 logger.warning(f"[{self._task_id}] sandbox OOM: {e}")
                 return StepResult(
@@ -545,42 +567,52 @@ class SWERLVanilluxSandboxEnv(RLEnvironment):
 
     def _execute_bash(self, args: dict) -> StepResult:
         assert self._backend is not None
-        command = args.get("command", "")
-        if not command:
-            return StepResult(
-                result=format_error_message("'command' parameter is required."), metadata={"exit_code": 1}
-            )
+        command = args.get("command", "") if isinstance(args, dict) else None
+        if not isinstance(command, str):
+            return StepResult(result=TOOL_CALL_FORMAT_ERROR_MESSAGE, metadata={"exit_code": 1})
 
-        result = self._backend.run_command(f"bash {_BASH_WRAPPER_PATH_QUOTED} {shlex.quote(command)}")
-        output = result.stdout or ""
-        if result.stderr:
-            output += f"\n{result.stderr}" if output else result.stderr
-
-        # Restored (tmax-private#1 repair): exit 124 = command hit the sandbox-side
-        # timeout. Surface it as a distinct terminal timeout observation instead of
-        # ordinary output, so the rollout ends and telemetry records the class.
+        command = command.strip()
+        exit_status_path = f"/tmp/.swerl_vanillux_exit.{uuid.uuid4().hex}"
+        result = self._backend.run_command(
+            f"bash {_BASH_WRAPPER_PATH_QUOTED} {shlex.quote(command)} {shlex.quote(exit_status_path)}"
+        )
+        stderr = result.stderr
+        timed_out = False
         if result.exit_code == 124:
-            truncated = truncate_observation(output) if output else "Command timed out."
-            observation = f"{truncated}\n\n(exit_code={result.exit_code})"
-            logger.info(
-                "[%s] bash command timed out exit=%s command=%r output_preview=%r",
-                self._task_id,
-                result.exit_code,
-                command[:500],
-                truncated[:500],
+            # An ordinary exit 124 writes a marker; a backend deadline does not.
+            quoted_status_path = shlex.quote(exit_status_path)
+            completion = self._backend.run_command(
+                f"if [ -f {quoted_status_path} ]; then cat {quoted_status_path}; rm -f {quoted_status_path}; fi"
             )
+            if completion.exit_code != 0:
+                error = f"Could not inspect command completion status (probe exit_code={completion.exit_code})."
+                return StepResult(
+                    result=error,
+                    reward=0.0,
+                    done=True,
+                    metadata={"infrastructure_failure": True, "error": error, "task_id": self._task_id},
+                )
+            timed_out = completion.stdout.strip() != "124"
+            # Backends label all 124s as timeouts, including ordinary exits.
+            if not timed_out and stderr:
+                stderr = stderr.removeprefix(f"Command timed out after {self._timeout}s.\n")
+
+        output = result.stdout or ""
+        if stderr:
+            output += f"\n{stderr}" if output else stderr
+        output = _COMPOSE_PROVIDER_RE.sub("", output)
+        output = _DOCKER_EXEC_ERROR_RE.sub("", output).rstrip()
+        truncated = truncate_observation(output) if output else "(no output)"
+        observation = f"{truncated}\n\n(exit_code={result.exit_code})"
+        if timed_out:
             return StepResult(
                 result=observation,
                 reward=0.0,
                 done=True,
                 metadata={"exit_code": result.exit_code, "timeout": True, "task_id": self._task_id},
             )
-
-        if SUBMIT_MARKER in output:
+        if SUBMIT_MARKER in command or SUBMIT_MARKER in observation:
             return self._run_tests()
-
-        truncated = truncate_observation(output) if output else "(no output)"
-        observation = f"{truncated}\n\n(exit_code={result.exit_code})"
         turns_remaining_message = self._turns_remaining_message()
         if turns_remaining_message is not None:
             observation = f"{observation}\n{turns_remaining_message}"
@@ -673,4 +705,3 @@ class SWERLVanilluxSandboxEnvConfig(BaseEnvConfig):
     timeout: int = 120
     last_step_warning: bool = False
     append_turns_remaining: bool = False
-    tool_call_format_error_feedback: bool = False

@@ -2,14 +2,14 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from open_instruct.environments.backends import ExecutionResult, SandboxLostError
+from open_instruct.environments.backends import ExecutionResult, SandboxLostError, SandboxOOMError
 from open_instruct.environments.base import EnvCall, StepResult
 from open_instruct.environments.swerl_sandbox import LAST_STEP_WARNING, SWERLSandboxEnv
 from open_instruct.environments.swerl_vanillux_sandbox import (
     INSTANCE_TEMPLATE,
     SUBMIT_MARKER,
-    SWERLVanilluxSandboxEnv,
     TOOL_CALL_FORMAT_ERROR_MESSAGE,
+    SWERLVanilluxSandboxEnv,
     format_error_message,
     render_instance,
     truncate_observation,
@@ -132,12 +132,10 @@ class TestSWERLVanilluxSandbox(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(names, ["bash"])
 
-    def test_tool_call_format_error_message_is_opt_in(self):
+    def test_tool_call_format_error_message_is_always_available(self):
         env = SWERLVanilluxSandboxEnv()
-        enabled_env = SWERLVanilluxSandboxEnv(tool_call_format_error_feedback=True)
 
-        self.assertIsNone(env.get_tool_call_format_error_message())
-        self.assertEqual(enabled_env.get_tool_call_format_error_message(), TOOL_CALL_FORMAT_ERROR_MESSAGE)
+        self.assertEqual(env.get_tool_call_format_error_message(), TOOL_CALL_FORMAT_ERROR_MESSAGE)
 
     def test_render_instance_substitutes_task(self):
         rendered = render_instance("fix the bug in foo.py")
@@ -213,6 +211,29 @@ class TestSWERLVanilluxSandbox(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("hello", result.result)
         self.assertIn("(exit_code=0)", result.result)
+
+    async def test_backend_loss_or_oom_during_timeout_probe_remains_terminal(self):
+        for error_type, metadata_key in [(SandboxLostError, "sandbox_lost"), (SandboxOOMError, "oom_killed")]:
+            with self.subTest(error_type=error_type):
+                env = SWERLVanilluxSandboxEnv()
+
+                class _FailedProbeBackend(_FakeBackend):
+                    _error_type = error_type
+
+                    def run_command(self, command: str) -> ExecutionResult:
+                        self.commands.append(command)
+                        if len(self.commands) == 1:
+                            return ExecutionResult(stdout="", stderr="", exit_code=124)
+                        raise self._error_type("worker disappeared during completion probe")
+
+                env._backend = _FailedProbeBackend()
+                result = await env.step(EnvCall(id="1", name="bash", args={"command": "exit 124"}))
+
+                self.assertTrue(result.done)
+                self.assertTrue(result.metadata[metadata_key])
+                self.assertNotIn("timeout", result.metadata)
+                if error_type is SandboxLostError:
+                    self.assertIsNone(env._backend)
 
     async def test_bash_output_appends_turns_remaining_when_enabled(self):
         env = SWERLVanilluxSandboxEnv(append_turns_remaining=True)
