@@ -84,7 +84,50 @@ STARTUP_TRANSIENT_RE='vLLM engine initialization failed|Engine core initializati
 # errors (ImportError/ModuleNotFoundError/SyntaxError/argparse) — those appear constantly in
 # ROLLOUT tool output (the agent runs Python in the sandbox that throws them), so they would
 # match on every run and wrongly block restarts of genuinely transient failures.
-DETERMINISTIC_RE='output tensor size must be equal to world_size|Policy and reference policy parameter (names|shapes) do not match|ZeRO-3 parameter .* is missing its local partition|You are using an untested ZeRO Optimizer'
+# Credential / parser / config failures added 2026-09-04 after cap500 trainer
+# 11212260 died on a token mismatch and the watchdog classified it TRANSIENT and
+# began spending its restart budget on a config that could never succeed.
+#
+# These are keyed on EXHAUSTION, not on presence, and that distinction is the
+# whole point. The healthy production and control arms each carry 27-34
+# transient "Invalid or missing client bearer token" lines and survive them; a
+# rule matching the bare phrase would block restarts on healthy runs. Only the
+# terminal form -- all reset attempts spent WITH a credential cause -- is
+# permanent. Same presence-vs-universality distinction that separated the
+# routine 401 background from the failure that actually killed the arm.
+DETERMINISTIC_RE='output tensor size must be equal to world_size|Policy and reference policy parameter (names|shapes) do not match|ZeRO-3 parameter .* is missing its local partition|You are using an untested ZeRO Optimizer|Reset failed after [0-9]+ attempts: Sandfleet PermissionError|not used by the HfArgumentParser|MissingLocalSifError'
+
+# --- scheduler arguments, recovered from the job being replaced -----------
+# Defect found 2026-09-04: this watchdog never passed --account, while
+# launch.sh passes --account=memorization on both of its sbatch lines. Every
+# resubmit it ever attempted was therefore rejected by the scheduler with
+#   allocation failure: Invalid account or account/partition combination
+# and reported only as "empty job id". Supervision has never actually worked;
+# it took two dead arms in one night to notice.
+#
+# The fix deliberately does NOT copy launch.sh's flag list into this file.
+# Duplication is what let --account drift out of sync in the first place, and a
+# second copy would drift again. Instead the replacement job INHERITS its
+# account/partition/QOS from the job it is replacing, read out of the
+# accounting DB. Whatever launched the original is what relaunches it, and the
+# two cannot diverge because there is only one source.
+sched_args_from_job() {
+    local jid="$1" acct part qos row
+    row="$(sacct -j "${jid}" -X -n -o Account,Partition,QOS -P 2>/dev/null | head -1)"
+    acct="$(printf '%s' "${row}" | cut -d'|' -f1)"
+    part="$(printf '%s' "${row}" | cut -d'|' -f2)"
+    qos="$(printf  '%s' "${row}" | cut -d'|' -f3)"
+    # Env overrides win, so an operator can still redirect a restart.
+    [ -n "${SBATCH_ACCOUNT:-}" ] && acct="${SBATCH_ACCOUNT}"
+    [ -n "${QOS:-}" ] && qos="${QOS}"
+    SCHED_ARGS=()
+    [ -n "${acct}" ] && SCHED_ARGS+=(--account="${acct}")
+    [ -n "${qos}" ]  && SCHED_ARGS+=(--qos="${qos}")
+    # Partition is intentionally NOT passed: on fair-sc it is inferred from the
+    # QOS prefix and an explicit --partition is ignored with a warning.
+    SCHED_RECOVERED="account=${acct:-<none>} partition=${part:-<none>} qos=${qos:-<none>}"
+    [ -n "${acct}" ]
+}
 
 restarts=0
 cur="${TARGET_JOB_ID}"
@@ -228,11 +271,38 @@ classify_and_maybe_resubmit() {
             log "ERROR: emit_tool_configs preflight FAILED — refusing to resubmit onto a boot-fatal config. Watchdog exiting for a human."
             return 1
         fi
-        newid="$(cd "${REPO_ROOT}" && sbatch --parsable --job-name="${JOB_NAME}" "${QOS_ARG[@]}" "${EXCLUDE_ARG[@]}" "${LAUNCHER}" 2>/dev/null)"
-        if [ -z "${newid}" ]; then
-            log "ERROR: resubmit failed (empty job id). Watchdog exiting."
+        # (1) scheduler args inherited from the job being replaced.
+        if ! sched_args_from_job "${jid}"; then
+            log "ERROR: could not recover an account for job ${jid} from sacct (${SCHED_RECOVERED:-unavailable})."
+            log "ERROR: refusing to submit without an account -- that is the exact failure that silently ended supervision on 11149109 and 11212261. Watchdog exiting for a human."
             return 1
         fi
+        log "resubmit scheduler args inherited from ${jid}: ${SCHED_RECOVERED}"
+
+        # (2) stderr is PRESERVED, never discarded. The previous version ended
+        # this line with 2>/dev/null, so the scheduler's actual complaint was
+        # thrown away and the log said only "empty job id". That single redirect
+        # is why diagnosing the missing --account took five hours and two dead
+        # arms instead of one line.
+        local submit_err submit_out submit_rc _l
+        submit_err="$(mktemp -t wd-submit-err.XXXXXX)"
+        local -a SUBMIT_CMD=(sbatch --parsable --job-name="${JOB_NAME}"
+                             "${SCHED_ARGS[@]}" "${QOS_ARG[@]}" "${EXCLUDE_ARG[@]}" "${LAUNCHER}")
+        submit_out="$(cd "${REPO_ROOT}" && "${SUBMIT_CMD[@]}" 2>"${submit_err}")"
+        submit_rc=$?
+
+        # (3) a numeric job id, or a LOUD failure. Never a silent exit.
+        newid="$(printf '%s' "${submit_out}" | tr -d '[:space:]')"
+        if [ "${submit_rc}" -ne 0 ] || ! printf '%s' "${newid}" | grep -qE '^[0-9]+$'; then
+            log "ERROR: resubmit FAILED (rc=${submit_rc}, job id not numeric)."
+            log "ERROR:   command : (cd ${REPO_ROOT} && ${SUBMIT_CMD[*]})"
+            log "ERROR:   stdout  : ${submit_out:-<empty>}"
+            while IFS= read -r _l; do log "ERROR:   stderr  : ${_l}"; done < "${submit_err}"
+            log "ERROR: supervision is ENDING with the trainer down. This needs a human."
+            rm -f "${submit_err}"
+            return 1
+        fi
+        rm -f "${submit_err}"
         log "Resubmitted as job ${newid} (resumes from checkpoint_state_dir of RUN_ID=${RUN_ID})."
         cur="${newid}"
         return 0
