@@ -1,0 +1,450 @@
+#!/bin/bash
+# Source this, don't run it.  Env block for Oscar's DPPO arms on fair-sc.
+# Derived from docs/02-rl-training.md (Rulin), adapted to Oscar's paths + QOS.
+#
+#   source tmax_env.sh smoke     # ~10 steps, validates the whole path
+#   source tmax_env.sh full      # 128k episodes, a real arm
+#
+# NOTE: submit with NO --export flag and no VAR= forms (gotcha #1, re-confirmed on
+# fair-sc 2026-08-28: job 10995500 with --export=ALL,FOO=bar went
+# "user env retrieval failed requeued held" at ~120 s, no output file).
+
+MODE="${1:-smoke}"
+
+# --- Rulin's tree: we run FROM here -----------------------------------------
+# Not a clone.  The fair-sc working copy carries local fixes beyond commit
+# e7767dddc that exist nowhere else, so it is the only runnable copy.
+# Consequence: Oscar needs group *write* here, not just read (output/ lives
+# inside the repo).  a100-comem membership + mode 770 gives exactly that.
+export RULIN_ROOT=/checkpoint/comem/rulin
+export DATASET_JSONL=$RULIN_ROOT/vmvm_upload/swerl_tmax_15k_apptainer.jsonl
+export SWERL_APPTAINER_SIF_DIR=$RULIN_ROOT/cache/apptainer-sifs
+
+# Oscar's own space — probes, launch records, our clone, our venv.
+export OSCAR_ROOT=/checkpoint/memorization/oscaryinn/tmax
+
+# Until a100-comem membership lands we cannot read Rulin's tree at all, so we run
+# from our own clone of their bundle and our own environment.  Both are exact:
+# the clone is their branch at the bundled HEAD, and the venv is built from their
+# uv.lock.  Swap OPEN_INSTRUCT_DIR back to $RULIN_ROOT/open-instruct once we have
+# read access, if we ever want to run from their tree instead.
+# Acceptance-tree clone (bundle 20260831a, HEAD 32b95e2) — contains df9384c49,
+# 8633a0afd, dfe4490c6, c2f420a68 and upstream's apptainer_images.py resolver.
+# The older geomean-0830b clone is 21h behind and would make the control a
+# two-variable comparison (code version AND backend).
+export OPEN_INSTRUCT_DIR=$OSCAR_ROOT/repos/accept
+export REPO_ROOT=$OPEN_INSTRUCT_DIR
+
+# The launcher hard-requires ${UV_PROJECT_ENVIRONMENT}/bin/python and aborts at
+# line 227 without it.  Ours, built 2026-08-30, verified importing torch/vllm/
+# deepspeed/ray/transformers/wandb/flash_attn/causal_conv1d with cuda 12.8.
+export UV_PROJECT_ENVIRONMENT=$OSCAR_ROOT/venvs/tmax
+
+# deepspeed warns that a triton autotune cache on NFS can hang on exit; keep it
+# on node-local scratch.
+export TRITON_CACHE_DIR=/tmp/triton-cache-$USER
+
+# MODEL_NAME_OR_PATH defaults to hamishivi/Qwen3.5-9B (HF hub, verified public and
+# ungated 2026-08-30, 16 files).  Keep the ~18 GB download on Lustre.
+# NOTE: HF_HOME is NOT in the watchdog allowlist — a restarted run would re-resolve
+# it to ~/.cache/huggingface.  Home has 49 T free so that's wasteful, not fatal.
+export HF_HOME=$OSCAR_ROOT/hf-cache
+
+# --- everything else the launcher would otherwise resolve into Rulin's tree -----
+# checkpoint_env.sh derives UV_CACHE_DIR / UV_PYTHON_INSTALL_DIR / XDG_CACHE_HOME /
+# TMPDIR / RAY_TMPDIR from CHECKPOINT_ROOT, which defaults to /checkpoint/comem/rulin.
+export CHECKPOINT_ROOT=$OSCAR_ROOT
+
+# The launcher OVERWRITES HF_HOME at line 59 from HF_HOME_OVERRIDE (not HF_HOME), so
+# setting HF_HOME alone is silently ignored.
+export HF_HOME_OVERRIDE=$OSCAR_ROOT/hf-cache
+
+# The launcher defaults HF_HUB_OFFLINE=1 because Rulin's cache is pre-populated. Ours
+# is empty, so offline mode would fail to fetch Qwen3.5-9B.
+export HF_HUB_OFFLINE=0
+
+# Log dir for both the launcher's mkdir and the watchdog's failure-classification
+# grep. Must match the --output/--error paths launch.sh passes to sbatch, or the
+# watchdog greps files that don't exist and mis-classifies every failure.
+export TMAX_LOGDIR=$OSCAR_ROOT/logs/slurm
+
+# Sharing one working copy is safe for ARTIFACTS because every output path is
+# keyed by RUN_ID (output/checkpoint_states/<RUN_ID>, output/rollouts/<RUN_ID>,
+# output/runs/<RUN_ID>) — distinct RUN_ID => disjoint subtrees.  It is NOT safe
+# for SOURCE: two people editing one uncommitted tree is the hazard, which is
+# why the launcher/watchdog need to be on a branch (ask 3 in PR #1).
+# Never reuse an EXP_NAME/RUN_ID that Rulin is running.
+
+# --- sandbox backend --------------------------------------------------------
+export SWERL_SANDBOX_BACKEND=apptainer
+export SWERL_SANDBOX_TIMEOUT=120
+export SWERL_SANDBOX_TEST_TIMEOUT=120
+
+# --- rollout shape ----------------------------------------------------------
+export NUM_UNIQUE_PROMPTS_ROLLOUT=8
+export NUM_SAMPLES_PER_PROMPT_ROLLOUT=32
+export ASYNC_STEPS=4
+export CHECKPOINT_STATE_FREQ=10
+export KEEP_LAST_N_CHECKPOINTS=3
+
+# --- misc -------------------------------------------------------------------
+export WITH_X2P=1
+export NCCL_RAS_ENABLE=0
+
+# --- wandb ------------------------------------------------------------------
+# MEASURED 2026-08-28 from h100-139-121-056: meta-fair.wandb.io -> 200,
+# api.wandb.ai -> 000 (unreachable from compute nodes).  The public-cloud
+# credentials will NOT work for a training run; must use meta-fair.
+export WANDB_BASE_URL=https://meta-fair.wandb.io
+export WANDB_ENTITY=oscaryinn
+export WANDB_PROJECT=open-instruct-terminal-rl
+export WANDB_MODE=online
+
+# --- per-arm knobs (default arm: plain adamw, matches Rulin's arm 1) ---------
+export OPTIMIZER_TYPE=adamw
+export LEARNING_RATE=1e-6
+export BETA=0.0
+
+# --- integration bugs Rulin hit (2026-08-28) — CHECK BEFORE FIRST LAUNCH -----
+# Reported on PR #1; they said each "will bite any small-topology run".  These are
+# launcher/CLI flags, not env knobs, and we cannot read the tree yet — so they are
+# recorded here as pre-launch checks rather than exported blindly.  Do NOT invent
+# env vars for them: an unrecognised knob is silently dropped, and any knob that
+# IS real must also be added to the watchdog allowlist or the first restart loses
+# it (that mechanism has already caused two reversions).
+#
+#   1. _prefer_local_sif() must apply to the sandfleet backend, else every lease
+#      dies in OCI->SIF conversion and the trainer wedges at
+#      current_prepared_step=-1.  Fixed upstream in db89e918a — only relevant if
+#      we run sandfleet.
+#   2. --no_gather_whole_model : required at <16 learners; gather_whole_model=True
+#      materializes the full 18 GB model on learner rank 0 and OOMs weight sync.
+#   3. --no_load_ref_policy    : APPLIES TO OUR DEFAULT ARM.  We run BETA=0.0, and
+#      load_ref_policy defaults on regardless — a ~15 GiB activation spike for a
+#      KL term multiplied by zero.
+#   4. GRPO_TRAINER_CPUS_PER_GPU=8 builds 80-CPU placement bundles; on a lean
+#      allocation the placement group never places and the job sits RUNNING
+#      forever.  Must fit RAY_NUM_CPUS.
+#   6. sandfleet slots: use cpus=2 minimum.  Job-level --cpus-per-task still counts
+#      in slot units, so odd slots starve at cpus=1 (sandfleet 0.4.2 / be831e8).
+#      Hyperthread-pair semantics confirmed: cpuset.cpus.effective = 35,131.
+#   7. SANDFLEET_POOL is VERSION-CONDITIONAL — check the controller before choosing:
+#        against a 0.4.2 controller: MUST be pinned.  Unset makes the backend send
+#          declarative {"resources": ...} and 0.4.2 KeyErrors on it.
+#        against 0.5.1+ (merged 035559e): leave it UNSET to use declarative
+#          resources (cpus=2 / memory_mb=8192 via SWERL_SANDBOX_MEM_LIMIT=8g).
+#      Rulin runs both controllers concurrently (0.4.2 serving `default`, 0.5.1 for
+#      validation), so the correct setting depends entirely on which SANDFLEET_URL
+#      you point at.  Getting the pair wrong fails at lease-acquire, not at startup.
+#      The watchdog forwards SANDFLEET_URL/_CLIENT_TOKEN/_POOL, so a stale pool name
+#      from an earlier shell survives a restart — unset it deliberately, don't just
+#      omit it from a new launch.
+#   5. 2-node topologies deadlock — vLLM engines and the learner placement group
+#      are not disjoint, so engines squat learner-node GPUs and the 8-learner PG
+#      attaches 6/8 ranks and hangs.  8-node (2 learner + 6 engine) packs
+#      correctly.  NNODES=8 below is deliberate; do not shrink it to save quota.
+
+# --- mode -------------------------------------------------------------------
+case "$MODE" in
+  accept8x32|sgd8x32|cap500)
+    # THE SANDFLEET ACCEPTANCE ARM. Assigned to us by Hamish via option (b):
+    # a fresh exact-SHA run, acceptance window = global/acceptance steps 1-100.
+    # Pins: sandfleet@f3b2dcc, tmax@61b5a85d,
+    #   composed a2c376aa7736905048809d88701e648e1b01feb5 (r3)
+    #   sandfleet main 86973b4c88ac3157a18b654da0dbec56b2710c3c (0.5.4, PR#6 merged)
+    # Lineage: ff0d90dfb (r4) -> 33b308c08 (+--no_gather_whole_model)
+    #   -> 59bc8e066 (repair r1) -> ed68de5 (sick-node pin) -> 5b2ac5608 (r2).
+    # r1 was BLESSED AND THEN INVALIDATED: it restored the consumer of
+    #   tool_call_format_error_feedback without its producer, so the first
+    #   mid-step sandbox fault raised AttributeError and killed trainer
+    #   11082494. r2 restores all four wiring sites. Hamish blessed r2 for one
+    #   fresh production acceptance relaunch 2026-09-01T01:45Z after our
+    #   independent review: provenance clean, v2+F oracle 7/7 (F1 red on r1),
+    #   orphan sweep 0 (was 1), deleted-guard set unchanged/accounted,
+    #   47/47 suites, 289 scripts bash -n, sandfleet dict byte-identical.
+    # NOT repos/blessed, NOT repos/r5, NOT repos/cand-repair — all three
+    #   predate r2 and carry a known-fatal path.
+    # PRODUCTION LAUNCH TREE (hamishivi 2026-09-01T23:08Z): a fresh immutable
+    # checkout of canonical geomean_mask@8691a09ba2c9e098d74a6293a1963c85961cd6c7
+    # — the reviewed tip, after both independent reviews passed and the guard
+    # branch was fast-forwarded and deleted. Detached HEAD at that exact SHA.
+    #
+    # This replaces repos/cand-r3, which is now BLOCKED by our own preflight:
+    # cand-r3 predates the fail-closed guard, so gate 6 (provoked-miss liveness)
+    # correctly refuses it. That is the intended behaviour, not a regression —
+    # the gate enforces "launch only from the canonical guarded tree" mechanically
+    # rather than relying on anyone remembering the sequencing.
+    # Bumped from prod-8691a09b: that checkout could not launch. Canonical
+    # 8691a09ba2 had never contained the two helpers the launcher hard-sources
+    # (checkpoint_env.sh line 41/263, ray_node_setup_slurm.sh line 331), so
+    # trainer 11141229 died 19 s into an 8-node allocation. Fixed on canonical
+    # by 783981fbcc, which vendors both and adds preflight gate 7 to refuse an
+    # allocation if either is absent or unreadable.
+    export OPEN_INSTRUCT_DIR=$OSCAR_ROOT/repos/prod-a64ea5c4/training/open-instruct
+    export REPO_ROOT=$OPEN_INSTRUCT_DIR
+    export SWERL_SANDBOX_BACKEND=sandfleet
+    unset SANDFLEET_POOL                      # declarative resources: {cpus:2, memory_mb:8192}
+    export SWERL_SANDBOX_MEM_LIMIT=8g
+    # Our OWN embedded controller + our OWN minted tokens. Deliberately not joining
+    # Rulin's fleet: blast-radius isolation, agreed on sandfleet#2.
+    export SANDFLEET_RT_DIR=$OSCAR_ROOT/sandfleet_rt
+    export SANDFLEET_WORKER_ACCOUNT=memorization
+    export SANDFLEET_WORKER_QOS=cpu_lowest
+    # THE THREE THAT KILLED trainer 11080875 (2026-08-31, "Reset failed after 3
+    # attempts: Sandfleet service URL is unset; set SANDFLEET_URL").
+    #   1. The launcher's embedded-controller block is gated on
+    #      SANDFLEET_EMBED_CONTROLLER=1 (launcher :175). Unset, the whole block is
+    #      skipped, SANDFLEET_URL is never exported, and the backend dies on its
+    #      first reset ~18 min in. Setting RT_DIR/ACCOUNT/QOS alone does nothing.
+    #   2. SANDFLEET_SRC defaults to /checkpoint/comem/rulin/sandfleet-main-035559e
+    #      — unreadable by us, AND a different SHA from the blessed f3b2dcc. Point
+    #      it at our own clone so the pin is what Hamish actually blessed.
+    #   3. The launcher runs "$SANDFLEET_SRC/.venv/bin/sandfleetd", so our clone
+    #      needs its own venv. Built by probes/build_sandfleet_venv.sh (sandfleet
+    #      has zero runtime deps, so it is just setuptools + an editable install).
+    export SANDFLEET_EMBED_CONTROLLER=1
+    export SANDFLEET_SRC=$OSCAR_ROOT/repos/sandfleet-054
+    export SANDFLEET_EMBED_DIR=$OSCAR_ROOT/sandfleet_rt/embed
+    # ...and the fourth, which only surfaced once the controller actually started
+    # (trainer 11081919: "Reset failed after 3 attempts: Sandfleet client token is
+    # unset"). Two sides, two forms, and they are NOT interchangeable:
+    #   - sandfleetd (the daemon) reads SANDFLEET_*_TOKEN_FILE; the launcher passes
+    #     those and explicitly `env -u`s the raw forms, because it refuses both.
+    #   - the trainer-side backend reads the RAW SANDFLEET_CLIENT_TOKEN
+    #     (sandfleet_backend.py :78) and has no _FILE fallback at all.
+    # Having only the files on disk therefore starts a healthy controller that the
+    # trainer cannot authenticate to. Export the raw values for the trainer side.
+    for _sf_tok in SANDFLEET_TOKEN:service SANDFLEET_CLIENT_TOKEN:client SANDFLEET_METRICS_TOKEN:metrics; do
+      _sf_var=${_sf_tok%%:*}; _sf_file=$SANDFLEET_RT_DIR/${_sf_tok##*:}.token
+      if [ -r "$_sf_file" ]; then export "$_sf_var=$(cat "$_sf_file")"; else
+        echo "WARNING: $_sf_file unreadable; $_sf_var unset -> resets will fail" >&2; fi
+    done
+    unset _sf_tok _sf_var _sf_file
+    export NUM_UNIQUE_PROMPTS_ROLLOUT=8
+    export NUM_SAMPLES_PER_PROMPT_ROLLOUT=32
+    # 1,000 steps, not 500. grpo_fast.py:1854 derives
+    #   num_training_steps = total_episodes // (num_unique_prompts * num_samples)
+    # so with 8x32 = 256 episodes/step, the previous 128,000 would have stopped
+    # at exactly 500 — half the authorised run. That value dates from the 100-step
+    # acceptance window and was never re-derived when the target became 1,000.
+    # 256,000 // 256 = 1,000. This is a step-count correction required by the
+    # authorised scope, NOT memory/GPU tuning, which is unchanged.
+    export TOTAL_EPISODES=256000
+    export OPTIMIZER_TYPE=adamw LEARNING_RATE=1e-6 BETA=0.0
+    export SWERL_APPTAINER_SIF_DIR=$OSCAR_ROOT/sifs
+    export DATASET_JSONL=$OSCAR_ROOT/exchange/swerl_tmax_15k_apptainer.jsonl
+    export EXP_NAME=oscar-accept8x32-sandfleet
+    export QOS=h100_memorization_high
+    export NNODES=8
+    # 1,000-step target (Hamish 2026-09-01): 7-00:00:00 is the exact scheduler
+    # ceiling on BOTH cpu_lowest and h100_memorization_high — measured, with
+    # 7-00:00:01 rejected. Expected runtime ~50-67h.
+    export WALLTIME=7-00:00:00
+    # h100-139-119-219 REMOVED 2026-09-01 (approved hamishivi, signed off by its
+    # owner RulinShao, both independently verifying the removal is inert).
+    # It was Rulin's 1,486-ECC/84-Xid sick-node pin; it ran our job 11064123 on
+    # 2026-08-31 and the cluster has since decommissioned it — `scontrol show
+    # node` returns not-found and it has zero `sinfo -N` rows in any state.
+    # Excluding a name that no longer exists protects nothing and makes Slurm
+    # reject the entire submission ("Invalid node name specified"), which is
+    # exactly how it failed. The other EIGHT are live and still protect; do not
+    # prune them without the same not-found + no-sacct-rows check, because a
+    # typo'd entry would look identical here while leaving a real sick node in.
+    # h100-139-020-027 added 2026-09-04 (hamishivi: "next launch only"): it is the
+    # only H100 node currently reporting
+    #   prolog pre-hook failed (sunk:verify-undrain)
+    # It was NOT in either dead trainer's allocation and is NOT in any running
+    # allocation, so this is prophylactic for future launches, not a fix for the
+    # 08:00Z incident. The running arms were deliberately not bounced for it.
+    export EXCLUDE_NODES="h100-139-017-213,h100-139-017-217,h100-139-019-104,h100-139-020-027,h100-139-047-016,h100-139-085-179,h100-139-124-140,h100-139-140-150,h100-139-213-229"
+
+    # --- sgd8x32: the SGD CONTROL for the dppo production arm -----------------
+    # Requested by RulinShao on tmax-collaboration#1 (2026-09-02) under the new
+    # division of labour (experiments on our quota; their side validates code).
+    # Shares the accept8x32 body deliberately so the ONLY differences from the
+    # running production arm are the three optimizer knobs below: same canonical
+    # tree a64ea5c4, same Sandfleet 86973b4c, same 8x32 shape, same 256,000
+    # episodes = 1,000 steps, same seed 42, same dataset, same eight exclusions.
+    # That makes it a same-stack sgd-vs-adamw comparison rather than the
+    # cross-stack one their legacy arm could only give.
+    # Knobs are verbatim from their v5 sgd arm's live config dump.
+    if [ "$MODE" = "sgd8x32" ]; then
+      export OPTIMIZER_TYPE=sgd
+      export LEARNING_RATE=1e-1
+      export SGD_MOMENTUM=0.0
+      export EXP_NAME=oscar-sgd8x32-sandfleet
+      # distinct RUN_ID keeps output/{checkpoint_states,rollouts,runs} disjoint
+      # from the production arm; launch.sh refuses a collision anyway.
+      export RUN_ID="${EXP_NAME}__seed42__$(date +%s)"
+    fi
+
+    # --- cap500: the DPPO log-ratio-cap STABILITY arm -------------------------
+    # Approved by hamishivi on tmax-private#1 (2026-09-03 19:22) as a separate
+    # 500-step arm. Shares the accept8x32 body for the same reason sgd8x32 does:
+    # matched-comparison by CONSTRUCTION rather than by inspection. Same 8x32
+    # shape, seed 42, dataset, SIF pool, eight exclusions, Sandfleet 86973b4c,
+    # adamw / lr 1e-6 / beta 0, same timeouts and async depth.
+    #
+    # The ONLY intended differences, all carried by the candidate TREE and not
+    # by this recipe:
+    #   1. DPPO log-ratio numerical clamp [-20, 20]
+    #      (POLICY_DRIFT_LOG_RATIO_LIMIT = 20.0)
+    #   2. detached policy-gradient ratio cap dppo_ratio_cap = 10
+    #   3. update-level policy_drift/* and policy_gradient/* telemetry
+    # plus one recipe difference:
+    #   4. 500-step horizon: 128000 / (8 x 32) = 500 optimizer steps
+    #
+    # NOTE on the cap flag: our launcher does not emit --dppo_ratio_cap, so the
+    # arm runs at the dataclass default 10.0, which EQUALS the intended value.
+    # Passing it explicitly would mean editing the candidate tree and forfeiting
+    # the exact-SHA property, which is worth more here: grpo_fast.py records
+    # asdict(config) into the tracking config, so the effective 10.0 is visible
+    # in the run record anyway. Verify it there at startup rather than assume.
+    if [ "$MODE" = "cap500" ]; then
+      export OPEN_INSTRUCT_DIR=$OSCAR_ROOT/repos/cap500/training/open-instruct
+      export REPO_ROOT=$OPEN_INSTRUCT_DIR
+      export TOTAL_EPISODES=128000               # 500 steps at 8x32
+      export EXP_NAME=oscar-cap500-dppo-sandfleet
+      export RUN_ID="${EXP_NAME}__seed42__$(date +%s)"
+      # Fully disjoint controller runtime, state and tokens: this arm must not
+      # share an embedded controller or port with either live job.
+      export SANDFLEET_RT_DIR=$OSCAR_ROOT/sandfleet_rt_cap500
+      export SANDFLEET_EMBED_DIR=$SANDFLEET_RT_DIR/embed
+      # Distinct port, per the directive. Both live arms run their embedded
+      # controller on the default 14411 and only avoid collision because they
+      # sit on different head nodes -- fine today, but it is luck, not design,
+      # and a third arm should not depend on it.
+      export SANDFLEET_EMBED_PORT=14413
+      # Fresh runtime dir means fresh TOKENS. The first cap500 launch died at
+      # T+18s with
+      #   sandfleetd: error: [Errno 2] No such file or directory:
+      #     .../sandfleet_rt_cap500/service.token
+      # because a brand-new SANDFLEET_RT_DIR has none, and nothing upstream
+      # creates them -- the live arms only work because their tokens were
+      # created once, long ago. Generate per-arm tokens here rather than
+      # copying the production ones: this arm must not share credentials with
+      # either live controller.
+      mkdir -p "$SANDFLEET_RT_DIR" "$SANDFLEET_EMBED_DIR"
+      for _t in service client metrics; do
+        if [ ! -s "$SANDFLEET_RT_DIR/$_t.token" ]; then
+          head -c 32 /dev/urandom | base64 | tr -d '\n=+/' | head -c 43 \
+            > "$SANDFLEET_RT_DIR/$_t.token"
+          chmod 600 "$SANDFLEET_RT_DIR/$_t.token"
+        fi
+      done
+      unset _t
+      # ...and RE-EXPORT THE RAW VALUES. This is the whole failure of the first
+      # cap500 attempt with tokens present (trainer 11212260, FAILED at 18:55):
+      #   Sandfleet PermissionError: Invalid or missing client bearer token
+      #   urllib.error.HTTPError: HTTP Error 401: Unauthorized
+      # The shared body above exports SANDFLEET_{,CLIENT_,METRICS_}TOKEN by
+      # reading $SANDFLEET_RT_DIR/*.token while SANDFLEET_RT_DIR is still the
+      # PRODUCTION dir. This block then repoints SANDFLEET_RT_DIR at cap500 and
+      # mints different tokens there -- so sandfleetd (which reads the _FILE
+      # forms, from cap500) and the trainer backend (which reads the RAW value,
+      # still production) ended up with two different secrets and every sandbox
+      # reset 401'd. Same two-sides/two-forms trap the comment above already
+      # warns about, entered from the other direction: there the files existed
+      # and the raw values did not; here both exist and disagree.
+      for _sf_tok in SANDFLEET_TOKEN:service SANDFLEET_CLIENT_TOKEN:client SANDFLEET_METRICS_TOKEN:metrics; do
+        _sf_var=${_sf_tok%%:*}; _sf_file=$SANDFLEET_RT_DIR/${_sf_tok##*:}.token
+        if [ -r "$_sf_file" ]; then export "$_sf_var=$(cat "$_sf_file")"; else
+          echo "WARNING: $_sf_file unreadable; $_sf_var unset -> resets will 401" >&2; fi
+      done
+      unset _sf_tok _sf_var _sf_file
+      # Hard guard: the daemon side and the trainer side must carry the SAME
+      # secret. Two launches were burned on this pair disagreeing, so assert it
+      # here rather than discover it from 401s on eight nodes 19 minutes in.
+      for _sf_tok in SANDFLEET_TOKEN:service SANDFLEET_CLIENT_TOKEN:client SANDFLEET_METRICS_TOKEN:metrics; do
+        _sf_var=${_sf_tok%%:*}; _sf_file=$SANDFLEET_RT_DIR/${_sf_tok##*:}.token
+        if [ "$(cat "$_sf_file" 2>/dev/null)" != "${!_sf_var}" ]; then
+          echo "FATAL: $_sf_var does not match $_sf_file -- every sandbox reset would 401" >&2
+          return 1 2>/dev/null || exit 1
+        fi
+      done
+      unset _sf_tok _sf_var _sf_file
+      export WALLTIME=3-00:00:00                 # 500 steps at ~245 s/step ~= 34 h
+    fi
+    ;;
+  control8x32)
+    # The contemporaneous same-recipe apptainer CONTROL for Rulin's sandfleet
+    # acceptance arm (requested on tmax-collaboration#1, 2026-08-31). Their v4
+    # recipe exactly — adamw / lr 1e-6 / beta 0, seed 42, same dataset — so the
+    # only difference from the acceptance arm is the sandbox backend.
+    #
+    # Why it exists: the acceptance arm has no same-recipe control right now. kl is
+    # HELD after policy collapse, sgd runs a different recipe, and the historical
+    # 0.23 crashes/hr baseline is stale (sgd itself has since run 32h clean). See
+    # the baseline-drift argument on collab#1.
+    #
+    # SIF sizing by our own 8x(S+27) rule: enumerated 150 steps => 1197 unique
+    # images (probes/enumerated_8x32.json). Do not launch until coverage is high;
+    # the warmer daemon backstops the tail.
+    export NUM_UNIQUE_PROMPTS_ROLLOUT=8
+    export NUM_SAMPLES_PER_PROMPT_ROLLOUT=32     # 256 episodes/step
+    export TOTAL_EPISODES=128000                 # not the binding limit; walltime is
+    export OPTIMIZER_TYPE=adamw LEARNING_RATE=1e-6 BETA=0.0
+    export SWERL_APPTAINER_SIF_DIR=$OSCAR_ROOT/sifs
+    export DATASET_JSONL=$OSCAR_ROOT/exchange/swerl_tmax_15k_apptainer.jsonl
+    export EXP_NAME=oscar-control8x32-adamw
+    export QOS=h100_memorization_high
+    export NNODES=8
+    export WALLTIME=1-00:00:00                   # 24h — bounds the spend
+    # Sick-node exclusion Rulin applies to the acceptance arm: kl's two fast deaths
+    # (38m/37m) and a 56m parity attempt all landed on this same unflagged 8-node
+    # set, with 62 Xid hits in the parity log. Matching it keeps the control from
+    # inheriting a hardware confound. NOTE: the watchdog does NOT re-apply --exclude
+    # on auto-resubmit, so a restarted arm loses this protection.
+    # h100-139-119-219 REMOVED 2026-09-01 (approved hamishivi, signed off by its
+    # owner RulinShao, both independently verifying the removal is inert).
+    # It was Rulin's 1,486-ECC/84-Xid sick-node pin; it ran our job 11064123 on
+    # 2026-08-31 and the cluster has since decommissioned it — `scontrol show
+    # node` returns not-found and it has zero `sinfo -N` rows in any state.
+    # Excluding a name that no longer exists protects nothing and makes Slurm
+    # reject the entire submission ("Invalid node name specified"), which is
+    # exactly how it failed. The other EIGHT are live and still protect; do not
+    # prune them without the same not-found + no-sacct-rows check, because a
+    # typo'd entry would look identical here while leaving a real sick node in.
+    export EXCLUDE_NODES="h100-139-017-213,h100-139-017-217,h100-139-019-104,h100-139-047-016,h100-139-085-179,h100-139-124-140,h100-139-140-150,h100-139-213-229"
+    ;;
+  smoke40)
+    # Mirrors Rulin's completed smoke (job 11023842) EXACTLY, because the 40 SIFs
+    # they extracted are the precise set that run touched: 4 unique prompts x 10
+    # steps = 40 tasks.  Our default 8x32 smoke would touch 80 and hit 40 missing
+    # images.  Do not change the rollout shape in this mode without asking for the
+    # corresponding SIFs.
+    export NUM_UNIQUE_PROMPTS_ROLLOUT=4
+    export NUM_SAMPLES_PER_PROMPT_ROLLOUT=8
+    export TOTAL_EPISODES=320                   # 4 x 8 x 10 steps
+    # Our own warmed SIF dir, NOT exchange/smoke_sifs. Rulin's 40 cover only 16 of
+    # the 46 images our task subset touches; the rest were converted on the fly and
+    # attempt 3 died at 37m to mksquashfs corruption (gotcha #8). These 46 were
+    # pre-built with `apptainer build --mksquashfs-args "-processors 1 -mem 4G"`,
+    # serially; Rulin's 40 are symlinked in alongside. 46/46 coverage, 0 missing.
+    export SWERL_APPTAINER_SIF_DIR=$OSCAR_ROOT/sifs
+    export DATASET_JSONL=$OSCAR_ROOT/exchange/swerl_tmax_15k_apptainer.jsonl
+    export EXP_NAME=oscar-smoke40-adamw
+    export QOS=h100_memorization_high
+    export NNODES=8                             # bug #5: never below 8
+    ;;
+  smoke)
+    export TOTAL_EPISODES=2560                  # 2560/256 = 10 steps
+    export EXP_NAME=oscar-smoke-adamw
+    export QOS=h100_memorization_high
+    export NNODES=8
+    ;;
+  full)
+    export TOTAL_EPISODES=128000
+    export EXP_NAME=oscar-adamw
+    export QOS=h100_memorization_high
+    export NNODES=8
+    ;;
+  *) echo "usage: source tmax_env.sh {smoke|full}" >&2; return 1 ;;
+esac
+
+# RUN_ID pins checkpoint_state_dir. Reuse the SAME value to resume.
+# Stamped once here; capture it, don't regenerate it on restart.
+export RUN_ID="${RUN_ID:-${EXP_NAME}__seed42__$(date +%s)}"
+
+echo "mode=$MODE exp=$EXP_NAME qos=$QOS nodes=$NNODES episodes=$TOTAL_EPISODES"
+echo "RUN_ID=$RUN_ID   (export this same value to resume)"
