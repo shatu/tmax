@@ -122,19 +122,30 @@ DETERMINISTIC_RE='output tensor size must be equal to world_size|Policy and refe
 # two cannot diverge because there is only one source.
 sched_args_from_job() {
     local jid="$1" acct part qos row
-    row="$(sacct -j "${jid}" -X -n -o Account,Partition,QOS -P 2>/dev/null | head -1)"
+    row="$(sacct -j "${jid}" -X -n -o Account,Partition,QOS,TimelimitRaw -P 2>/dev/null | head -1)"
     acct="$(printf '%s' "${row}" | cut -d'|' -f1)"
     part="$(printf '%s' "${row}" | cut -d'|' -f2)"
     qos="$(printf  '%s' "${row}" | cut -d'|' -f3)"
+    tlim="$(printf '%s' "${row}" | cut -d'|' -f4)"
     # Env overrides win, so an operator can still redirect a restart.
     [ -n "${SBATCH_ACCOUNT:-}" ] && acct="${SBATCH_ACCOUNT}"
     [ -n "${QOS:-}" ] && qos="${QOS}"
     SCHED_ARGS=()
     [ -n "${acct}" ] && SCHED_ARGS+=(--account="${acct}")
     [ -n "${qos}" ]  && SCHED_ARGS+=(--qos="${qos}")
+    # DEFECT 5, found by the flag-by-flag comparison hamishivi asked for rather
+    # than by another outage. launch.sh passes "${TIME_ARG[@]}" (--time=$WALLTIME);
+    # the resubmit passed no --time at all, so a restarted job silently fell back
+    # to the launcher's baked-in #SBATCH --time=7-00:00:00.
+    # Invisible on production and control by coincidence -- their WALLTIME is also
+    # 7 days -- but cap500 runs WALLTIME=3-00:00:00, so any restart of it would
+    # have been given more than twice its intended budget without a word.
+    # TimelimitRaw is in minutes.
+    [ -n "${tlim}" ] && [ "${tlim}" != "Partition_Limit" ] && \
+        SCHED_ARGS+=(--time="${tlim}")
     # Partition is intentionally NOT passed: on fair-sc it is inferred from the
     # QOS prefix and an explicit --partition is ignored with a warning.
-    SCHED_RECOVERED="account=${acct:-<none>} partition=${part:-<none>} qos=${qos:-<none>}"
+    SCHED_RECOVERED="account=${acct:-<none>} partition=${part:-<none>} qos=${qos:-<none>} timelimit_min=${tlim:-<none>}"
     [ -n "${acct}" ]
 }
 

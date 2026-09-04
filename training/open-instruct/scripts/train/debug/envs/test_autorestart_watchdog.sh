@@ -52,6 +52,16 @@ else
     printf '  SKIP  1 job %s not in the accounting DB on this cluster\n' "$REF_JOB"
 fi
 
+# --- 1c. --time must be inherited (defect 5) --------------------------------
+# launch.sh passes --time=$WALLTIME; the resubmit passed none, so a restart fell
+# back to the launcher's baked-in 7-day #SBATCH --time. Masked on production and
+# control (also 7d) but cap500 runs 3d and would have silently got 7.
+if [ -n "${SCHED_ARGS+x}" ] && printf '%s\n' "${SCHED_ARGS[@]}" | grep -q -- '--time='; then
+    ok "1c --time inherited from the replaced job ($(printf '%s\n' "${SCHED_ARGS[@]}" | grep -- '--time='))"
+else
+    bad "1c no --time in recovered args; a restart would inherit the launcher default"
+fi
+
 # --- 2. a REJECTED submission is loud, and preserves the reason -------------
 # --test-only so nothing is ever queued. A deliberately invalid account
 # reproduces the exact rejection that killed supervision twice.
