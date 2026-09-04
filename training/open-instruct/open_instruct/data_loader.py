@@ -862,6 +862,7 @@ class BatchStatistics:
 
 
 def _compute_avg_group_performance(n_solved: int, n_zero: int, n_kept: int, batch_avg_score: float) -> float:
+    """Legacy compatibility helper; population reward metrics no longer use reconstructed group means."""
     total_groups = n_solved + n_zero + n_kept
     if total_groups == 0:
         return 0.0

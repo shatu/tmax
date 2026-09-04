@@ -3,8 +3,12 @@
 These are descriptive metrics, not the reward of the selected training batch.
 Both include constant-reward groups. Only the configured overlong filter affects
 the post-filter population; non-submission filtering and advantage/loss masks do
-not redefine it. Accumulate raw sums/counts so unequal retained group sizes and
-constant intermediate rewards are handled without reconstructing group means.
+not redefine it. Consequently, pre-filter and post-filter are equal whenever
+``mask_truncated_completions`` is false, as on the runs active when this metric
+was introduced. The population contains this step's fresh results after stale
+results are rejected; each fresh resample is another observation. Accumulate raw
+sums/counts so unequal retained group sizes and constant intermediate rewards are
+handled without reconstructing group means.
 """
 
 from collections.abc import Sequence
