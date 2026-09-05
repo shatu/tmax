@@ -15,7 +15,7 @@ Reads env:
   TOOL_CONFIG_IMAGE            optional -> image
   TASK_DATA_DIR                optional -> task_data_dir
   SWERL_TOOL_PENALTY           optional float -> penalty
-  SWERL_TOOL_CALL_FORMAT_ERROR_FEEDBACK / SWERL_TOOL_LAST_STEP_WARNING /
+  SWERL_TOOL_LAST_STEP_WARNING /
   SWERL_TOOL_APPEND_TURNS_REMAINING   optional bools ("1/true/yes/on")
 
 Exit codes: 0 ok; 1 missing/invalid input; 2 unsupported (removed) backend; 3 schema assertion failure.
@@ -65,7 +65,6 @@ def main() -> None:
     if os.environ.get("SWERL_TOOL_PENALTY"):
         cfg["penalty"] = float(os.environ["SWERL_TOOL_PENALTY"])
     for env_name, field in (
-        ("SWERL_TOOL_CALL_FORMAT_ERROR_FEEDBACK", "tool_call_format_error_feedback"),
         ("SWERL_TOOL_LAST_STEP_WARNING", "last_step_warning"),
         ("SWERL_TOOL_APPEND_TURNS_REMAINING", "append_turns_remaining"),
     ):

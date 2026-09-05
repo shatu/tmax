@@ -126,7 +126,6 @@ uv run harbor run \
   --agent-import-path Vanillux2Agent:Vanillux2Agent \
   --model openai/tmax-9b \
   --agent-kwarg api_base=http://localhost:8008/v1 \
-  --agent-kwarg max_format_errors=64 \
   --n-concurrent 16 \
   -k 5 \
   --job-name swerl-qwen32-2b-tmax-step100-vanillux2-daytona-tblite

@@ -1309,6 +1309,11 @@ async def process_request(actor: LLMRayActor, sub_request_id: str, sampling_para
 
             parse_result = actor.tool_parser.parse_tool_calls(output.text)
             tool_calls = [tc for tc in parse_result.tool_calls if tc.name in allowed_tools]
+            if pool_setup.active_env_names == ["swerl_vanillux_sandbox"]:
+                first_call = [] if parse_result.first_tool_call_invalid else parse_result.tool_calls[:1]
+                tool_calls = [
+                    tc for tc in first_call if tc.name == "bash" and isinstance(tc.args.get("command", ""), str)
+                ]
 
             format_error_feedback: list[tuple[str, str]] = []
             if tool_call_format_error_message and not text_env_names:
@@ -1316,7 +1321,11 @@ async def process_request(actor: LLMRayActor, sub_request_id: str, sampling_para
 
                 # No tool call at all should read like a fresh user instruction.
                 # Malformed or wrong-tool calls get regular tool feedback.
-                if not parse_result.had_tool_call:
+                if pool_setup.active_env_names == ["swerl_vanillux_sandbox"]:
+                    # Evaluation removes invalid calls and sends user-role feedback.
+                    if not tool_calls:
+                        format_error_feedback.append((tool_call_format_error_message, "user"))
+                elif not parse_result.had_tool_call:
                     format_error_feedback.append((tool_call_format_error_message, "user"))
                 elif has_wrong_tool_call or not tool_calls:
                     format_error_feedback.append((tool_call_format_error_message, "tool"))
@@ -1372,6 +1381,8 @@ async def process_request(actor: LLMRayActor, sub_request_id: str, sampling_para
                     meta = step_result.metadata or {}
                     if meta.get("sandbox_lost"):
                         rollout.info["sandbox_lost"] = True
+                        rollout.info["infrastructure_failure"] = True
+                    if meta.get("infrastructure_failure"):
                         rollout.info["infrastructure_failure"] = True
                     rollout.timeout = rollout.timeout or meta.get("timeout", False)
                     if meta.get("timeout", False):

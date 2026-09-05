@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import time
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -85,7 +86,6 @@ class Vanillux2Agent(BaseAgent):
         api_base: str | None = None,
         command_timeout: int = 120,
         persistent_bash: bool = True,
-        max_format_errors: int = 64,
         **kwargs: Any,
     ) -> None:
         super().__init__(logs_dir=logs_dir, model_name=model_name, **kwargs)
@@ -98,7 +98,6 @@ class Vanillux2Agent(BaseAgent):
         self.api_base = api_base
         self.command_timeout = command_timeout
         self.persistent_bash = persistent_bash
-        self.max_format_errors = max_format_errors
         self.cost: float = 0.0
 
     async def setup(self, environment: BaseEnvironment) -> None:
@@ -132,7 +131,6 @@ class Vanillux2Agent(BaseAgent):
             "total_tokens": 0,
             "reasoning_tokens": 0,
         }
-        format_errors = 0
 
         try:
             for step in range(self.max_steps):
@@ -161,13 +159,15 @@ class Vanillux2Agent(BaseAgent):
                     pass
 
                 msg = response.choices[0].message.model_dump()
-                action = _extract_tool_call(msg)
+                try:
+                    action = _extract_tool_call(msg)
+                except (AttributeError, TypeError):
+                    action = {"type": "no_tool_call"}
                 if action["type"] == "no_tool_call":
                     msg.pop("tool_calls", None)
                     msg["content"] = msg.get("content") or ""
                     messages.append(msg)
-                    format_errors += 1
-                    self._append_format_error(messages, action.get("tool_call_id"))
+                    self._append_format_error(messages)
                     timing_log.append(
                         {
                             "step": step + 1,
@@ -175,13 +175,11 @@ class Vanillux2Agent(BaseAgent):
                             "format_error": True,
                         }
                     )
-                    if format_errors >= self.max_format_errors:
-                        logger.warning("Stopping after %s format errors", format_errors)
-                        break
                     continue
 
+                # Retain only the call that will receive a tool response.
+                msg["tool_calls"] = msg["tool_calls"][:1]
                 messages.append(msg)
-                format_errors = 0
                 command = action.get("command") or ""
                 tool_call_id = action.get("tool_call_id") or ""
 
@@ -241,13 +239,19 @@ class Vanillux2Agent(BaseAgent):
             or os.environ.get("OPENAI_BASE_URL")
             or os.environ.get("OPENAI_API_BASE")
         )
+        tool_schemas = deepcopy(TOOL_SCHEMAS)
+        if self.persistent_bash:
+            tool_schemas[0]["function"]["description"] = (
+                "Execute a bash command in a persistent shell. "
+                "Working directory and environment variables are preserved between calls."
+            )
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 llm_timeout = LLM_TIMEOUT_SECONDS
                 completion_kwargs: dict[str, Any] = {
                     "model": model,
                     "messages": messages,
-                    "tools": TOOL_SCHEMAS,
+                    "tools": tool_schemas,
                     "max_tokens": self.max_tokens,
                     "api_base": api_base,
                     "timeout": llm_timeout,
@@ -295,21 +299,11 @@ class Vanillux2Agent(BaseAgent):
             usage_totals[key] += getattr(usage, key, 0) or 0
 
     @staticmethod
-    def _append_format_error(
-        messages: list[dict[str, Any]], tool_call_id: str | None
-    ) -> None:
+    def _append_format_error(messages: list[dict[str, Any]]) -> None:
+        # Invalid tool calls have been removed from the assistant message.
         content = _format_error_message(
             "Your last response did not include a valid `bash` tool call."
         )
-        if tool_call_id:
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_call_id,
-                    "content": content,
-                }
-            )
-            return
         messages.append({"role": "user", "content": content})
 
     def _wrap_command(self, command: str) -> str:
