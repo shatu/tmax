@@ -527,21 +527,21 @@ class SWERLVanilluxSandboxEnv(RLEnvironment):
                     },
                 )
             except RuntimeError as e:
-                # Restored (tmax-private#1 repair): a backend torn down mid-episode
-                # (e.g. after a command timeout) must end the episode cleanly instead
-                # of propagating out of step() and grinding the rollout to max_steps.
-                # The sibling swerl_sandbox.py kept this handler through the sync.
+                # Backend loss ends the episode but does not establish a timeout,
+                # including when it prevents checking an exit-124 completion marker.
                 if "Instance not started" not in str(e):
                     raise
-                logger.warning(f"[{self._task_id}] sandbox backend unavailable after timeout: {e}")
+                logger.warning(f"[{self._task_id}] sandbox backend unavailable: {e}")
                 return StepResult(
-                    result=(
-                        "Sandbox backend is no longer running, likely after a command timeout. "
-                        "Ending episode with reward 0."
-                    ),
+                    result="Sandbox backend is no longer running. Ending episode with reward 0.",
                     reward=0.0,
                     done=True,
-                    metadata={"timeout": True, "backend_unavailable": True, "task_id": self._task_id},
+                    metadata={
+                        "backend_unavailable": True,
+                        "infrastructure_failure": True,
+                        "error": str(e),
+                        "task_id": self._task_id,
+                    },
                 )
         return self._with_last_step_warning(
             StepResult(result=format_error_message(f"Unknown tool '{call.name}'. The only available tool is `bash`."))

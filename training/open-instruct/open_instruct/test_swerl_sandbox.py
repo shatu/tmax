@@ -1,6 +1,6 @@
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from open_instruct.environments.backends import ExecutionResult, SandboxLostError, SandboxOOMError
 from open_instruct.environments.base import EnvCall, StepResult
@@ -234,6 +234,25 @@ class TestSWERLVanilluxSandbox(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("timeout", result.metadata)
                 if error_type is SandboxLostError:
                     self.assertIsNone(env._backend)
+
+    async def test_unavailable_completion_status_is_an_error_without_proven_timeout(self):
+        unavailable = RuntimeError("Instance not started. Call start() first.")
+        exit_124 = ExecutionResult(stdout="", stderr="", exit_code=124)
+        failed_probe = ExecutionResult(stdout="", stderr="", exit_code=1)
+        for responses in [[exit_124, failed_probe], [exit_124, unavailable], [unavailable]]:
+            with self.subTest(responses=responses):
+                env = SWERLVanilluxSandboxEnv()
+                env._backend = Mock(run_command=Mock(side_effect=responses))
+                with patch.object(env, "_run_tests") as run_tests:
+                    result = await env.step(EnvCall(id="1", name="bash", args={"command": "exit 124"}))
+
+                self.assertTrue(result.done)
+                self.assertEqual(result.reward, 0.0)
+                self.assertTrue(result.metadata["infrastructure_failure"])
+                self.assertTrue(result.metadata["error"])
+                self.assertNotIn("timeout", result.metadata)
+                self.assertEqual(env._backend.run_command.call_count, len(responses))
+                run_tests.assert_not_called()
 
     async def test_bash_output_appends_turns_remaining_when_enabled(self):
         env = SWERLVanilluxSandboxEnv(append_turns_remaining=True)

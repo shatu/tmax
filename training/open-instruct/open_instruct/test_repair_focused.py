@@ -296,7 +296,9 @@ class TestInstanceNotStartedTerminal(unittest.TestCase):
         self.assertTrue(result.done)
         self.assertEqual(result.reward, 0.0)
         self.assertTrue(result.metadata.get("backend_unavailable"))
-        self.assertTrue(result.metadata.get("timeout"))
+        self.assertTrue(result.metadata.get("infrastructure_failure"))
+        self.assertEqual(result.metadata["error"], INSTANCE_NOT_STARTED)
+        self.assertNotIn("timeout", result.metadata)
 
     def test_other_runtime_errors_still_raise(self):
         def _raise(_cmd):
