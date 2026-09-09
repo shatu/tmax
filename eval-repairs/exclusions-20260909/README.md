@@ -81,7 +81,15 @@ cleanup exceptions into model reward zero.
   4 CPUs/8192 MiB, 1200s agent/300s verifier limits. Image SHA256:
   `345b706740ba2cfbdec868131bc24524b4561e3c8ee783974e6577192be64f9d`.
   Only Gradle caches/JDKs cross from the build stage, not application build
-  outputs or repaired source. Full Sandfleet/Harbor acceptance remains pending.
+  outputs or repaired source. **Full Hyak Sandfleet/Harbor acceptance passed**:
+  source `773b12e`, driver 39900827, worker 39901175, reward 1.0,
+  `exception_info=null`. Verifier wall time 172.39s (Gradle 2m48s), inside the
+  original 300s limit. Effective CPU set `32-33,35,37`, RAM 8589934592 bytes;
+  nominal disk 10240 MiB, total 10568986624 bytes, initially available
+  9941266432 bytes. SIF SHA256:
+  `966e5f988ca03a2b1117016a2dabe25c2d01d7e7680712f01410b59f9a43e426`.
+  Pool deleted, worker terminal CANCELLED, driver COMPLETED, queue empty and
+  all three temporary role-token files removed.
 - **ACL:** remains with Rulin's backend/permissions investigation.
 
 New image builds can resolve unpinned transitive versions differently. Retain
