@@ -4,6 +4,7 @@ All notable changes to this project will be documented in this file.
 
 
 ### Changed
+- Exclude per-exec fakeroot connection keys from Vanillux training and evaluation persisted shell state; retain cwd and user exports (https://github.com/hamishivi/tmax-private/pull/6).
 - Align Vanillux training and evaluation shell persistence, cancellation, timeout classification, first-call dispatch, and format-error recovery within the normal turn budget (https://github.com/hamishivi/tmax-private/pull/5).
 - Fix population reward accounting before zero-std group removal: pre-filter includes all sampled completions; post-filter excludes configured overlong completions using actual per-completion sums/counts, including discarded constant-reward groups. Training selection is unchanged; empty populations report counts without a fabricated mean (https://github.com/hamishivi/tmax-private/pull/2).
 - Fix Qwen3.5 packing logprob mismatch: call `patch_qwen3_5_packing()` inside `PolicyTrainerRayProcess.from_pretrained()` so the GatedDeltaNet sequence-isolation patch is applied in the Ray worker process, not only in the main process. Without this, packed rows leaked state between sub-sequences, causing `vllm_vs_local_logprob_diff_mean` ~0.21 instead of the expected ~0.02.

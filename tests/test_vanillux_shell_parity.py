@@ -202,6 +202,17 @@ class TestVanilluxShellParity(unittest.TestCase):
                 self.assert_success(session, "unset TMAX_PARITY_VALUE", "")
                 self.assert_success(session, 'printf "%s" "${TMAX_PARITY_VALUE-unset}"', "unset")
 
+    def test_keeps_fresh_fakeroot_connection_across_calls(self):
+        for session in self.sessions:
+            with self.subTest(training=session.training):
+                session.env["FAKEROOTKEY"] = "first-connection"
+                self.assert_success(session, 'export TMAX_PARITY_VALUE=kept; printf "%s" "$FAKEROOTKEY"', "first-connection")
+                self.assertNotIn("FAKEROOTKEY", session.env_path.read_text())
+                session.env["FAKEROOTKEY"] = "next-connection"
+                self.assert_success(session, 'printf "%s:%s" "$FAKEROOTKEY" "$TMAX_PARITY_VALUE"', "next-connection:kept")
+                del session.env["FAKEROOTKEY"]
+                self.assert_success(session, 'printf "%s" "${FAKEROOTKEY-unset}"', "unset")
+
     def test_unexported_variables_do_not_persist(self):
         for session in self.sessions:
             with self.subTest(training=session.training):
@@ -274,6 +285,7 @@ class TestVanilluxShellParity(unittest.TestCase):
                 session.cwd_path.unlink()
                 session.env_path.unlink()
                 session.env["TMAX_INITIAL_VALUE"] = "provided-by-backend"
+                session.env["FAKEROOTKEY"] = "setup-connection"
 
                 class LocalBackend:
                     def __init__(self, fixture):
@@ -332,6 +344,9 @@ class TestVanilluxShellParity(unittest.TestCase):
                     namespace[method_name](instance)
                 else:
                     asyncio.run(namespace[method_name](instance, backend))
+                self.assertNotIn("FAKEROOTKEY", session.env_path.read_text())
+                session.env["FAKEROOTKEY"] = "after-setup"
+                self.assert_success(session, 'printf "%s" "$FAKEROOTKEY"', "after-setup")
                 self.assert_success(
                     session, 'pwd; printf "%s" "$TMAX_INITIAL_VALUE"', f"{session.initial_cwd}\nprovided-by-backend"
                 )

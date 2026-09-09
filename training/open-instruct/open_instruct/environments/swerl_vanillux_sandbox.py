@@ -87,7 +87,7 @@ exec setsid bash -c 'cd "$(cat {shlex.quote(_BASH_CWD_PATH)})" 2>/dev/null || tr
 '"$1"'
 _vanillux2_ec=$?
 pwd > {shlex.quote(_BASH_CWD_PATH)}
-export -p > {shlex.quote(_BASH_ENV_PATH)}
+(unset FAKEROOTKEY; export -p) > {shlex.quote(_BASH_ENV_PATH)}
 exit $_vanillux2_ec'
 ) >"$_stdout" 2>"$_stderr" </dev/null &
 _command_pid=$!
@@ -474,7 +474,7 @@ class SWERLVanilluxSandboxEnv(RLEnvironment):
             "mkdir -p /workspace /root && "
             # Capture backend state before setup changes cwd.
             f"pwd > {shlex.quote(_BASH_CWD_PATH)} && "
-            f"export -p > {shlex.quote(_BASH_ENV_PATH)} && "
+            f"(unset FAKEROOTKEY; export -p) > {shlex.quote(_BASH_ENV_PATH)} && "
             "cd /workspace && "
             '{ [ -d /app ] || { _P="$(pwd)"; [ "$_P" != "/" ] && ln -sf "$_P" /app; }; }'
         )
