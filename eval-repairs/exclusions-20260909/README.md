@@ -53,6 +53,45 @@ cleanup exceptions into model reward zero.
 
 ## Verified results and remaining work
 
+### Export to an Apptainer-only site
+
+Build the images above on a Docker-capable machine, then export each with
+`docker save -o maven-offline.docker.tar tblite-repair-maven-offline:20260909`
+(substitute `mlflow` or `okhttp` for the other images). Transfer the uncompressed
+Docker archives and prepared task directories through an authorized private
+route. Record and compare SHA256 before and after transfer. No Docker daemon
+is needed on the destination:
+
+```sh
+export APPTAINER_TMPDIR=$(mktemp -d /tmp/tblite-build.XXXXXXXX)
+export APPTAINER_CACHEDIR="$APPTAINER_TMPDIR/cache"
+apptainer build --fakeroot maven.sif docker-archive:///absolute/path/maven-offline.docker.tar
+apptainer build --fakeroot okhttp.sif docker-archive:///absolute/path/okhttp-offline.docker.tar
+```
+
+For MLflow, create a definition file with the following content and run
+`apptainer build --fakeroot mlflow.sif mlflow.def`:
+
+```text
+Bootstrap: docker-archive
+From: /absolute/path/mlflow-offline.docker.tar
+
+%startscript
+    exec /app/start.sh sleep infinity
+```
+
+Use new output paths, check build exit status, then hash each SIF. Run conversion
+in an allocation allowed by site policy, with node-local temporary space. Keep
+OCI `Config.Env`, `WorkingDir` and `User` from `docker image inspect` alongside
+the archive for the Harbor image manifest. Record the base/final image IDs,
+`mvn -version`, installed package versions (`dpkg-query -W`), and Gradle JDK
+`release` files alongside run evidence to diagnose build-version differences.
+The full original corpus is required; do not run preparation over another site's
+already-modified task copies. OkHttp warms only its verifier target's external
+runtime artifacts; local project outputs must still be rebuilt during evaluation.
+
+### Acceptance receipts
+
 - **Maven:** local network-none Docker oracle 10/10; full Hyak Sandfleet/Harbor
   oracle 10/10 in 29.32s, reward 1.0, no exceptions. Driver 39897571, worker
   39897658 terminal, pool deleted and temporary credentials removed. SIF

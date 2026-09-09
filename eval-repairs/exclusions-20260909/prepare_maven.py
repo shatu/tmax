@@ -7,6 +7,9 @@ root = Path(__file__).resolve().parent
 task = root / "tasks/maven-slf4j-conflict"
 source = Path(os.environ["TBLITE_SOURCE"]) / "maven-slf4j-conflict"
 test = (source / "tests/test.sh").read_text()
+for marker in ("apt-get update && apt-get install -y maven", "uv venv"):
+    if test.count(marker) != 1:
+        raise ValueError(f"Expected exactly one bootstrap marker: {marker}")
 start = test.index("apt-get update && apt-get install -y maven")
 end = test.index("uv venv", start)
 test = (

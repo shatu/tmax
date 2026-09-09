@@ -12,6 +12,86 @@ import unittest
 
 
 class PreparationTest(unittest.TestCase):
+    def test_maven_rejects_invocation_and_heredoc_drift(self):
+        scripts = Path(__file__).resolve().parent
+        invocation = 'pytest "$TEST_DIR/test_outputs.py" -rA -v'
+        cases = [
+            (
+                "prepare_maven.py",
+                "tests/test.sh",
+                "apt-get update && apt-get install -y maven\nuv venv\n",
+            ),
+            (
+                "prepare_maven.py",
+                "tests/test.sh",
+                f"apt-get update && apt-get install -y maven\nuv venv\n{invocation}\n{invocation}",
+            ),
+            ("extract_dependency_pom.py", "solution/solve.sh", "echo missing"),
+            (
+                "extract_dependency_pom.py",
+                "solution/solve.sh",
+                "cat > pom.xml << 'EOF'\n<project>",
+            ),
+            (
+                "extract_dependency_pom.py",
+                "solution/solve.sh",
+                "cat > pom.xml << 'EOF'\nEOF\ncat > pom.xml << 'EOF'\nEOF",
+            ),
+        ]
+        for script, relative, contents in cases:
+            with self.subTest(
+                script=script, contents=contents
+            ), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                task = root / "tasks/maven-slf4j-conflict"
+                path = task / relative
+                path.parent.mkdir(parents=True)
+                path.write_text(contents)
+                shutil.copyfile(scripts / script, root / script)
+                result = subprocess.run(
+                    [sys.executable, str(root / script)],
+                    env={**os.environ, "TBLITE_SOURCE": str(root / "tasks")},
+                    capture_output=True,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(b"ValueError", result.stderr)
+
+    def test_mlflow_rejects_marker_and_invocation_drift(self):
+        script = Path(__file__).resolve().parent / "prepare.py"
+        start = "# Install curl"
+        end = "# Check if we're in a valid working directory"
+        invocation = "uv run pytest /tests/test_outputs.py -rA"
+        cases = [
+            f"{end}\n{invocation}",
+            f"{start}\n{start}\n{end}\n{invocation}",
+            f"{end}\n{start}\n{invocation}",
+            f"{start}\n{end}\n{end}\n{invocation}",
+            f"{start}\n{end}\n",
+            f"{start}\n{end}\n{invocation}\n{invocation}",
+        ]
+        for contents in cases:
+            with self.subTest(
+                contents=contents
+            ), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / "upstream"
+                for name in (
+                    "maven-slf4j-conflict",
+                    "okhttp-trailers-crash",
+                    "breast-cancer-mlflow",
+                ):
+                    tests = source / name / "tests"
+                    tests.mkdir(parents=True)
+                    (tests / "test.sh").write_text(contents)
+                shutil.copyfile(script, root / "prepare.py")
+                result = subprocess.run(
+                    [sys.executable, str(root / "prepare.py")],
+                    env={**os.environ, "TBLITE_SOURCE": str(source)},
+                    capture_output=True,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(b"ValueError", result.stderr)
+
     def test_preserves_tasks_and_records_final_hashes(self):
         source = Path(os.environ["TBLITE_SOURCE"])
         scripts = Path(__file__).resolve().parent

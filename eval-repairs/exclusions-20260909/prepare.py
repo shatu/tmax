@@ -15,8 +15,14 @@ for name in ("maven-slf4j-conflict", "okhttp-trailers-crash", "breast-cancer-mlf
     shutil.copytree(source, target)
     original = (source / "tests/test.sh").read_text()
     if name == "breast-cancer-mlflow":
+        for marker in (
+            "# Install curl",
+            "# Check if we're in a valid working directory",
+        ):
+            if original.count(marker) != 1:
+                raise ValueError(f"Expected exactly one bootstrap marker: {marker}")
         start = original.index("# Install curl")
-        end = original.index("# Check if we're in a valid working directory")
+        end = original.index("# Check if we're in a valid working directory", start)
         modified = (
             original[:start]
             + "set -e\nexport UV_CACHE_DIR=/opt/uv-cache UV_OFFLINE=1 UV_LINK_MODE=copy\n\n"
