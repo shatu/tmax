@@ -11,6 +11,7 @@ From this directory, set `TBLITE_SOURCE` to the pinned upstream task root:
 
 ```sh
 export TBLITE_SOURCE=/absolute/path/to/pinned/tasks
+python test_prepare.py
 python prepare.py
 python prepare_maven.py
 python extract_dependency_pom.py
@@ -23,9 +24,8 @@ docker build --platform linux/amd64 -f OkHttp.Dockerfile -t tblite-repair-okhttp
 ```
 
 Preparation refuses to overwrite existing task directories. The file manifests
-written by `prepare.py` describe the initial copy; the subsequent Maven bootstrap
-changes are explicit in `prepare_maven.py`. Record final hashes when publishing
-an image/run, rather than treating those initial manifests as final.
+record the prepared files; `prepare_maven.py` refreshes Maven's manifest after
+its bootstrap changes. Record these hashes alongside every image/run.
 
 The Maven build stage resolves dependencies for both POMs and explicitly caches
 Surefire's JUnit4 provider. Only `/root/.m2/repository` crosses into the final
