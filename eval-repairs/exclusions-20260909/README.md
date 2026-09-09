@@ -18,6 +18,8 @@ docker build --platform linux/amd64 -t tblite-repair-maven:20260909 "$TBLITE_SOU
 docker build --platform linux/amd64 -t tblite-repair-mlflow:20260909 "$TBLITE_SOURCE/breast-cancer-mlflow/environment"
 docker build --platform linux/amd64 -f Maven.Dockerfile -t tblite-repair-maven-offline:20260909 .
 docker build --platform linux/amd64 -f MLflow.Dockerfile -t tblite-repair-mlflow-offline:20260909 .
+docker build --platform linux/amd64 -t tblite-repair-okhttp:20260909 "$TBLITE_SOURCE/okhttp-trailers-crash/environment"
+docker build --platform linux/amd64 -f OkHttp.Dockerfile -t tblite-repair-okhttp-offline:20260909 .
 ```
 
 Preparation refuses to overwrite existing task directories. The file manifests
@@ -73,8 +75,13 @@ cleanup exceptions into model reward zero.
   and raising if the instance remains listed.
 - **OkHttp:** Python is absent in the original Docker image, so the reference
   solution exits 127. Adding Python gets past that failure, then offline Gradle
-  fails on uncached compile and test-runtime JARs. Cache repair is in progress;
-  not yet a pass. Actual task limits are 4 CPUs/8192 MiB, 1200s agent/300s verifier.
+  fails on uncached compile and test-runtime JARs. The dependency-only cache
+  repair now passes the unchanged reference solution and verifier in a fresh
+  network-none Docker sandbox (2m52s Gradle, reward 1, exit 0), at the actual
+  4 CPUs/8192 MiB, 1200s agent/300s verifier limits. Image SHA256:
+  `345b706740ba2cfbdec868131bc24524b4561e3c8ee783974e6577192be64f9d`.
+  Only Gradle caches/JDKs cross from the build stage, not application build
+  outputs or repaired source. Full Sandfleet/Harbor acceptance remains pending.
 - **ACL:** remains with Rulin's backend/permissions investigation.
 
 New image builds can resolve unpinned transitive versions differently. Retain
