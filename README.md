@@ -133,6 +133,56 @@ uv run harbor run \
 
 Feel free to swap out daytona for your sandboxing backend of choice.
 
+##### Sandfleet / Apptainer
+
+Use the same agent and inference settings with a pinned Sandfleet checkout that
+contains its `harbor/sandfleet_harbor.py` adapter. Provision the controller using
+that checkout's Harbor deployment guide; keep scheduler accounts, paths and
+capacity settings in site-local configuration rather than in the agent.
+
+```bash
+# All paths and the controller URL below are supplied by the site operator.
+export PYTHONPATH="$SANDFLEET_CHECKOUT:$SANDFLEET_CHECKOUT/harbor:$PWD"
+export SANDFLEET_URL="$EVAL_CONTROLLER_URL"
+export SANDFLEET_CLIENT_TOKEN_FILE="$EVAL_CLIENT_TOKEN_FILE"
+export SANDFLEET_HARBOR_IMAGE_MANIFEST="$EVAL_IMAGE_MANIFEST"
+
+uv run harbor run \
+  --path "$PINNED_TASK_DIRECTORY" \
+  --environment-import-path sandfleet_harbor:SandfleetEnvironment \
+  --agent-import-path Vanillux2Agent:Vanillux2Agent \
+  --model openai/tmax-9b \
+  --agent-kwarg api_base=http://localhost:8008/v1 \
+  --n-concurrent 1 --n-attempts 5 \
+  --jobs-dir "$EVAL_RESULTS_DIRECTORY"
+```
+
+Start at one concurrent trial, then increase only within verified worker and
+controller capacity. Do not override task CPU, RAM or time budgets. Worker RAM
+must include the controller's agent-memory headroom in addition to sandbox RAM.
+For text checkpoints requiring a VLM-shaped serving configuration, retain the
+original checkpoint, record the derived configuration, and serve with
+`--language-model-only`. Record tensor parallelism; a smaller diagnostic setup
+is not automatically the same evaluation recipe.
+
+The persistent shell must not save `FAKEROOTKEY`: Apptainer supplies a fresh
+connection key on each exec. Keep persistence and fakeroot enabled; start a
+fresh sandbox when upgrading from an agent that saved this key.
+
+Build complete task images from their pinned Dockerfiles. If dependency setup
+fails, prepare a separately identified dependency image without changing the
+task instructions or grader. Preserve the original image and record both hashes.
+Verify the original grader actually executes its tests before scaling up.
+Harbor exit status zero, or `reward=0` with no exception, does **not** prove that
+the verifier ran: a bootstrap script may still write zero after an install error.
+
+For reporting, retain every attempt and its model revision, task/image identity,
+backend revision, reward, exception and verifier-execution evidence. Show task
+and attempt coverage beside checkpoint means; distinguish unavailable results
+from genuine model failures. Label differing backend/dependency variants instead
+of silently combining them. Remove owned pools before stopping their controller,
+and verify worker allocations have ended before removing temporary credentials.
+
 ## Task data on Harbor
 
 We also ship the full **15k** task corpus in [Harbor](https://www.harborframework.com/docs/datasets)
