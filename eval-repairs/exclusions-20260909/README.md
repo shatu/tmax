@@ -61,10 +61,16 @@ cleanup exceptions into model reward zero.
   `/app/service/target` and `/tmp/dependency-resolution` are absent in the image.
 - **MLflow:** local network-none oracle 34/34; Hyak full oracle also 34/34 in
   27.78s, reward 1.0, but teardown reports an instance still listed after stop.
-  This is **not clean acceptance** yet. Driver 39897329 subsequently deleted
+  Driver 39897329 subsequently deleted
   the pool; worker 39897655 is terminal and credentials were removed. SIF
   `5761a86257fbaf21c0e331e401b231848256a8b0668839478766d075b276b500`.
   Original 2 CPUs/4096 MiB RAM/10240 MiB nominal disk, 900s agent and verifier.
+  **Clean rerun:** Sandfleet `773b12e`, driver 39898255, same SIF and limits:
+  34 assertions pass in 28.47s, reward 1.0, `exception_info=null`. Worker
+  39898498 is terminal CANCELLED, driver COMPLETED, pool deleted, queue empty
+  and three temporary role-token files removed. The cleanup change waits
+  boundedly for the instance listing after successful stop, retaining disk
+  and raising if the instance remains listed.
 - **OkHttp:** Python is absent in the original Docker image, so the reference
   solution exits 127. Adding Python gets past that failure, then offline Gradle
   fails on uncached compile and test-runtime JARs. Cache repair is in progress;
