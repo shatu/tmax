@@ -107,7 +107,7 @@ class Vanillux2Agent(BaseAgent):
             command=(
                 f"mkdir -p {_STATE_DIR} && "
                 f"pwd > {_STATE_DIR}/cwd && "
-                f"export -p > {_STATE_DIR}/env"
+                f"(unset FAKEROOTKEY; export -p) > {_STATE_DIR}/env"
             ),
             timeout_sec=10,
         )
@@ -309,13 +309,15 @@ class Vanillux2Agent(BaseAgent):
     def _wrap_command(self, command: str) -> str:
         if not self.persistent_bash:
             return command
+        # Apptainer supplies a fresh fakeroot connection for each exec. Persist
+        # user exports, but never restore a previous exec's connection key.
         return (
             f'cd "$(cat {_STATE_DIR}/cwd)" 2>/dev/null || true\n'
             f". {_STATE_DIR}/env 2>/dev/null || true\n"
             f"{command}\n"
             "_vanillux2_ec=$?\n"
             f"pwd > {_STATE_DIR}/cwd\n"
-            f"export -p > {_STATE_DIR}/env\n"
+            f"(unset FAKEROOTKEY; export -p) > {_STATE_DIR}/env\n"
             "exit $_vanillux2_ec"
         )
 
