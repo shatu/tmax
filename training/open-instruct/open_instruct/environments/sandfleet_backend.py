@@ -8,6 +8,7 @@ import os
 import random
 import threading
 import time
+import uuid
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -303,9 +304,30 @@ class SandfleetBackend(SandboxBackend):
 
     def run_command(self, command: str, timeout: int | None = None) -> ExecutionResult:
         effective_timeout = self._timeout if timeout is None else timeout
-        result = self._agent_request(
-            "exec", payload={"command": command, "timeout": timeout}, timeout=effective_timeout + 30
-        )
+        command_id = uuid.uuid4().hex
+        try:
+            result = self._agent_request(
+                "exec",
+                payload={"command": command, "timeout": timeout, "command_id": command_id},
+                timeout=effective_timeout + 30,
+            )
+        except BaseException as error:
+            # A failed/interrupted client request must not leave this command
+            # executing. The separate control route bypasses the exec lock.
+            cancellation = self._request(
+                self._agent_url,
+                f"/{_API_VERSION}/leases/{self._lease_id}/exec-cancel",
+                token=self._lease_token,
+                method="POST",
+                payload={"command_id": command_id},
+                timeout=30,
+                retry=False,
+            )
+            if cancellation.get("error") or cancellation["state"] not in {"pending", "running", "already_finished"}:
+                raise RuntimeError(f"Command cancellation failed: {cancellation}") from error
+            if cancellation["state"] == "running" and not cancellation["interrupted"]:
+                raise RuntimeError("Sandfleet could not interrupt the command") from error
+            raise
         return ExecutionResult(
             stdout=str(result["stdout"]), stderr=str(result["stderr"]), exit_code=int(result["exit_code"])
         )

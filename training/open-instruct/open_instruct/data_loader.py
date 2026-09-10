@@ -1161,11 +1161,30 @@ def accumulate_inference_batches(
 
         # Count every fresh sampled group, including those about to be removed
         # for zero variance. Their per-completion lengths are unavailable later.
+        states = result.request_info.rollout_states
+        invalid_rewards = [
+            bool(state.get("info", {}).get("invalid_reward") or state.get("info", {}).get("infrastructure_failure"))
+            for state in states
+        ]
+        if len(invalid_rewards) != len(result.responses):
+            raise ValueError("Rollout validity metadata does not match completion count")
+        valid_indices = [i for i, invalid in enumerate(invalid_rewards) if not invalid]
         if population_metrics is not None:
             assert result.reward_scores is not None
             population_metrics.add_group(
-                result.reward_scores, result.finish_reasons, [len(response) for response in result.responses]
+                [result.reward_scores[i] for i in valid_indices],
+                [result.finish_reasons[i] for i in valid_indices],
+                [len(result.responses[i]) for i in valid_indices],
             )
+
+        if any(invalid_rewards):
+            # GRPO currently requires fixed-size groups. Never substitute a zero
+            # in group advantages; replenish the group while retaining valid
+            # siblings in the descriptive population metrics above.
+            logger.warning("Dropping group with unscored/infrastructure rollouts: %s", result.prompt_id)
+            if replenish_prompts and not replenish_accepted_prompts:
+                enqueue_next_prompt()
+            continue
 
         percent_solved = np.mean(result.reward_scores).item() / max_possible_score
         if no_resampling_pass_rate is not None and percent_solved >= no_resampling_pass_rate:

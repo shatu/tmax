@@ -1379,6 +1379,8 @@ async def process_request(actor: LLMRayActor, sub_request_id: str, sampling_para
                     if step_result.done:
                         rollout.done = True
                     meta = step_result.metadata or {}
+                    if meta.get("invalid_reward"):
+                        rollout.info["invalid_reward"] = True
                     if meta.get("sandbox_lost"):
                         rollout.info["sandbox_lost"] = True
                         rollout.info["infrastructure_failure"] = True
