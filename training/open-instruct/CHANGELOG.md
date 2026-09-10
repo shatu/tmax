@@ -4,6 +4,7 @@ All notable changes to this project will be documented in this file.
 
 
 ### Changed
+- Exclude per-exec fakeroot keys from GenericSandbox saved shell state while retaining user exports and cwd (https://github.com/hamishivi/tmax-private/pull/9).
 - Exclude per-exec fakeroot connection keys from Vanillux training and evaluation persisted shell state; retain cwd and user exports (https://github.com/hamishivi/tmax-private/pull/6).
 - Align Vanillux training and evaluation shell persistence, cancellation, timeout classification, first-call dispatch, and format-error recovery within the normal turn budget (https://github.com/hamishivi/tmax-private/pull/5).
 - Fix population reward accounting before zero-std group removal: pre-filter includes all sampled completions; post-filter excludes configured overlong completions using actual per-completion sums/counts, including discarded constant-reward groups. Training selection is unchanged; empty populations report counts without a fabricated mean (https://github.com/hamishivi/tmax-private/pull/2).
