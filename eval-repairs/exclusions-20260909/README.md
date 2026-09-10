@@ -37,10 +37,15 @@ original verifier status and reward logic. This is a narrow diagnostic guard,
 not a claim that every possible provisioning failure is classified. MLflow's
 dependency installs already run under `set -e` before grading.
 
-The guard has positive/negative shell regression tests. The earlier full-oracle
-receipts below validate the images and original grading paths; they predate this
-guard and are not a live acceptance test of its new failure path. Historical
-scores are unchanged.
+The guard has positive/negative shell regression tests and fresh full-Harbor
+acceptance on Hyak: Maven driver 39918281 scored 1.0 (10 tests, 27.95s);
+OkHttp driver 39918282 scored 1.0 (Gradle 2m43s), both without exceptions.
+The missing-Maven-cache diagnostic 39918305 ran the reference solution normally,
+then directed only the verifier at an empty cache: it emitted `SETUP-FAILED`,
+wrote no reward, and Harbor reported `RewardFileNotFoundError`, not reward zero.
+All three drivers completed, workers 39918419–39918421 are terminal, the queue
+is empty, and temporary role credentials were removed. Same verified SIFs and
+original task limits as below. Historical scores are unchanged.
 
 Preparation refuses to overwrite existing task directories. The file manifests
 record the prepared files; `prepare_maven.py` refreshes Maven's manifest after
