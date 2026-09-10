@@ -36,13 +36,22 @@ model-controlled code can print any cache-error phrase. Maven also resolves the
 model-edited POM, so even a genuine resolver failure is not automatically proof
 of faulty provisioning. MLflow's existing bootstrap is unchanged by this fix.
 
-Before releasing this revision for scored runs, validate dependencies in a fresh
+For scored runs, validate dependencies in a fresh
 image before model execution, pin that image and the complete prepared task,
 and verify the same image identity at launch. Do not substitute an after-agent
 project preflight: model edits would contaminate that classification too.
 An ambiguous later failure retains its raw grader result and logs; it is not
-silently reclassified or declared model-attributable. This local correction is
-pending fresh live acceptance and is not yet a released backfill recipe.
+silently reclassified or declared model-attributable.
+
+The corrected revision `288a558` passed fresh full-Harbor oracle acceptance on
+the same pinned dependency-only images with Sandfleet `95901e6` (merged tree):
+Maven driver 39934706 scored 1.0, 10 tests passed in 41.61s; OkHttp driver
+39934707 scored 1.0, Gradle succeeded in 3m5s. Both had null exceptions and
+retained the original CPU/RAM/time limits. Workers 39934797 and 39934910 are
+terminal, both pools were deleted, and all six temporary role tokens removed.
+Six preparation/regression tests pass, including four cache-text false-positive
+cases that now preserve the original failure status. These are oracle
+diagnostics, not model backfill scores.
 
 Historical acceptance of the **superseded text-classifying guard** on Hyak:
 Maven driver 39918281 scored 1.0 (10 tests, 27.95s);
