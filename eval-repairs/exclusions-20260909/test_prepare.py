@@ -12,6 +12,22 @@ import unittest
 
 
 class PreparationTest(unittest.TestCase):
+    def test_output_file_failure_aborts_before_reward(self):
+        guard = Path(__file__).resolve().parent / "offline_guard.sh"
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                'source "$1"; mktemp() { return 1; }; run_offline_verifier true; echo REWARD_ZERO',
+                "_",
+                str(guard),
+            ],
+            capture_output=True,
+        )
+        self.assertEqual(result.returncode, 90)
+        self.assertNotIn(b"REWARD_ZERO", result.stdout)
+        self.assertIn(b"SETUP-FAILED", result.stderr)
+
     def test_offline_guard_preserves_model_failures(self):
         guard = Path(__file__).resolve().parent / "offline_guard.sh"
         for message, status, expected in (

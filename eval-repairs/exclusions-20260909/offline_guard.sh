@@ -2,7 +2,10 @@
 # Compilation errors and failed assertions are still model failures.
 run_offline_verifier() {
     local output status
-    output=$(mktemp) || return 90
+    output=$(mktemp) || {
+        echo 'SETUP-FAILED: cannot create verifier output file' >&2
+        exit 90
+    }
     "$@" >"$output" 2>&1
     status=$?
     cat "$output"
