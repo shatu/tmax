@@ -14,6 +14,18 @@ for name in ("maven-slf4j-conflict", "okhttp-trailers-crash", "breast-cancer-mlf
     target = ROOT / "tasks" / name
     shutil.copytree(source, target)
     original = (source / "tests/test.sh").read_text()
+    if name in ("maven-slf4j-conflict", "okhttp-trailers-crash"):
+        shutil.copyfile(ROOT / "offline_guard.sh", target / "tests/offline_guard.sh")
+    if name == "okhttp-trailers-crash":
+        invocation = "./gradlew :okhttp:jvmTest --tests"
+        if original.count(invocation) != 1:
+            raise ValueError("Expected exactly one OkHttp Gradle invocation")
+        modified = original.replace(
+            invocation,
+            "source /tests/offline_guard.sh\nrun_offline_verifier " + invocation,
+            1,
+        )
+        (target / "tests/test.sh").write_text(modified)
     if name == "breast-cancer-mlflow":
         for marker in (
             "# Install curl",

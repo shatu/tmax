@@ -23,6 +23,20 @@ docker build --platform linux/amd64 -t tblite-repair-okhttp:20260909 "$TBLITE_SO
 docker build --platform linux/amd64 -f OkHttp.Dockerfile -t tblite-repair-okhttp-offline:20260909 .
 ```
 
+### Offline failures versus model failures
+
+Maven and OkHttp now capture verifier output and abort with `SETUP-FAILED`
+(exit 90, without writing a reward) for explicit Maven/Gradle offline-cache
+diagnostics. Ordinary compilation errors and failed assertions preserve the
+original verifier status and reward logic. This is a narrow diagnostic guard,
+not a claim that every possible provisioning failure is classified. MLflow's
+dependency installs already run under `set -e` before grading.
+
+The guard has positive/negative shell regression tests. The earlier full-oracle
+receipts below validate the images and original grading paths; they predate this
+guard and are not a live acceptance test of its new failure path. Historical
+scores are unchanged.
+
 Preparation refuses to overwrite existing task directories. The file manifests
 record the prepared files; `prepare_maven.py` refreshes Maven's manifest after
 its bootstrap changes. Record these hashes alongside every image/run.

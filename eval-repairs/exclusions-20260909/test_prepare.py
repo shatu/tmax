@@ -12,6 +12,31 @@ import unittest
 
 
 class PreparationTest(unittest.TestCase):
+    def test_offline_guard_preserves_model_failures(self):
+        guard = Path(__file__).resolve().parent / "offline_guard.sh"
+        for message, status, expected in (
+            ("No cached version of example:lib:1 available for offline mode.", 1, 90),
+            ("Cannot access central in offline mode", 1, 90),
+            ("Compilation failure", 1, 1),
+            ("AssertionError: incorrect result", 1, 1),
+            ("All tests passed", 0, 0),
+        ):
+            with self.subTest(message=message):
+                result = subprocess.run(
+                    [
+                        "bash",
+                        "-c",
+                        'source "$1"; run_offline_verifier bash -c \'echo "$1"; exit "$2"\' _ "$2" "$3"',
+                        "_",
+                        str(guard),
+                        message,
+                        str(status),
+                    ],
+                    capture_output=True,
+                )
+                self.assertEqual(result.returncode, expected)
+                self.assertEqual(b"SETUP-FAILED" in result.stderr, expected == 90)
+
     def test_maven_rejects_invocation_and_heredoc_drift(self):
         scripts = Path(__file__).resolve().parent
         invocation = 'pytest "$TEST_DIR/test_outputs.py" -rA -v'
@@ -84,6 +109,9 @@ class PreparationTest(unittest.TestCase):
                     tests.mkdir(parents=True)
                     (tests / "test.sh").write_text(contents)
                 shutil.copyfile(script, root / "prepare.py")
+                shutil.copyfile(
+                    script.parent / "offline_guard.sh", root / "offline_guard.sh"
+                )
                 result = subprocess.run(
                     [sys.executable, str(root / "prepare.py")],
                     env={**os.environ, "TBLITE_SOURCE": str(source)},
@@ -97,6 +125,7 @@ class PreparationTest(unittest.TestCase):
         scripts = Path(__file__).resolve().parent
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            shutil.copyfile(scripts / "offline_guard.sh", root / "offline_guard.sh")
             for name in ("prepare.py", "prepare_maven.py", "extract_dependency_pom.py"):
                 shutil.copyfile(scripts / name, root / name)
                 subprocess.run([sys.executable, str(root / name)], check=True)
@@ -113,9 +142,7 @@ class PreparationTest(unittest.TestCase):
                     if p.is_file()
                 }
                 self.assertEqual(hashes, actual)
-                allowed = (
-                    {"tests/test.sh"} if name != "okhttp-trailers-crash" else set()
-                )
+                allowed = {"tests/test.sh"}
                 if name == "maven-slf4j-conflict":
                     allowed.add("solution/solve.sh")
                 for path in (source / name).rglob("*"):

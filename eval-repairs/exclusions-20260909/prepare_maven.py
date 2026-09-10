@@ -20,7 +20,11 @@ test = (
 invocation = 'pytest "$TEST_DIR/test_outputs.py" -rA -v'
 if test.count(invocation) != 1:
     raise ValueError("Expected exactly one Maven pytest invocation")
-test = test.replace(invocation, "set +e\n" + invocation, 1)
+test = test.replace(
+    invocation,
+    "source /tests/offline_guard.sh\nset +e\nrun_offline_verifier " + invocation,
+    1,
+)
 (task / "tests/test.sh").write_text(test)
 solve = (source / "solution/solve.sh").read_text()
 old = "apt-get update && apt-get install -y maven"
