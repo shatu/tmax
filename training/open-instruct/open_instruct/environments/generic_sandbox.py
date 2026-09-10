@@ -32,7 +32,7 @@ set -a; source /tmp/.sandbox_env 2>/dev/null; set +a
 cd "$(cat /tmp/.sandbox_cwd 2>/dev/null || echo /testbed)" 2>/dev/null
 eval "$1"
 _exit_code=$?
-export -p > /tmp/.sandbox_env
+(unset FAKEROOTKEY; export -p) > /tmp/.sandbox_env
 pwd > /tmp/.sandbox_cwd
 exit $_exit_code
 """
