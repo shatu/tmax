@@ -12,6 +12,29 @@ import unittest
 
 
 class PreparationTest(unittest.TestCase):
+    def test_grader_controlled_cache_text_keeps_failure_status(self):
+        guard = Path(__file__).resolve().parent / "offline_guard.sh"
+        for message in (
+            "Cannot access central in offline mode",
+            "has not been downloaded from it before",
+            "No cached version of example available for offline mode",
+            "No cached resource available for offline mode",
+        ):
+            with self.subTest(message=message):
+                result = subprocess.run(
+                    [
+                        "bash",
+                        "-c",
+                        'source "$1"; run_offline_verifier bash -c \'echo "$1"; exit 7\' _ "$2"',
+                        "_",
+                        str(guard),
+                        message,
+                    ],
+                    capture_output=True,
+                )
+                self.assertEqual(result.returncode, 7)
+                self.assertNotIn(b"SETUP-FAILED", result.stderr)
+
     def test_output_file_failure_aborts_before_reward(self):
         guard = Path(__file__).resolve().parent / "offline_guard.sh"
         result = subprocess.run(
@@ -31,8 +54,8 @@ class PreparationTest(unittest.TestCase):
     def test_offline_guard_preserves_model_failures(self):
         guard = Path(__file__).resolve().parent / "offline_guard.sh"
         for message, status, expected in (
-            ("No cached version of example:lib:1 available for offline mode.", 1, 90),
-            ("Cannot access central in offline mode", 1, 90),
+            ("No cached version of example:lib:1 available for offline mode.", 1, 1),
+            ("Cannot access central in offline mode", 1, 1),
             ("Compilation failure", 1, 1),
             ("AssertionError: incorrect result", 1, 1),
             ("All tests passed", 0, 0),
@@ -80,9 +103,10 @@ class PreparationTest(unittest.TestCase):
             ),
         ]
         for script, relative, contents in cases:
-            with self.subTest(
-                script=script, contents=contents
-            ), tempfile.TemporaryDirectory() as directory:
+            with (
+                self.subTest(script=script, contents=contents),
+                tempfile.TemporaryDirectory() as directory,
+            ):
                 root = Path(directory)
                 task = root / "tasks/maven-slf4j-conflict"
                 path = task / relative
@@ -111,9 +135,10 @@ class PreparationTest(unittest.TestCase):
             f"{start}\n{end}\n{invocation}\n{invocation}",
         ]
         for contents in cases:
-            with self.subTest(
-                contents=contents
-            ), tempfile.TemporaryDirectory() as directory:
+            with (
+                self.subTest(contents=contents),
+                tempfile.TemporaryDirectory() as directory,
+            ):
                 root = Path(directory)
                 source = root / "upstream"
                 for name in (

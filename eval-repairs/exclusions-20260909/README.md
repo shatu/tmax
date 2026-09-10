@@ -30,22 +30,30 @@ docker build --platform linux/amd64 -f OkHttp.Dockerfile -t tblite-repair-okhttp
 
 ### Offline failures versus model failures
 
-Maven and OkHttp now capture verifier output and abort with `SETUP-FAILED`
-(exit 90, without writing a reward) for explicit Maven/Gradle offline-cache
-diagnostics. Ordinary compilation errors and failed assertions preserve the
-original verifier status and reward logic. This is a narrow diagnostic guard,
-not a claim that every possible provisioning failure is classified. MLflow's
-dependency installs already run under `set -e` before grading.
+The corrected local wrapper captures output and preserves the verifier's exact
+exit status. It does **not** classify failures by searching grader output:
+model-controlled code can print any cache-error phrase. Maven also resolves the
+model-edited POM, so even a genuine resolver failure is not automatically proof
+of faulty provisioning. MLflow's existing bootstrap is unchanged by this fix.
 
-The guard has positive/negative shell regression tests and fresh full-Harbor
-acceptance on Hyak: Maven driver 39918281 scored 1.0 (10 tests, 27.95s);
+Before releasing this revision for scored runs, validate dependencies in a fresh
+image before model execution, pin that image and the complete prepared task,
+and verify the same image identity at launch. Do not substitute an after-agent
+project preflight: model edits would contaminate that classification too.
+An ambiguous later failure retains its raw grader result and logs; it is not
+silently reclassified or declared model-attributable. This local correction is
+pending fresh live acceptance and is not yet a released backfill recipe.
+
+Historical acceptance of the **superseded text-classifying guard** on Hyak:
+Maven driver 39918281 scored 1.0 (10 tests, 27.95s);
 OkHttp driver 39918282 scored 1.0 (Gradle 2m43s), both without exceptions.
 The missing-Maven-cache diagnostic 39918305 ran the reference solution normally,
 then directed only the verifier at an empty cache: it emitted `SETUP-FAILED`,
 wrote no reward, and Harbor reported `RewardFileNotFoundError`, not reward zero.
 All three drivers completed, workers 39918419–39918421 are terminal, the queue
 is empty, and temporary role credentials were removed. Same verified SIFs and
-original task limits as below. Historical scores are unchanged.
+original task limits as below. These receipts do not validate the corrected
+classification boundary. Historical scores are unchanged.
 
 Preparation refuses to overwrite existing task directories. The file manifests
 record the prepared files; `prepare_maven.py` refreshes Maven's manifest after
