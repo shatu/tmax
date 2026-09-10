@@ -1,0 +1,66 @@
+[
+  {
+    "trial": "react-typescript-debugg__U9AJaG6",
+    "input_sha256": {
+      "package.json": "46ab07c84e0e6698143f02a2e9f9024e9066c450badb49d980d25bd7534b530f"
+    },
+    "exit_code": 0,
+    "image_sha256": "sha256:46a48dc57c8c8872888a4c3bdc5b18bc62bc7e67dd1578a5d861728e939805d4"
+  },
+  {
+    "trial": "react-typescript-debugg__V6YQEu2",
+    "input_sha256": {
+      "package.json": "8bf1d1d03d6da0b2083ab4c082aec07c1e3c81e18277a5309fd358ee209a7323"
+    },
+    "exit_code": 0,
+    "image_sha256": "sha256:46a48dc57c8c8872888a4c3bdc5b18bc62bc7e67dd1578a5d861728e939805d4"
+  },
+  {
+    "trial": "react-typescript-debugg__XYARtnJ",
+    "input_sha256": {
+      "package.json": "4778180e4d44ffd484c0ea6e0c350a5a23b62b5ffc049b79f012839ea4809a2b"
+    },
+    "exit_code": 0,
+    "image_sha256": "sha256:46a48dc57c8c8872888a4c3bdc5b18bc62bc7e67dd1578a5d861728e939805d4"
+  },
+  {
+    "trial": "react-typescript-debugg__dXH5Mun",
+    "input_sha256": {
+      "package.json": "37ec77159ae780c6ff66ad336d3c342c6aefecddca48e666c214ce39a46c8c58"
+    },
+    "exit_code": 0,
+    "image_sha256": "sha256:46a48dc57c8c8872888a4c3bdc5b18bc62bc7e67dd1578a5d861728e939805d4"
+  },
+  {
+    "trial": "react-typescript-debugg__gjWeeta",
+    "input_sha256": {
+      "package.json": "cc9e81a314ac113f4516765d85601154173fc59b98b453546c8054a540aad5eb"
+    },
+    "exit_code": 0,
+    "image_sha256": "sha256:46a48dc57c8c8872888a4c3bdc5b18bc62bc7e67dd1578a5d861728e939805d4"
+  },
+  {
+    "trial": "react-typescript-debugg__pyVczKV",
+    "input_sha256": {
+      "package.json": "949cfc8391f46ae5432748b436750b1dbf2a9450d1a425e33195c16e0ac02ad4"
+    },
+    "exit_code": 0,
+    "image_sha256": "sha256:46a48dc57c8c8872888a4c3bdc5b18bc62bc7e67dd1578a5d861728e939805d4"
+  },
+  {
+    "trial": "react-typescript-debugg__uhQ7CAw",
+    "input_sha256": {
+      "package.json": "9c539d97842f5792554b522b164716d9245ea22ed32bc115790e3b265d7485d9"
+    },
+    "exit_code": 0,
+    "image_sha256": "sha256:46a48dc57c8c8872888a4c3bdc5b18bc62bc7e67dd1578a5d861728e939805d4"
+  },
+  {
+    "trial": "react-typescript-debugg__vYchBv7",
+    "input_sha256": {
+      "package.json": "f5f20cf925c2244dfe58eed95578ea7dcbd93da5a4ba996a328d12526eeac205"
+    },
+    "exit_code": 0,
+    "image_sha256": "sha256:46a48dc57c8c8872888a4c3bdc5b18bc62bc7e67dd1578a5d861728e939805d4"
+  }
+]

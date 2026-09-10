@@ -1,0 +1,47 @@
+Using CPython 3.13.15 interpreter at: /usr/local/bin/python
+Creating virtual environment at: .tbench-testing
+Using Python 3.13.15 environment at: .tbench-testing
+Resolved 5 packages in 41ms
+Prepared 5 packages in 1.26s
+Installed 5 packages in 379ms
+ + iniconfig==2.3.0
+ + packaging==26.3
+ + pluggy==1.6.0
+ + pygments==2.21.0
+ + pytest==8.4.1
+Using Python 3.13.15 environment at: .tbench-testing
+Resolved 5 packages in 3.98s
+   Building antlr4-python3-runtime==4.9.3
+      Built antlr4-python3-runtime==4.9.3
+Prepared 4 packages in 4.66s
+Installed 4 packages in 469ms
+ + antlr4-python3-runtime==4.9.3
+ + hydra-core==1.3.0
+ + omegaconf==2.3.1
+ + pyyaml==6.0.3
+Using Python 3.13.15 environment at: .tbench-testing
+Resolved 9 packages in 10ms
+Prepared 4 packages in 263ms
+Installed 4 packages in 159ms
+ + cloudpickle==3.1.2
+ + hydra-submitit-launcher==1.3.0.dev0 (from file:///opt/wheelhouse/hydra_submitit_launcher-1.3.0.dev0-py3-none-any.whl)
+ + submitit==1.5.4
+ + typing-extensions==4.16.0
+============================= test session starts ==============================
+platform linux -- Python 3.13.15, pytest-8.4.1, pluggy-1.6.0
+rootdir: /tests
+plugins: hydra-core-1.3.0
+collected 7 items
+
+../../tests/test_outputs.py .......                                      [100%]
+
+==================================== PASSES ====================================
+=========================== short test summary info ============================
+PASSED ../../tests/test_outputs.py::test_main_untouched
+PASSED ../../tests/test_outputs.py::test_config_untouched
+PASSED ../../tests/test_outputs.py::test_hydra_submitit_launcher_installed
+PASSED ../../tests/test_outputs.py::test_original
+PASSED ../../tests/test_outputs.py::test_debug
+PASSED ../../tests/test_outputs.py::test_slurm_job
+PASSED ../../tests/test_outputs.py::test_slurm_hydra
+============================== 7 passed in 2.25s ===============================

@@ -1,0 +1,30 @@
+v20.19.6
+10.9.2
+============================= test session starts ==============================
+platform linux -- Python 3.13.15, pytest-8.4.1, pluggy-1.6.0
+rootdir: /tests
+plugins: json-ctrf-0.3.5
+collected 17 items
+
+../tests/test_outputs.py .................                               [100%]
+
+==================================== PASSES ====================================
+=========================== short test summary info ============================
+PASSED ../tests/test_outputs.py::TestReactTypeScriptBuild::test_package_json_exists
+PASSED ../tests/test_outputs.py::TestReactTypeScriptBuild::test_tsconfig_exists
+PASSED ../tests/test_outputs.py::TestReactTypeScriptBuild::test_webpack_config_exists
+PASSED ../tests/test_outputs.py::TestReactTypeScriptBuild::test_source_files_exist
+PASSED ../tests/test_outputs.py::TestReactTypeScriptBuild::test_node_modules_installed
+PASSED ../tests/test_outputs.py::TestReactTypeScriptBuild::test_typecheck_passed
+PASSED ../tests/test_outputs.py::TestReactTypeScriptBuild::test_tests_passed
+PASSED ../tests/test_outputs.py::TestReactTypeScriptBuild::test_production_build_succeeded
+PASSED ../tests/test_outputs.py::TestReactTypeScriptBuild::test_bundle_created
+PASSED ../tests/test_outputs.py::TestReactTypeScriptBuild::test_bundle_size_reasonable
+PASSED ../tests/test_outputs.py::TestReactTypeScriptBuild::test_source_map_created
+PASSED ../tests/test_outputs.py::TestReactTypeScriptBuild::test_no_type_errors_in_components
+PASSED ../tests/test_outputs.py::TestReactTypeScriptBuild::test_react_types_version_compatible
+PASSED ../tests/test_outputs.py::TestReactTypeScriptBuild::test_canary_string_in_bundle
+PASSED ../tests/test_outputs.py::TestReactTypeScriptBuild::test_strict_mode_enabled
+PASSED ../tests/test_outputs.py::TestReactTypeScriptBuild::test_package_json_scripts_not_modified
+PASSED ../tests/test_outputs.py::TestReactTypeScriptBuild::test_webpack_was_actually_used
+======================== 17 passed in 309.86s (0:05:09) ========================

@@ -1,4 +1,5 @@
 FROM tblite-repair-mlflow:20260909
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir uv==0.7.13
 ENV UV_CACHE_DIR=/opt/uv-cache UV_LINK_MODE=copy
 RUN uv venv /opt/verifier-bootstrap && \

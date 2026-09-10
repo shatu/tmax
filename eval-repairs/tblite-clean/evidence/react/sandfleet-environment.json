@@ -1,0 +1,46 @@
+{
+  "image": {
+    "sif_path": "/gscratch/scrubbed/hamishiv/tblite-status-fix.4k3QWtQV/react-v1.sif",
+    "sif_sha256": "41a773c300942740d21e460393c8dd6a84402e39b05fa4eb1bc5bc98d1bc99ac",
+    "user": "root",
+    "workdir": "/app",
+    "env": {
+      "PATH": "/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "GPG_KEY": "7169605F62C751356D054A26A821E680E5FA6305",
+      "PYTHON_VERSION": "3.13.15",
+      "PYTHON_SHA256": "1e66a7945a48390ee4c2a4268a0e4185884059a13c4aab6d148aa208deea4a76",
+      "UV_CACHE_DIR": "/opt/uv-cache",
+      "UV_LINK_MODE": "copy",
+      "npm_config_cache": "/opt/npm-cache",
+      "npm_config_offline": "true",
+      "npm_config_audit": "false",
+      "npm_config_fund": "false",
+      "UV_OFFLINE": "1"
+    },
+    "build_provenance": "Pinned full upstream Dockerfile plus npm dependency cache and verifier tools; packaging f8abc1d; unchanged oracle/assertions",
+    "context_sha256": "9df8f229fd26620122ad2d6752afb7bc158e3099b0aca7488d75b6c15332b733"
+  },
+  "resources": {
+    "cpus": 2,
+    "memory_mb": 4096
+  },
+  "storage": {
+    "mode": "disk-overlay",
+    "storage_mb": 10240,
+    "policy": "nominal-image-mib",
+    "image_sha256": "41a773c300942740d21e460393c8dd6a84402e39b05fa4eb1bc5bc98d1bc99ac",
+    "total_bytes": 10568986624,
+    "available_bytes_at_start": 9941266432,
+    "writable_paths_verified": true
+  },
+  "cgroup": {
+    "path": "/sys/fs/cgroup/system.slice/slurmstepd.scope/job_39937718/step_0/user/task_0",
+    "memory.max": "max",
+    "memory.current": "240324608",
+    "cpuset.cpus.effective": "38-39",
+    "memory.max.effective": "4294967296",
+    "memory.max.effective_path": "/sys/fs/cgroup/system.slice/slurmstepd.scope/job_39937718/step_0/user",
+    "cpuset.cpu_count": 2
+  },
+  "worker_pid": 1370291
+}

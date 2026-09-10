@@ -1,0 +1,39 @@
+{
+  "image": {
+    "sif_path": "/gscratch/scrubbed/hamishiv/tblite-status-fix.4k3QWtQV/hydra-v1.sif",
+    "sif_sha256": "bccef31fa30eb5c16b8eb788ebccdbce3d63c6d586dc477fa4358210ef045080",
+    "user": "root",
+    "workdir": "/app/src",
+    "env": {
+      "PATH": "/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "GPG_KEY": "7169605F62C751356D054A26A821E680E5FA6305",
+      "PYTHON_VERSION": "3.13.15",
+      "PYTHON_SHA256": "1e66a7945a48390ee4c2a4268a0e4185884059a13c4aab6d148aa208deea4a76"
+    },
+    "build_provenance": "Pinned full upstream Dockerfile plus local upstream Hydra mirror and wheelhouse; packaging b299b4b; unchanged oracle/assertions",
+    "context_sha256": "f9a610f577f1f01a9da98e2832d5a905b5c174b47645f67f4182d30f7eff8e8a"
+  },
+  "resources": {
+    "cpus": 1,
+    "memory_mb": 2048
+  },
+  "storage": {
+    "mode": "disk-overlay",
+    "storage_mb": 10240,
+    "policy": "nominal-image-mib",
+    "image_sha256": "bccef31fa30eb5c16b8eb788ebccdbce3d63c6d586dc477fa4358210ef045080",
+    "total_bytes": 10568986624,
+    "available_bytes_at_start": 9941266432,
+    "writable_paths_verified": true
+  },
+  "cgroup": {
+    "path": "/sys/fs/cgroup/system.slice/slurmstepd.scope/job_39937232/step_0/user/task_0",
+    "memory.max": "max",
+    "memory.current": "209702912",
+    "cpuset.cpus.effective": "30",
+    "memory.max.effective": "2147483648",
+    "memory.max.effective_path": "/sys/fs/cgroup/system.slice/slurmstepd.scope/job_39937232/step_0/user",
+    "cpuset.cpu_count": 1
+  },
+  "worker_pid": 1363083
+}
