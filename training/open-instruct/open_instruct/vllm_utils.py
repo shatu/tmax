@@ -17,7 +17,6 @@
 
 import argparse
 import asyncio
-import contextlib
 import dataclasses
 import os
 import queue
@@ -1200,6 +1199,7 @@ async def process_request(actor: LLMRayActor, sub_request_id: str, sampling_para
     max_steps = env_config.max_steps
 
     output = None
+    unsafe_env_names: set[str] = set()
     pool_setup = PoolSetup(
         acquired={},
         actor_map={},
@@ -1371,7 +1371,13 @@ async def process_request(actor: LLMRayActor, sub_request_id: str, sampling_para
                     step_timeout = actor.tool_call_timeout
                     if remaining_rollout_s is not None:
                         step_timeout = min(step_timeout, max(0.001, remaining_rollout_s))
-                    step_result: StepResult = await asyncio.wait_for(step_ref, timeout=step_timeout)
+                    # Do not let wait_for cancel the local reference: we must
+                    # still observe remote completion before releasing this actor.
+                    step_future = asyncio.ensure_future(step_ref)
+                    step_future.add_done_callback(
+                        lambda completed: completed.exception() if not completed.cancelled() else None
+                    )
+                    step_result: StepResult = await asyncio.wait_for(asyncio.shield(step_future), timeout=step_timeout)
                     add_timing("tool_step", phase_start_time)
                     observations.append((step_result.result, tool_response_roles.get(tc.name, "tool")))
                     rollout.tool_output += step_result.result
@@ -1379,6 +1385,8 @@ async def process_request(actor: LLMRayActor, sub_request_id: str, sampling_para
                     if step_result.done:
                         rollout.done = True
                     meta = step_result.metadata or {}
+                    if meta.get("invalid_reward"):
+                        rollout.info["invalid_reward"] = True
                     if meta.get("sandbox_lost"):
                         rollout.info["sandbox_lost"] = True
                         rollout.info["infrastructure_failure"] = True
@@ -1411,19 +1419,41 @@ async def process_request(actor: LLMRayActor, sub_request_id: str, sampling_para
                             f"step_count={rollout.step_count}). Args: {tc.args}"
                         )
                     logger.warning(error_msg)
-                    # Restored (tmax-private#1 repair): cancel the remote step so a
-                    # timed-out exec cannot keep running inside the sandbox after the
-                    # actor is released — the timeout->reuse->co-residency poison path.
-                    with contextlib.suppress(Exception):
-                        ray.cancel(step_ref, force=True)
+                    # Ray cancellation is not sandbox cleanup acknowledgement,
+                    # and force=True is unsupported for actor tasks. The synchronous
+                    # backend enforces its command timeout; drain it before reuse.
+                    drained_result = None
+                    draining_env_names = {
+                        name for name, (_, acquired_actor) in pool_setup.acquired.items() if acquired_actor == target
+                    }
+                    unsafe_env_names.update(draining_env_names)
+                    try:
+                        drained_result = await asyncio.wait_for(asyncio.shield(step_future), timeout=60)
+                        drain_metadata = drained_result.metadata or {}
+                        for flag in ("invalid_reward", "infrastructure_failure", "sandbox_lost"):
+                            if drain_metadata.get(flag):
+                                rollout.info[flag] = True
+                        if drain_metadata.get("sandbox_lost"):
+                            rollout.info["infrastructure_failure"] = True
+                        unsafe_env_names.difference_update(draining_env_names)
+                    except Exception as drain_error:
+                        rollout.info["infrastructure_failure"] = True
+                        logger.warning("Timed-out environment step failed while draining: %s", drain_error)
                     observations.append((error_msg, "tool"))
                     rollout.tool_error += error_msg
                     rollout.timeout = True
                     rollout.done = True
-                    rollout.rewards.append(0.0)
+                    rollout.rewards.append(drained_result.reward if drained_result is not None else 0.0)
                     rollout.tool_call_stats.append(
                         ToolCallStats(tool_name=tc.name, success=False, runtime=actor.tool_call_timeout)
                     )
+                except asyncio.CancelledError:
+                    # Caller cancellation also must not return an in-flight actor
+                    # to the pool. Its lease is reclaimed after actor discard.
+                    unsafe_env_names.update(
+                        name for name, (_, acquired_actor) in pool_setup.acquired.items() if acquired_actor == target
+                    )
+                    raise
                 except Exception as e:
                     add_timing("tool_step", phase_start_time)
                     error_msg = f"Step '{tc.name}' failed: {e}. Args: {tc.args}"
@@ -1431,23 +1461,14 @@ async def process_request(actor: LLMRayActor, sub_request_id: str, sampling_para
                     observations.append((error_msg, "tool"))
                     rollout.tool_error += error_msg
                     rollout.rewards.append(0.0)
-                    # Restored (tmax-private#1 repair): unexpected step errors are
-                    # terminal; a dead backend ("Instance not started") or a dead
-                    # actor must stop dispatch instead of feeding format-error
-                    # retries into a corpse.
-                    backend_unavailable = "Instance not started" in str(e)
-                    actor_failed = isinstance(e, ray.exceptions.RayActorError)
-                    if (
-                        actor.tool_call_format_error_feedback
-                        and not backend_unavailable
-                        and not actor_failed
-                        and rollout.step_count < max_steps
-                    ):
-                        rollout.tool_call_stats.append(ToolCallStats(tool_name=tc.name, success=False, runtime=0.0))
-                        continue
+                    # Unexpected implementation/transport exceptions are not
+                    # scored model failures. Structured format feedback belongs in
+                    # StepResult; do not retry an actor with unconfirmed cleanup.
+                    rollout.info["infrastructure_failure"] = True
+                    unsafe_env_names.update(
+                        name for name, (_, acquired_actor) in pool_setup.acquired.items() if acquired_actor == target
+                    )
                     rollout.done = True
-                    if backend_unavailable:
-                        rollout.timeout = True
                     rollout.tool_call_stats.append(ToolCallStats(tool_name=tc.name, success=False, runtime=0.0))
 
                 if rollout.done or rollout.timeout:
@@ -1481,8 +1502,10 @@ async def process_request(actor: LLMRayActor, sub_request_id: str, sampling_para
     finally:
         phase_start_time = time.perf_counter()
         env_metrics: dict[str, dict[str, float]] = {}
-        dead_env_names: set[str] = set()
+        dead_env_names: set[str] = set(unsafe_env_names)
         for env_name in pool_setup.active_env_names:
+            if env_name in dead_env_names:
+                continue
             if env_name in pool_setup.acquired:
                 _, env_act = pool_setup.acquired[env_name]
                 try:
@@ -1502,7 +1525,12 @@ async def process_request(actor: LLMRayActor, sub_request_id: str, sampling_para
             rollout.info["env_metrics"] = env_metrics
         for pooled_env_name, (pool, acq_actor) in pool_setup.acquired.items():
             if pooled_env_name in dead_env_names:
-                pool.discard.remote(acq_actor, "actor died before metrics collection")
+                # Observe replacement failure instead of silently shrinking the
+                # pool. Keep a bound even if replacement actor setup hangs.
+                await asyncio.wait_for(
+                    pool.discard.remote(acq_actor, "actor died or command completion could not be confirmed"),
+                    timeout=60,
+                )
             else:
                 pool.release.remote(acq_actor)
         add_timing("env_metrics_and_release", phase_start_time)

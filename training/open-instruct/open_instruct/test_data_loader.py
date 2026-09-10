@@ -137,6 +137,7 @@ class TestPopulationRewardAccumulation(unittest.TestCase):
                 tool_outputs=[""] * count,
                 tool_runtimes=[0.0] * count,
                 tool_calleds=[False] * count,
+                rollout_states=[{} for _ in range(count)],
             ),
             index=index,
             prompt_id=str(index),

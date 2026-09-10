@@ -17,6 +17,16 @@ and memory, `backend: "sandfleet"` leases a sandbox from a separate Sandfleet
 service. The service owns the Slurm worker allocations; TMAX only needs its
 private URL and client token:
 
+Use Sandfleet **0.7.3 or newer**, including freshly started worker processes,
+for command-scoped cancellation. Older no-disk workers could report a command
+cancelled while its descendants kept running inside the PID namespace.
+Successful background commands are not cancelled by later commands.
+
+An outer trainer timeout waits up to 60 additional seconds for the remote step
+to finish before reusing its actor. If completion cannot be confirmed, the actor
+is discarded and its lease is reclaimed on expiry; this is bounded reuse safety,
+not an immediate-interruption guarantee. Such unconfirmed outcomes are unscored.
+
 ```bash
 export SANDFLEET_URL=http://sandfleet-controller:8765
 export SANDFLEET_CLIENT_TOKEN=...

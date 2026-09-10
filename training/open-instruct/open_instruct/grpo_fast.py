@@ -3128,6 +3128,7 @@ def maybe_evaluate(
             active_sampling=False,
             filter_zero_std_samples=False,
             replenish_prompts=False,
+            min_valid_group_size=0,  # Eval consumes every dispatched group, including unscored groups.
             max_possible_score=max_possible_score,
         )
 
@@ -3140,9 +3141,20 @@ def maybe_evaluate(
         eval_reward_metrics = {f"eval/{key}": val for key, val in eval_reward_metrics.items()}
         eval_pass_at_k_metrics: dict[str, float] = {}
         scores = np.array(eval_batch.scores)
+        valid_rewards = np.array(
+            [data_loader_lib.rollout_reward_is_valid(state) for state in eval_result.request_info.rollout_states],
+            dtype=bool,
+        )
+        if valid_rewards.shape != scores.shape:
+            raise ValueError("Eval reward validity metadata does not match score count")
         eval_k = eval_generation_config.n
 
-        if scores.size and scores.size % eval_k == 0:
+        if not valid_rewards.all():
+            # Aggregated reward diagnostics cannot be corrected from their means.
+            # Likewise, dropping failed measurements changes the pass@k population.
+            eval_reward_metrics = {}
+            logger.warning("Eval has unscored rollouts; omitting pass@k and aggregated reward diagnostics.")
+        elif scores.size and scores.size % eval_k == 0:
             scores_per_prompt = scores.reshape(-1, eval_k)
             correct_per_prompt = scores_per_prompt >= max_possible_score - 1e-8
             eval_pass_at_k_metrics.update(grpo_utils.compute_pass_at_k_metrics(correct_per_prompt))
@@ -3151,7 +3163,8 @@ def maybe_evaluate(
                 "Eval scores size %s is not divisible by eval_k %s; skipping pass@k metrics.", scores.size, eval_k
             )
         eval_metrics = {
-            "eval/scores": scores.mean(),
+            "eval/scored_rollouts": int(valid_rewards.sum()),
+            "eval/unscored_rollouts": int((~valid_rewards).sum()),
             "eval/sequence_lengths": eval_sequence_lengths.mean(),
             "eval/sequence_lengths_min": eval_sequence_lengths.min(),
             "eval/sequence_lengths_max": eval_sequence_lengths.max(),
@@ -3159,6 +3172,8 @@ def maybe_evaluate(
             **eval_reward_metrics,
             **eval_pass_at_k_metrics,
         }
+        if valid_rewards.any():
+            eval_metrics["eval/scores"] = scores[valid_rewards].mean()
 
         total_tokens = (
             eval_result.token_statistics.num_prompt_tokens + eval_result.token_statistics.num_response_tokens
@@ -3171,7 +3186,7 @@ def maybe_evaluate(
         table["prompt"] = tokenizer.batch_decode(eval_batch.queries if eval_batch else [])
         table["response"] = eval_batch.decoded_responses
         table["response"] = [item.replace(tokenizer.pad_token, "") for item in table["response"]]
-        table["scores"] = eval_batch.scores
+        table["scores"] = [score if valid else None for score, valid in zip(eval_batch.scores, valid_rewards)]
         table["ground_truth"] = eval_batch.ground_truths if eval_batch else []
         if eval_batch.active_tools is not None:
             table["active_tools"] = [str(tools) if tools is not None else "all" for tools in eval_batch.active_tools]

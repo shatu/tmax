@@ -19,6 +19,7 @@ Key properties (matching the reference solver):
 import asyncio
 import contextlib
 import io
+import math
 import os
 import random
 import re
@@ -646,8 +647,37 @@ class SWERLVanilluxSandboxEnv(RLEnvironment):
                 f"No test.sh found in test data for task {self._task_id}. /tests listing: {ls.stdout!r}"
             )
 
-        result = self._backend.run_command("bash /tests/test.sh", timeout=self._test_timeout)
+        status_path = f"/tmp/.vanillux_verifier_exit.{uuid.uuid4().hex}"
+        verifier_command = (
+            f'bash /tests/test.sh; status=$?; printf \'%s\' "$status" > {shlex.quote(status_path)}; exit "$status"'
+        )
+        result = self._backend.run_command(verifier_command, timeout=self._test_timeout)
+        completion = self._backend.run_command(
+            f"if [ -f {shlex.quote(status_path)} ]; then cat {shlex.quote(status_path)}; "
+            f"rm -f {shlex.quote(status_path)}; fi"
+        )
+        if completion.exit_code != 0:
+            raise RuntimeError("Could not inspect verifier completion status")
         reward = self._parse_reward()
+        verifier_timed_out = result.exit_code == 124 and not completion.stdout.strip()
+        if verifier_timed_out:
+            return StepResult(
+                result="Verifier exceeded its time budget.",
+                reward=0.0 if reward is None else reward,
+                done=True,
+                metadata={"timeout": True, "exit_code": 124, "task_id": self._task_id},
+            )
+        if reward is None:
+            return StepResult(
+                result="Verifier did not produce a finite reward in [0, 1].",
+                reward=0.0,
+                done=True,
+                metadata={
+                    "invalid_reward": True,
+                    "error": "Missing or invalid verifier reward",
+                    "task_id": self._task_id,
+                },
+            )
 
         stdout = truncate_observation(result.stdout) if result.stdout else ""
         stderr = truncate_observation(result.stderr) if result.stderr else ""
@@ -661,19 +691,19 @@ class SWERLVanilluxSandboxEnv(RLEnvironment):
 
         return StepResult(result=observation, reward=reward, done=True)
 
-    def _parse_reward(self) -> float:
-        """Parse reward from /logs/verifier/reward.txt. Returns 0.0 if not found."""
+    def _parse_reward(self) -> float | None:
+        """Return a valid score, or None when there is no usable measurement."""
         assert self._backend is not None
 
         try:
             reward_result = self._backend.run_command("cat /logs/verifier/reward.txt")
             if reward_result.exit_code == 0 and reward_result.stdout.strip():
                 reward = float(reward_result.stdout.strip())
-                return max(0.0, min(1.0, reward))
+                return reward if math.isfinite(reward) and 0.0 <= reward <= 1.0 else None
         except (ValueError, TypeError):
             pass
 
-        return 0.0
+        return None
 
     def get_metrics(self) -> dict[str, float]:
         return {"step_count": float(self._step_count)}

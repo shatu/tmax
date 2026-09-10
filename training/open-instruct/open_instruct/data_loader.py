@@ -861,9 +861,19 @@ class BatchStatistics:
     total_prompts: int
 
 
+def rollout_reward_is_valid(state: dict) -> bool:
+    info = state.get("info", {})
+    return not (info.get("invalid_reward") or info.get("infrastructure_failure"))
+
+
 def compute_group_advantages(
-    scores: np.ndarray, num_samples_per_prompt: int, advantage_normalization_type: str
+    scores: np.ndarray,
+    num_samples_per_prompt: int,
+    advantage_normalization_type: str,
+    valid_mask: np.ndarray | None = None,
 ) -> np.ndarray:
+    # Keep original positions until packing so rollout IDs still identify their
+    # prompt. Invalid siblings contribute neither to group statistics nor loss.
     if num_samples_per_prompt <= 0:
         raise ValueError(f"num_samples_per_prompt must be positive, got {num_samples_per_prompt}.")
     scores = np.asarray(scores)
@@ -874,24 +884,26 @@ def compute_group_advantages(
 
     score_dtype = np.result_type(scores.dtype, np.float32)
     scores_per_prompt = scores.astype(score_dtype, copy=False).reshape(-1, num_samples_per_prompt)
-    mean_grouped_rewards = scores_per_prompt.mean(axis=-1, keepdims=True)
+    valid = np.ones(scores.shape, dtype=bool) if valid_mask is None else np.asarray(valid_mask, dtype=bool)
+    if valid.shape != scores.shape:
+        raise ValueError("Reward validity mask must match scores")
+    valid = valid.reshape(scores_per_prompt.shape)
+    counts = valid.sum(axis=-1, keepdims=True)
+    denominator = np.maximum(counts, 1)
+    mean_grouped_rewards = np.where(valid, scores_per_prompt, 0).sum(axis=-1, keepdims=True) / denominator
+    centered = np.where(valid, scores_per_prompt - mean_grouped_rewards, 0)
 
     if advantage_normalization_type == "standard":
-        std_grouped_rewards = scores_per_prompt.std(axis=-1, keepdims=True)
-        advantages = (scores_per_prompt - mean_grouped_rewards) / (std_grouped_rewards + 1e-8)
+        std_grouped_rewards = np.sqrt((centered**2).sum(axis=-1, keepdims=True) / denominator)
+        advantages = centered / (std_grouped_rewards + 1e-8)
     elif advantage_normalization_type == "centered":
-        advantages = scores_per_prompt - mean_grouped_rewards
+        advantages = centered
     elif advantage_normalization_type == "maxrl":
         advantages = np.zeros_like(scores_per_prompt, dtype=score_dtype)
-        np.divide(
-            scores_per_prompt - mean_grouped_rewards,
-            mean_grouped_rewards,
-            out=advantages,
-            where=mean_grouped_rewards > 0.0,
-        )
+        np.divide(centered, mean_grouped_rewards, out=advantages, where=mean_grouped_rewards > 0.0)
     else:
         raise ValueError(f"Invalid advantage normalization type: {advantage_normalization_type}")
-    return advantages.reshape(-1)
+    return np.where(valid & (counts >= 2), advantages, 0).astype(score_dtype).reshape(-1)
 
 
 def single_example_collator(examples: list[dict[str, Any]]) -> dict[str, Any]:
@@ -942,7 +954,7 @@ def _aggregate_env_metrics(rollout_states: list[dict]) -> dict[str, float]:
         ename = info.get("env_name", "unknown")
         bucket = env_metrics.setdefault(ename, {})
         for k, v in info.items():
-            if k != "env_name" and isinstance(v, (int, float)):
+            if k != "env_name" and isinstance(v, int | float):
                 bucket.setdefault(k, []).append(float(v))
 
     return {
@@ -1012,6 +1024,7 @@ def accumulate_inference_batches(
     run_name: str | None = None,
     replenish_accepted_prompts: bool = True,
     population_metrics: population_reward_metrics.PopulationRewardMetrics | None = None,
+    min_valid_group_size: int = 2,
 ) -> (
     tuple[data_types.GenerationResult, Batch, dict, BatchStatistics]
     | tuple[data_types.ShutdownSentinel | None, None, None, None]
@@ -1161,14 +1174,32 @@ def accumulate_inference_batches(
 
         # Count every fresh sampled group, including those about to be removed
         # for zero variance. Their per-completion lengths are unavailable later.
+        states = result.request_info.rollout_states
+        invalid_rewards = [not rollout_reward_is_valid(state) for state in states]
+        if len(invalid_rewards) != len(result.responses):
+            raise ValueError("Rollout validity metadata does not match completion count")
+        valid_indices = [i for i, invalid in enumerate(invalid_rewards) if not invalid]
         if population_metrics is not None:
             assert result.reward_scores is not None
             population_metrics.add_group(
-                result.reward_scores, result.finish_reasons, [len(response) for response in result.responses]
+                [result.reward_scores[i] for i in valid_indices],
+                [result.finish_reasons[i] for i in valid_indices],
+                [len(result.responses[i]) for i in valid_indices],
             )
 
-        percent_solved = np.mean(result.reward_scores).item() / max_possible_score
-        if no_resampling_pass_rate is not None and percent_solved >= no_resampling_pass_rate:
+        valid_rewards = [result.reward_scores[i] for i in valid_indices]
+        if any(invalid_rewards) and len(valid_rewards) < min_valid_group_size:
+            logger.warning("Dropping group with insufficient scored rollouts: %s", result.prompt_id)
+            if replenish_prompts and not replenish_accepted_prompts:
+                enqueue_next_prompt()
+            continue
+
+        percent_solved = np.mean(valid_rewards).item() / max_possible_score if valid_rewards else None
+        if (
+            no_resampling_pass_rate is not None
+            and percent_solved is not None
+            and percent_solved >= no_resampling_pass_rate
+        ):
             assert iter_dataloader is not None
             iter_dataloader.exclude_index(result.index)
             total_no_resampled += 1
@@ -1176,7 +1207,7 @@ def accumulate_inference_batches(
                 f"[Data Preparation Thread] Prompt solved at {percent_solved}, will be excluded from resampling, total no resampled: {total_no_resampled}"
             )
 
-        if filter_zero_std_samples and np.std(result.reward_scores) == 0:
+        if filter_zero_std_samples and valid_rewards and np.std(valid_rewards) == 0:
             if not active_sampling:
                 num_prompts_sampled += 1
                 progress_bar.update(1)
@@ -1204,9 +1235,9 @@ def accumulate_inference_batches(
                 )
 
             total_filtered_prompts += 1
-            if result.reward_scores[0] == 0:
+            if valid_rewards[0] == 0:
                 filtered_prompt_zero += 1
-            elif result.reward_scores[0] >= max_possible_score - 1e-8:
+            elif valid_rewards[0] >= max_possible_score - 1e-8:
                 filtered_prompt_solved += 1
             else:
                 filtered_prompt_nonzero += 1
@@ -1231,7 +1262,8 @@ def accumulate_inference_batches(
         all_decoded_responses.extend(decoded_responses)
         all_scores.extend(result.reward_scores)
         all_reward_metrics.append(result.reward_metrics)
-        all_percent_solved.append(percent_solved)
+        if percent_solved is not None:
+            all_percent_solved.append(percent_solved)
         if result.model_step is not None:
             all_model_steps.append(result.model_step)
 
@@ -1334,7 +1366,14 @@ def accumulate_inference_batches(
         active_tools=all_active_tools if all_active_tools else None,
     )
 
-    combined_reward_metrics = combine_reward_metrics(all_reward_metrics)
+    # These upstream means include every sibling and cannot be corrected after
+    # aggregation. Omit the entire batch's diagnostics rather than silently
+    # reporting a different population made up only of complete groups.
+    if all(rollout_reward_is_valid(state) for state in combined_rollout_states):
+        combined_reward_metrics = combine_reward_metrics(all_reward_metrics)
+    else:
+        combined_reward_metrics = {}
+        logger.warning("Batch has unscored rollouts; omitting aggregated reward diagnostics.")
     combined_reward_metrics["stale_results_dropped"] = float(stale_results_dropped)
     if all_model_steps:
         model_steps_array = np.array(all_model_steps, dtype=float)
@@ -1724,6 +1763,7 @@ class DataPreparationActor:
 
             scores = np.array(batch.scores)
             raw_scores = scores.copy()
+            valid_rewards = np.array([rollout_reward_is_valid(s) for s in result.request_info.rollout_states])
 
             concave_length_metrics: dict[str, Any] = {}
             if self.config.add_concave_length_penalty and len(scores) > 0:
@@ -1741,7 +1781,8 @@ class DataPreparationActor:
                 )
                 scores = scores - concave_length_penalties
 
-                solved_mask_raw = raw_scores >= (self.config.max_possible_score - 1e-8)
+                solved_mask_raw = valid_rewards & (raw_scores >= (self.config.max_possible_score - 1e-8))
+                unsolved_mask_raw = valid_rewards & ~solved_mask_raw
                 concave_length_metrics = {
                     "concave_length_penalty/x_mean": float(concave_length_x.mean()),
                     "concave_length_penalty/x_max": float(concave_length_x.max()),
@@ -1751,8 +1792,8 @@ class DataPreparationActor:
                     "concave_length_penalty/penalty_max": float(concave_length_penalties.max()),
                     "concave_length_penalty/penalty_min": float(concave_length_penalties.min()),
                     "concave_length_penalty/penalty_hist": concave_length_penalties,
-                    "concave_length_penalty/shaped_score_mean": float(scores.mean()),
-                    "concave_length_penalty/raw_score_mean": float(raw_scores.mean()),
+                    "concave_length_penalty/shaped_score_mean": float(scores[valid_rewards].mean()),
+                    "concave_length_penalty/raw_score_mean": float(raw_scores[valid_rewards].mean()),
                 }
                 if solved_mask_raw.any():
                     concave_length_metrics["concave_length_penalty/penalty_solved_mean"] = float(
@@ -1761,9 +1802,9 @@ class DataPreparationActor:
                     concave_length_metrics["concave_length_penalty/penalty_solved_max"] = float(
                         concave_length_penalties[solved_mask_raw].max()
                     )
-                if (~solved_mask_raw).any():
+                if unsolved_mask_raw.any():
                     concave_length_metrics["concave_length_penalty/penalty_unsolved_mean"] = float(
-                        concave_length_penalties[~solved_mask_raw].mean()
+                        concave_length_penalties[unsolved_mask_raw].mean()
                     )
 
                 # Within-group spread of penalties among solved rollouts — measures the
@@ -1790,6 +1831,7 @@ class DataPreparationActor:
                 scores=scores,
                 num_samples_per_prompt=self.config.num_samples_per_prompt_rollout,
                 advantage_normalization_type=self.config.advantage_normalization_type,
+                valid_mask=valid_rewards,
             )
 
             if self.config.save_traces and self.config.rollouts_save_path:
@@ -1846,11 +1888,18 @@ class DataPreparationActor:
             num_unmasked_non_submitting_completion = 0
             non_submitting_idxes_set = set(non_submitting_idxes)
 
-            do_mask_filter = self.config.mask_truncated_completions or self.config.mask_non_submitting_completions
+            invalid_reward_idxes = set(np.flatnonzero(~valid_rewards))
+            do_mask_filter = (
+                self.config.mask_truncated_completions
+                or self.config.mask_non_submitting_completions
+                or bool(invalid_reward_idxes)
+            )
             if do_mask_filter:
-                truncated_drop_idxes = set(truncated_idxes) if self.config.mask_truncated_completions else set()
+                mandatory_drop_idxes = invalid_reward_idxes | (
+                    set(truncated_idxes) if self.config.mask_truncated_completions else set()
+                )
                 non_submitting_drop_idxes = (
-                    [i for i in non_submitting_idxes if i not in truncated_drop_idxes]
+                    [i for i in non_submitting_idxes if i not in mandatory_drop_idxes]
                     if self.config.mask_non_submitting_completions
                     else []
                 )
@@ -1859,7 +1908,7 @@ class DataPreparationActor:
                     submitting_keep_count = sum(
                         1
                         for i in range(num_before_filter)
-                        if i not in truncated_drop_idxes and i not in non_submitting_idxes_set
+                        if i not in mandatory_drop_idxes and i not in non_submitting_idxes_set
                     )
                     unmasked_non_submitting_idxes = _sample_non_submitting_unmask_idxes(
                         submitting_count=submitting_keep_count,
@@ -1869,7 +1918,7 @@ class DataPreparationActor:
                     )
                     num_unmasked_non_submitting_completion = len(unmasked_non_submitting_idxes)
 
-                drop_idxes = truncated_drop_idxes | (set(non_submitting_drop_idxes) - unmasked_non_submitting_idxes)
+                drop_idxes = mandatory_drop_idxes | (set(non_submitting_drop_idxes) - unmasked_non_submitting_idxes)
                 keep_idxes_list = [i for i in range(num_before_filter) if i not in drop_idxes]
                 num_dropped = num_before_filter - len(keep_idxes_list)
                 if num_dropped > 0:
@@ -1948,7 +1997,9 @@ class DataPreparationActor:
                     "unsolved_batch_size_ratio": unsolved_num_responses / real_num_responses,
                     "packed_ratio": len(packed_sequences.query_responses) / real_num_responses,
                     "val/solve_rate_hist": batch_stats.percent_solved_hist,
-                    "val/total_reward_groups": real_num_responses / self.config.num_samples_per_prompt_rollout,
+                    "val/total_reward_groups": len(
+                        {i // self.config.num_samples_per_prompt_rollout for i in rollout_sample_ids}
+                    ),
                     "val/sequence_lengths": sequence_lengths.mean(),
                     "val/sequence_lengths_min": sequence_lengths.min(),
                     "val/sequence_lengths_max": sequence_lengths.max(),
