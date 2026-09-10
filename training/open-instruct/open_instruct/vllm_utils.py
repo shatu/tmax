@@ -1525,7 +1525,12 @@ async def process_request(actor: LLMRayActor, sub_request_id: str, sampling_para
             rollout.info["env_metrics"] = env_metrics
         for pooled_env_name, (pool, acq_actor) in pool_setup.acquired.items():
             if pooled_env_name in dead_env_names:
-                pool.discard.remote(acq_actor, "actor died or command completion could not be confirmed")
+                # Observe replacement failure instead of silently shrinking the
+                # pool. Keep a bound even if replacement actor setup hangs.
+                await asyncio.wait_for(
+                    pool.discard.remote(acq_actor, "actor died or command completion could not be confirmed"),
+                    timeout=60,
+                )
             else:
                 pool.release.remote(acq_actor)
         add_timing("env_metrics_and_release", phase_start_time)

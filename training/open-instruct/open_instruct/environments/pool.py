@@ -212,14 +212,6 @@ class EnvironmentPool:
                 # a silent capacity leak. Discard it (kill + deregister) and spawn a
                 # replacement off-loop so pool capacity stays stable across failures.
                 await self._discard_actor(actor, reason=f"reset failure: {e}")
-                try:
-                    loop = asyncio.get_running_loop()
-                    replacement = await loop.run_in_executor(None, self._create_actor_batch, 1, 2)
-                    for new_actor in replacement:
-                        self._actors.append(new_actor)
-                        await self._available.put(new_actor)
-                except Exception as create_error:
-                    logger.warning("Failed to create replacement environment actor: %s", create_error)
             raise
         return actor, target_tools
 
@@ -249,6 +241,8 @@ class EnvironmentPool:
 
     async def _discard_actor(self, actor: ray.actor.ActorHandle, reason: str = "") -> None:
         actor_key = _actor_key(actor)
+        if not any(_actor_key(candidate) == actor_key for candidate in self._actors):
+            return
         host = self._actor_host_leases.pop(actor_key, None)
         if host is not None:
             self._release_host(host)
@@ -264,6 +258,14 @@ class EnvironmentPool:
             len(self._actors),
             self._available.qsize(),
         )
+        # Every discard path must restore capacity, not only failed resets.
+        # Remove the old actor before yielding so duplicate discards cannot
+        # create multiple replacements. Setup failures remain visible.
+        loop = asyncio.get_running_loop()
+        replacement = await loop.run_in_executor(None, self._create_actor_batch, 1, 2)
+        for new_actor in replacement:
+            self._actors.append(new_actor)
+            self._available.put_nowait(new_actor)
 
     async def _reset_actor(self, actor: ray.actor.ActorHandle, reset_kwargs: dict[str, Any]) -> list[dict]:
         if not self._docker_hosts:

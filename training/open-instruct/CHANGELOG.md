@@ -4,9 +4,10 @@ All notable changes to this project will be documented in this file.
 
 
 ### Changed
-- Draft explicit Vanillux reward validity/filtering and command-scoped training cancellation; pending full timeout-path validation (https://github.com/hamishivi/tmax-private/pull/10).
+- Make Vanillux reward validity/filtering explicit and use command-scoped training cancellation with Sandfleet 0.7.3 (https://github.com/hamishivi/tmax-private/pull/10).
 - Keep scored siblings of invalid rollouts: use valid-only group advantages and remove invalid completions before packing, preserving original prompt IDs (https://github.com/hamishivi/tmax-private/pull/10).
 - Correct evaluation coverage for invalid rewards; preserve timeout scores and worker-loss errors, and drain or quarantine timed-out actors before reuse (https://github.com/hamishivi/tmax-private/pull/10).
+- Replenish discarded environment actors across all failure paths without duplicate replacements, and surface replacement setup failures (https://github.com/hamishivi/tmax-private/pull/10).
 - Exclude per-exec fakeroot keys from GenericSandbox saved shell state while retaining user exports and cwd (https://github.com/hamishivi/tmax-private/pull/9).
 - Exclude per-exec fakeroot connection keys from Vanillux training and evaluation persisted shell state; retain cwd and user exports (https://github.com/hamishivi/tmax-private/pull/6).
 - Align Vanillux training and evaluation shell persistence, cancellation, timeout classification, first-call dispatch, and format-error recovery within the normal turn budget (https://github.com/hamishivi/tmax-private/pull/5).

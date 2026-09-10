@@ -954,7 +954,7 @@ def _aggregate_env_metrics(rollout_states: list[dict]) -> dict[str, float]:
         ename = info.get("env_name", "unknown")
         bucket = env_metrics.setdefault(ename, {})
         for k, v in info.items():
-            if k != "env_name" and isinstance(v, (int, float)):
+            if k != "env_name" and isinstance(v, int | float):
                 bucket.setdefault(k, []).append(float(v))
 
     return {
