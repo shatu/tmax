@@ -5,6 +5,11 @@ retroactive reclassification of model scores. Start with the complete upstream
 TB-Lite task directories at `f075e463` (including environment, solution, tests,
 instruction.md, and task.toml). Do not stage a repaired application in an image.
 
+Original source: [open-thoughts/OpenThoughts-TBLite at
+f075e463472c7790b85793b392dff1fff20cc0e3](https://github.com/open-thoughts/OpenThoughts-TBLite/tree/f075e463472c7790b85793b392dff1fff20cc0e3).
+Check out that exact commit in a fresh clone and use its repository root as
+`TBLITE_SOURCE`; do not use already-modified campaign task directories.
+
 ## Reproduce the images and bootstrap variants
 
 From this directory, set `TBLITE_SOURCE` to the pinned upstream task root:
@@ -143,7 +148,7 @@ runtime artifacts; local project outputs must still be rebuilt during evaluation
   `966e5f988ca03a2b1117016a2dabe25c2d01d7e7680712f01410b59f9a43e426`.
   Pool deleted, worker terminal CANCELLED, driver COMPLETED, queue empty and
   all three temporary role-token files removed.
-- **ACL:** remains with Rulin's backend/permissions investigation.
+- **ACL:** explicitly deferred and excluded from this repair/backfill scope.
 
 New image builds can resolve unpinned transitive versions differently. Retain
 image digests, dependency inventories and original task hashes for every run;
