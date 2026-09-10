@@ -80,5 +80,12 @@ class RewardValidityTest(unittest.TestCase):
         result = self.run_verifier(124, "124", "")
         self.assertTrue(result.metadata["invalid_reward"])
 
+    def test_timeout_preserves_valid_verifier_reward(self):
+        for reward in ("0", ".625", "1"):
+            with self.subTest(reward=reward):
+                result = self.run_verifier(124, "", reward)
+                self.assertTrue(result.metadata["timeout"])
+                self.assertEqual(result.reward, float(reward))
+
     def test_fractional_reward_survives_nonzero_exit(self):
         self.assertEqual(self.run_verifier(1, "1", ".625").reward, 0.625)

@@ -41,7 +41,8 @@ class RewardFilteringTest(unittest.TestCase):
         end = next(
             i
             for i in range(start, len(loop.body))
-            if isinstance(loop.body[i], ast.If) and "len(valid_rewards) < 2" in ast.unparse(loop.body[i].test)
+            if isinstance(loop.body[i], ast.If)
+            and "len(valid_rewards) < min_valid_group_size" in ast.unparse(loop.body[i].test)
         )
         body = loop.body[start : end + 1] + ast.parse("accepted.append(result)").body
         replay = ast.For(
@@ -66,6 +67,7 @@ class RewardFilteringTest(unittest.TestCase):
             "accepted": [],
             "population_metrics": metrics,
             "logger": Mock(),
+            "min_valid_group_size": 2,
             "replenish_prompts": True,
             "replenish_accepted_prompts": False,
             "enqueue_next_prompt": Mock(),
@@ -179,3 +181,42 @@ class RewardFilteringTest(unittest.TestCase):
             self.assertEqual(value, kept)
         # The second prompt remains prompt 1 despite the missing first sibling.
         self.assertEqual([i // 4 for i in namespace["rollout_sample_ids"]], [0, 0, 0, 1, 1, 1])
+
+    def test_reward_diagnostics_ignore_invalid_placeholders(self):
+        path = Path(__file__).parents[1] / "open_instruct/data_loader.py"
+        tree = ast.parse(path.read_text())
+        block = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.If)
+            and ast.unparse(node.test) == "self.config.add_concave_length_penalty and len(scores) > 0"
+        )
+        start = next(
+            i
+            for i, node in enumerate(block.body)
+            if isinstance(node, ast.Assign) and ast.unparse(node.targets[0]) == "solved_mask_raw"
+        )
+        namespace = dict(
+            np=np,
+            self=SimpleNamespace(config=SimpleNamespace(max_possible_score=1, num_samples_per_prompt_rollout=3)),
+            valid_rewards=np.array([True, False, True]),
+            raw_scores=np.array([1.0, 0.0, 0.5]),
+            scores=np.array([0.8, -999.0, 0.4]),
+            concave_length_penalties=np.array([0.2, 999.0, 0.1]),
+            concave_length_x=np.ones(3),
+        )
+        exec(compile(ast.Module(body=block.body[start:], type_ignores=[]), str(path), "exec"), namespace)
+        metrics = namespace["concave_length_metrics"]
+        self.assertAlmostEqual(metrics["concave_length_penalty/raw_score_mean"], 0.75)
+        self.assertAlmostEqual(metrics["concave_length_penalty/shaped_score_mean"], 0.6)
+        self.assertAlmostEqual(metrics["concave_length_penalty/penalty_unsolved_mean"], 0.1)
+
+        group_count = next(
+            value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Dict)
+            for key, value in zip(node.keys, node.values)
+            if isinstance(key, ast.Constant) and key.value == "val/total_reward_groups"
+        )
+        namespace["rollout_sample_ids"] = [0, 2, 3, 4]
+        self.assertEqual(eval(compile(ast.Expression(group_count), str(path), "eval"), namespace), 2)

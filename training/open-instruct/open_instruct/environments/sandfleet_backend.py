@@ -314,19 +314,28 @@ class SandfleetBackend(SandboxBackend):
         except BaseException as error:
             # A failed/interrupted client request must not leave this command
             # executing. The separate control route bypasses the exec lock.
-            cancellation = self._request(
-                self._agent_url,
-                f"/{_API_VERSION}/leases/{self._lease_id}/exec-cancel",
-                token=self._lease_token,
-                method="POST",
-                payload={"command_id": command_id},
-                timeout=30,
-                retry=False,
-            )
-            if cancellation.get("error") or cancellation["state"] not in {"pending", "running", "already_finished"}:
-                raise RuntimeError(f"Command cancellation failed: {cancellation}") from error
-            if cancellation["state"] == "running" and not cancellation["interrupted"]:
-                raise RuntimeError("Sandfleet could not interrupt the command") from error
+            try:
+                cancellation = self._request(
+                    self._agent_url,
+                    f"/{_API_VERSION}/leases/{self._lease_id}/exec-cancel",
+                    token=self._lease_token,
+                    method="POST",
+                    payload={"command_id": command_id},
+                    timeout=30,
+                    retry=False,
+                )
+                if cancellation.get("error") or cancellation["state"] not in {
+                    "pending",
+                    "running",
+                    "already_finished",
+                }:
+                    raise RuntimeError(f"Command cancellation failed: {cancellation}")
+                if cancellation["state"] == "running" and not cancellation["interrupted"]:
+                    raise RuntimeError("Sandfleet could not interrupt the command")
+            except Exception as cancel_error:
+                # Keep typed worker-loss/OOM exceptions visible to the environment;
+                # cancellation commonly fails because that same worker is gone.
+                error.add_note(f"Sandfleet command cancellation also failed: {cancel_error}")
             raise
         return ExecutionResult(
             stdout=str(result["stdout"]), stderr=str(result["stderr"]), exit_code=int(result["exit_code"])

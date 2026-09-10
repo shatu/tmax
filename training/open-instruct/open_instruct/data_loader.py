@@ -1024,6 +1024,7 @@ def accumulate_inference_batches(
     run_name: str | None = None,
     replenish_accepted_prompts: bool = True,
     population_metrics: population_reward_metrics.PopulationRewardMetrics | None = None,
+    min_valid_group_size: int = 2,
 ) -> (
     tuple[data_types.GenerationResult, Batch, dict, BatchStatistics]
     | tuple[data_types.ShutdownSentinel | None, None, None, None]
@@ -1187,14 +1188,18 @@ def accumulate_inference_batches(
             )
 
         valid_rewards = [result.reward_scores[i] for i in valid_indices]
-        if any(invalid_rewards) and len(valid_rewards) < 2:
-            logger.warning("Dropping group with fewer than two scored rollouts: %s", result.prompt_id)
+        if any(invalid_rewards) and len(valid_rewards) < min_valid_group_size:
+            logger.warning("Dropping group with insufficient scored rollouts: %s", result.prompt_id)
             if replenish_prompts and not replenish_accepted_prompts:
                 enqueue_next_prompt()
             continue
 
-        percent_solved = np.mean(valid_rewards).item() / max_possible_score
-        if no_resampling_pass_rate is not None and percent_solved >= no_resampling_pass_rate:
+        percent_solved = np.mean(valid_rewards).item() / max_possible_score if valid_rewards else None
+        if (
+            no_resampling_pass_rate is not None
+            and percent_solved is not None
+            and percent_solved >= no_resampling_pass_rate
+        ):
             assert iter_dataloader is not None
             iter_dataloader.exclude_index(result.index)
             total_no_resampled += 1
@@ -1202,7 +1207,7 @@ def accumulate_inference_batches(
                 f"[Data Preparation Thread] Prompt solved at {percent_solved}, will be excluded from resampling, total no resampled: {total_no_resampled}"
             )
 
-        if filter_zero_std_samples and np.std(valid_rewards) == 0:
+        if filter_zero_std_samples and valid_rewards and np.std(valid_rewards) == 0:
             if not active_sampling:
                 num_prompts_sampled += 1
                 progress_bar.update(1)
@@ -1257,7 +1262,8 @@ def accumulate_inference_batches(
         all_decoded_responses.extend(decoded_responses)
         all_scores.extend(result.reward_scores)
         all_reward_metrics.append(result.reward_metrics)
-        all_percent_solved.append(percent_solved)
+        if percent_solved is not None:
+            all_percent_solved.append(percent_solved)
         if result.model_step is not None:
             all_model_steps.append(result.model_step)
 
@@ -1768,7 +1774,8 @@ class DataPreparationActor:
                 )
                 scores = scores - concave_length_penalties
 
-                solved_mask_raw = raw_scores >= (self.config.max_possible_score - 1e-8)
+                solved_mask_raw = valid_rewards & (raw_scores >= (self.config.max_possible_score - 1e-8))
+                unsolved_mask_raw = valid_rewards & ~solved_mask_raw
                 concave_length_metrics = {
                     "concave_length_penalty/x_mean": float(concave_length_x.mean()),
                     "concave_length_penalty/x_max": float(concave_length_x.max()),
@@ -1778,8 +1785,8 @@ class DataPreparationActor:
                     "concave_length_penalty/penalty_max": float(concave_length_penalties.max()),
                     "concave_length_penalty/penalty_min": float(concave_length_penalties.min()),
                     "concave_length_penalty/penalty_hist": concave_length_penalties,
-                    "concave_length_penalty/shaped_score_mean": float(scores.mean()),
-                    "concave_length_penalty/raw_score_mean": float(raw_scores.mean()),
+                    "concave_length_penalty/shaped_score_mean": float(scores[valid_rewards].mean()),
+                    "concave_length_penalty/raw_score_mean": float(raw_scores[valid_rewards].mean()),
                 }
                 if solved_mask_raw.any():
                     concave_length_metrics["concave_length_penalty/penalty_solved_mean"] = float(
@@ -1788,9 +1795,9 @@ class DataPreparationActor:
                     concave_length_metrics["concave_length_penalty/penalty_solved_max"] = float(
                         concave_length_penalties[solved_mask_raw].max()
                     )
-                if (~solved_mask_raw).any():
+                if unsolved_mask_raw.any():
                     concave_length_metrics["concave_length_penalty/penalty_unsolved_mean"] = float(
-                        concave_length_penalties[~solved_mask_raw].mean()
+                        concave_length_penalties[unsolved_mask_raw].mean()
                     )
 
                 # Within-group spread of penalties among solved rollouts — measures the
@@ -1798,7 +1805,7 @@ class DataPreparationActor:
                 k_per_group = self.config.num_samples_per_prompt_rollout
                 if len(concave_length_penalties) % k_per_group == 0 and k_per_group > 1:
                     pen_per_group = concave_length_penalties.reshape(-1, k_per_group)
-                    solved_per_group = (solved_mask_raw & valid_rewards).reshape(-1, k_per_group)
+                    solved_per_group = solved_mask_raw.reshape(-1, k_per_group)
                     group_gaps = []
                     for grp_pen, grp_solved in zip(pen_per_group, solved_per_group):
                         if int(grp_solved.sum()) >= 2:
@@ -1983,7 +1990,9 @@ class DataPreparationActor:
                     "unsolved_batch_size_ratio": unsolved_num_responses / real_num_responses,
                     "packed_ratio": len(packed_sequences.query_responses) / real_num_responses,
                     "val/solve_rate_hist": batch_stats.percent_solved_hist,
-                    "val/total_reward_groups": real_num_responses / self.config.num_samples_per_prompt_rollout,
+                    "val/total_reward_groups": len(
+                        {i // self.config.num_samples_per_prompt_rollout for i in rollout_sample_ids}
+                    ),
                     "val/sequence_lengths": sequence_lengths.mean(),
                     "val/sequence_lengths_min": sequence_lengths.min(),
                     "val/sequence_lengths_max": sequence_lengths.max(),

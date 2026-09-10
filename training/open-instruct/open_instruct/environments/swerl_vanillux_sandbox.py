@@ -658,14 +658,15 @@ class SWERLVanilluxSandboxEnv(RLEnvironment):
         )
         if completion.exit_code != 0:
             raise RuntimeError("Could not inspect verifier completion status")
-        if result.exit_code == 124 and not completion.stdout.strip():
+        reward = self._parse_reward()
+        verifier_timed_out = result.exit_code == 124 and not completion.stdout.strip()
+        if verifier_timed_out:
             return StepResult(
                 result="Verifier exceeded its time budget.",
-                reward=0.0,
+                reward=0.0 if reward is None else reward,
                 done=True,
                 metadata={"timeout": True, "exit_code": 124, "task_id": self._task_id},
             )
-        reward = self._parse_reward()
         if reward is None:
             return StepResult(
                 result="Verifier did not produce a finite reward in [0, 1].",

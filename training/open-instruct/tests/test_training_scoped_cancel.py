@@ -43,5 +43,18 @@ class ScopedCancelTest(unittest.TestCase):
     def test_failed_cancel_is_not_silently_accepted(self):
         self.backend._agent_request.side_effect = ConnectionError("lost response")
         self.backend._request.return_value = {"state": "running", "interrupted": False}
-        with self.assertRaisesRegex(RuntimeError, "could not interrupt"):
+        with self.assertRaisesRegex(ConnectionError, "lost response") as raised:
             self.backend.run_command("sleep 60")
+        self.assertIn("could not interrupt", raised.exception.__notes__[0])
+
+    def test_lost_worker_error_survives_unreachable_cancel_route(self):
+        class LostWorkerError(RuntimeError):
+            pass
+
+        original = LostWorkerError("worker disappeared")
+        self.backend._agent_request.side_effect = original
+        self.backend._request.side_effect = ConnectionError("agent unreachable")
+        with self.assertRaises(LostWorkerError) as raised:
+            self.backend.run_command("sleep 60")
+        self.assertIs(raised.exception, original)
+        self.assertIn("agent unreachable", original.__notes__[0])
