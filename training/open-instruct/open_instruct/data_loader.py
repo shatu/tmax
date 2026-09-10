@@ -1366,7 +1366,14 @@ def accumulate_inference_batches(
         active_tools=all_active_tools if all_active_tools else None,
     )
 
-    combined_reward_metrics = combine_reward_metrics(all_reward_metrics)
+    # These upstream means include every sibling and cannot be corrected after
+    # aggregation. Omit the entire batch's diagnostics rather than silently
+    # reporting a different population made up only of complete groups.
+    if all(rollout_reward_is_valid(state) for state in combined_rollout_states):
+        combined_reward_metrics = combine_reward_metrics(all_reward_metrics)
+    else:
+        combined_reward_metrics = {}
+        logger.warning("Batch has unscored rollouts; omitting aggregated reward diagnostics.")
     combined_reward_metrics["stale_results_dropped"] = float(stale_results_dropped)
     if all_model_steps:
         model_steps_array = np.array(all_model_steps, dtype=float)

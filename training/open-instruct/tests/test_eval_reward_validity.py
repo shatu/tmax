@@ -24,7 +24,7 @@ def load_functions(filename, names, namespace):
 
 
 class EvalRewardValidityTest(unittest.TestCase):
-    def run_eval(self, groups):
+    def run_eval(self, groups, training_prefetch=None):
         queue = Queue()
         for index, (scores, valid) in enumerate(groups):
             n = len(scores)
@@ -93,9 +93,42 @@ class EvalRewardValidityTest(unittest.TestCase):
             print_rich_table=Mock(),
         )
         load_functions("data_loader.py", {"accumulate_inference_batches", "rollout_reward_is_valid"}, namespace)
+        accumulate = namespace["accumulate_inference_batches"]
+
+        def capture_accumulation(*args, **kwargs):
+            output = accumulate(*args, **kwargs)
+            self.accumulated_metrics = output[2]
+            return output
+
+        namespace["accumulate_inference_batches"] = capture_accumulation
         namespace["data_loader_lib"] = SimpleNamespace(rollout_reward_is_valid=namespace["rollout_reward_is_valid"])
         load_functions("grpo_fast.py", {"maybe_evaluate"}, namespace)
         dataset = [{"query": [9], "truth": "", "source": "env", "prompt": "task"} for _ in groups]
+        if training_prefetch is not None:
+            enqueue = Mock()
+            namespace["add_prompt_to_generator"] = enqueue
+            loader = MagicMock(_epoch=0)
+            loader.__next__.return_value = dataset[0]
+            population = Mock()
+            output = accumulate(
+                queue,
+                SimpleNamespace(n=len(groups[0][0])),
+                num_prompts=2,
+                model_dims=None,
+                tokenizer=SimpleNamespace(batch_decode=lambda rows, **kwargs: ["response"] * len(rows)),
+                dataset=dataset,
+                base_env_config=None,
+                timeout=0.01,
+                filter_zero_std_samples=True,
+                active_sampling=True,
+                replenish_prompts=True,
+                replenish_accepted_prompts=training_prefetch,
+                iter_dataloader=loader,
+                param_prompt_Q=Mock(),
+                population_metrics=population,
+            )
+            self.assertTrue(queue.empty())
+            return output, enqueue.call_count, population
         result = namespace["maybe_evaluate"](
             args=SimpleNamespace(num_training_steps=10, with_tracking=False),
             training_step=1,
@@ -134,3 +167,27 @@ class EvalRewardValidityTest(unittest.TestCase):
         self.assertEqual(metrics["eval/raw"], 0.5)
         self.assertEqual(table["scores"], [0.5, 1])
         pass_at_k.assert_called_once()
+
+    def test_mixed_batch_omits_upstream_means_but_keeps_bookkeeping(self):
+        self.run_eval([([0.5, 1, 0], [True, True, False]), ([0, 0.5, 1], [True, True, True])])
+        self.assertNotIn("raw", self.accumulated_metrics)
+        self.assertEqual(self.accumulated_metrics["stale_results_dropped"], 0)
+        self.assertEqual(self.accumulated_metrics["model_step_mean"], 0)
+
+    def test_complete_batch_preserves_upstream_diagnostics(self):
+        self.run_eval([([0.5, 1], [True, True])])
+        self.assertEqual(self.accumulated_metrics["raw"], 0.5)
+
+    def test_training_replenishes_sustained_invalid_groups(self):
+        invalid = ([0, 0, 0], [False, False, False])
+        partial = ([0, 999, 1], [True, False, True])
+        for prefetch in (False, True):
+            with self.subTest(prefetch=prefetch):
+                (result, batch, _, _), count, population = self.run_eval(
+                    [invalid] * 24 + [partial] * 2, training_prefetch=prefetch
+                )
+                self.assertEqual(count, 26 if prefetch else 24)
+                self.assertEqual(len(result.responses), 6)
+                self.assertEqual(batch.scores, [0, 999, 1] * 2)
+                self.assertEqual(population.add_group.call_count, 26)
+                self.assertEqual(population.add_group.call_args.args[0], [0, 1])
