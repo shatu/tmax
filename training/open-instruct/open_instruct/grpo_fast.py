@@ -868,25 +868,6 @@ class PolicyTrainerRayProcess(RayProcess):
         self.local_metrics["_token_count"] = token_counts.sum().item()
         self.local_metrics["lr"] = self.scheduler.get_last_lr()[0]
 
-    def _record_vllm_local_logprob_debug(
-        self, local_logprobs: torch.Tensor, vllm_logprobs: torch.Tensor, response_mask: torch.Tensor
-    ) -> None:
-        valid_mask = response_mask & ~torch.isnan(vllm_logprobs)
-        logprob_diff = (local_logprobs - vllm_logprobs).abs()
-        masked_diff = torch.masked_fill(logprob_diff, ~valid_mask, 0.0)
-        mean_diff = masked_diff.sum() / valid_mask.sum() if valid_mask.sum() > 0 else 0.0
-        max_diff = masked_diff.max()
-        std_diff = masked_diff[valid_mask].std() if valid_mask.sum() > 1 else 0.0
-
-        self.local_metrics["debug/vllm_vs_local_logprob_diff_mean"] = float(mean_diff)
-        self.local_metrics["debug/vllm_vs_local_logprob_diff_max"] = float(max_diff)
-        self.local_metrics["debug/vllm_vs_local_logprob_diff_std"] = float(std_diff)
-
-        reverse_kl = torch.exp(vllm_logprobs) * (vllm_logprobs - local_logprobs)
-        masked_reverse_kl = torch.masked_fill(reverse_kl, ~valid_mask, 0.0)
-        mean_reverse_kl = masked_reverse_kl.sum() / valid_mask.sum() if valid_mask.sum() > 0 else 0.0
-        self.local_metrics["debug/vllm_local_reverse_kl"] = float(mean_reverse_kl)
-
     def _compute_tiled_dapo_loss(
         self,
         query_responses: torch.Tensor,
@@ -961,6 +942,7 @@ class PolicyTrainerRayProcess(RayProcess):
             loss_fn=self.args.loss_fn,
             dppo_divergence_type=self.args.dppo_divergence_type,
             dppo_divergence_threshold=self.args.dppo_divergence_threshold,
+            dppo_ratio_cap=self.args.dppo_ratio_cap,
             tvpo_truncation_cap=self.args.tvpo_truncation_cap,
             loss_denominator=loss_denominator_mode,
             rollout_sample_ids=rollout_sample_ids,
@@ -1119,6 +1101,9 @@ class PolicyTrainerRayProcess(RayProcess):
         # This only needs to be done once since response_masks don't change across epochs
         token_counts_per_sample = torch.stack([mask[:, 1:].sum().float() for mask in data_BT.response_masks])
         device = token_counts_per_sample.device
+        policy_drift = grpo_utils.PolicyDriftAccumulator(
+            device=device, max_staleness=self.streaming_config.async_steps
+        )
         grad_norms: list[float] = []  # May include nan/inf values reported by DeepSpeed.
         value_loss_inputs: list[dict[str, torch.Tensor]] | None = None
         value_step_metrics: dict[str, float] = {}
@@ -1250,6 +1235,7 @@ class PolicyTrainerRayProcess(RayProcess):
                     if self.args.use_liger_grpo_loss:
                         vllm_logprobs_BT = grpo_utils.mask_logprobs(data_BT.vllm_logprobs[i][:, 1:], response_mask_BT)
                         tvpo_policy_freeze_mask_BT = None
+                        debug_dppo_mask_BT = None
                         with torch.no_grad():
                             debug_logprobs_BT, _ = grpo_utils.forward_for_logprobs(
                                 self.model,
@@ -1303,9 +1289,6 @@ class PolicyTrainerRayProcess(RayProcess):
                             sequence_tis_lower_masked += sequence_lower_masked
                             sequence_tis_upper_masked += sequence_upper_masked
                             sequence_tis_total += sequence_total
-                            self._record_vllm_local_logprob_debug(
-                                debug_logprobs_BT, vllm_logprobs_BT, response_mask_BT
-                            )
                             effective_tis_mask_BT = grpo_utils.combine_tis_terms(tis_mask_BT, sequence_tis_mask_BT)
                             combined_tis_BT = grpo_utils.combine_tis_terms(
                                 tis_clamped_BT, tis_mask_BT, sequence_tis_mask_BT
@@ -1348,6 +1331,26 @@ class PolicyTrainerRayProcess(RayProcess):
                                 tvpo_mask_total_tokens += response_mask_BT.sum()
                                 tvpo_tv_weighted_sum += (debug_tvpo_prompt_tv_BT * response_mask_BT).sum()
                                 tvpo_tv_weight += response_mask_BT.sum()
+                            logging_policy_weight_BT = grpo_utils.combine_tis_terms(
+                                combined_tis_BT, debug_dppo_mask_BT
+                            )
+                            policy_gradient_weights_BT = grpo_utils.compute_policy_gradient_weights(
+                                debug_logprobs_BT - old_logprob_BT,
+                                advantages_BT,
+                                self.args,
+                                policy_weight=logging_policy_weight_BT,
+                                policy_freeze_mask=tvpo_policy_freeze_mask_BT,
+                            )
+                            policy_drift.update(
+                                new_logprobs=debug_logprobs_BT,
+                                rollout_logprobs=vllm_logprobs_BT,
+                                response_mask=response_mask_BT,
+                                policy_gradient_weights=policy_gradient_weights_BT,
+                                model_steps=(
+                                    data_BT.model_steps[i][:, 1:] if data_BT.model_steps is not None else None
+                                ),
+                                training_step=training_step,
+                            )
                         is_accumulation_boundary = (local_step + 1) % accumulation_steps == 0
                         self.model.set_gradient_accumulation_boundary(is_accumulation_boundary)
                         leaky_enabled = getattr(self.args, "leaky_negative_momentum", False)
@@ -1443,9 +1446,6 @@ class PolicyTrainerRayProcess(RayProcess):
                     local_logprobs_BT = grpo_utils.mask_logprobs(local_logprobs_BT, response_mask_BT)
                     vllm_logprobs_BT = grpo_utils.mask_logprobs(data_BT.vllm_logprobs[i][:, 1:], response_mask_BT)
 
-                    with torch.no_grad():
-                        self._record_vllm_local_logprob_debug(local_logprobs_BT, vllm_logprobs_BT, response_mask_BT)
-
                     new_logprobs_BT = local_logprobs_BT
 
                     old_logprob_BT = grpo_utils.resolve_old_logprob(
@@ -1464,7 +1464,11 @@ class PolicyTrainerRayProcess(RayProcess):
                     # the trust-region anchor μ_θ' from Takeaway 2 in
                     # arXiv:2602.04879 without a separate code path.
                     logprobs_diff_BT = new_logprobs_BT - old_logprob_BT
-                    ratio_BT = torch.exp(logprobs_diff_BT)
+                    ratio_BT = (
+                        grpo_utils.compute_dppo_ratio(logprobs_diff_BT)
+                        if self.args.loss_fn == grpo_utils.GRPOLossType.dppo
+                        else torch.exp(logprobs_diff_BT)
+                    )
                     tis_clamped_BT, tis_unclamped_BT = grpo_utils.compute_tis_weights(
                         old_logprob_BT,
                         vllm_logprobs_BT,
@@ -1547,6 +1551,22 @@ class PolicyTrainerRayProcess(RayProcess):
                         with torch.no_grad():
                             tis_mask_kept_tokens += effective_tis_mask_BT.sum()
                             tis_mask_total_tokens += response_mask_BT.sum()
+
+                    policy_gradient_weights_BT = grpo_utils.compute_policy_gradient_weights(
+                        logprobs_diff_BT,
+                        advantages_BT,
+                        self.args,
+                        policy_weight=combined_tis_BT,
+                        policy_freeze_mask=tvpo_mask_BT,
+                    )
+                    policy_drift.update(
+                        new_logprobs=new_logprobs_BT,
+                        rollout_logprobs=vllm_logprobs_BT,
+                        response_mask=response_mask_BT,
+                        policy_gradient_weights=policy_gradient_weights_BT,
+                        model_steps=data_BT.model_steps[i][:, 1:] if data_BT.model_steps is not None else None,
+                        training_step=training_step,
+                    )
 
                     pg_losses_BT, pg_losses2_BT, pg_loss_max_BT, kl_BT = grpo_utils.compute_grpo_loss(
                         new_logprobs=new_logprobs_BT,
@@ -1652,6 +1672,8 @@ class PolicyTrainerRayProcess(RayProcess):
             batch_metrics = batch_data["metrics"]
             with torch.no_grad():
                 self._compute_loss_metrics(loss_stats_B, token_counts_per_sample)
+                for key, value in policy_drift.compute_metrics().items():
+                    self.local_metrics[key] = value
                 if tis_mask_enabled:
                     frac_kept = (
                         tis_mask_kept_tokens / tis_mask_total_tokens

@@ -5,6 +5,7 @@ import __future__
 import ast
 import dataclasses
 import enum
+import math
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Generic, TypeVar
@@ -19,6 +20,8 @@ def production_namespace():
     # dependencies, without importing vLLM/DeepSpeed/Ray on the test host.
     ns = dict(
         torch=torch,
+        math=math,
+        dist=torch.distributed,
         np=np,
         enum=enum,
         dataclasses=dataclasses,
@@ -42,6 +45,13 @@ def production_namespace():
             "GRPOLossType",
             "DPPODivergenceType",
             "compute_dppo_mask",
+            "compute_dppo_ratio",
+            "compute_dppo_policy_loss",
+            "compute_policy_gradient_weights",
+            "PolicyDriftAccumulator",
+            "_fixed_histogram",
+            "_histogram_quantile",
+            "_top_fraction_mass_share",
             "compute_binary_divergence",
             "compute_grpo_loss",
             "deepspeed_gradient_reduction_divisor",
@@ -57,6 +67,12 @@ def production_namespace():
     }
     for filename, names in definitions.items():
         path = Path(__file__).parents[1] / "open_instruct" / filename
+        tree = ast.parse(path.read_text())
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id.startswith("POLICY_") for t in node.targets
+            ):
+                exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), "exec"), ns)
         nodes = [
             n
             for n in ast.parse(path.read_text()).body

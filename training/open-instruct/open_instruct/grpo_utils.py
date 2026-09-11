@@ -320,6 +320,15 @@ class GRPOExperimentConfig(
     binary KL. We default to 0.1 as a moderately tighter middle-ground; bump
     closer to 0.15–0.2 for paper-faithful runs.
     """
+    dppo_ratio_cap: float = 10.0
+    """For DPPO: upper cap on the rollout importance ratio in the policy gradient.
+
+    Uses the Stable-RL reference implementation's REINFORCE-with-importance-
+    sampling form ``-A · min(π_θ/μ_θ', c).detach() · log π_θ``. This
+    preserves the uncapped DPPO gradient below ``c`` while bounding the influence
+    of extreme off-policy tokens. Set to 0 to recover the uncapped Eq. 11 loss.
+    Only used when ``loss_fn=dppo``.
+    """
     robust_momentum: bool = False
     """If True, use 'outlier-robust momentum' AdamW (spikiness-filtered, 1-backward). The current
     step uses the full gradient (spike still benefits this step); the STORED momentum accumulates a
@@ -516,6 +525,8 @@ class GRPOExperimentConfig(
                 raise ValueError(
                     f"DPPO requires `dppo_divergence_threshold` > 0 (got {self.dppo_divergence_threshold})."
                 )
+            if self.dppo_ratio_cap < 0.0:
+                raise ValueError(f"DPPO requires `dppo_ratio_cap` >= 0 (got {self.dppo_ratio_cap}).")
             # DPPO's trust region must be anchored on the rollout policy μ_θ'
             # (Takeaway 2 in arXiv:2602.04879). Forcing `use_vllm_logprobs=True`
             # ensures the cached `old_logprob` (and therefore the importance
@@ -907,6 +918,300 @@ def compute_dppo_mask(
     return mask, divergence
 
 
+POLICY_DRIFT_LOG_RATIO_LIMIT = 20.0
+POLICY_DRIFT_HISTOGRAM_BINS = 400
+POLICY_GRADIENT_LOG_WEIGHT_MIN = -30.0
+POLICY_GRADIENT_LOG_WEIGHT_MAX = 30.0
+
+
+def compute_policy_gradient_weights(
+    log_ratio: torch.Tensor,
+    advantages: torch.Tensor,
+    config: GRPOExperimentConfig,
+    policy_weight: torch.Tensor | None = None,
+    policy_freeze_mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Return the absolute per-token coefficient on ``grad(log pi)``.
+
+    This is a diagnostic proxy for which tokens dominate the policy-loss
+    gradient. It accounts for each supported loss's clipping behavior and any
+    externally supplied importance weights or masks, but intentionally excludes
+    the optional reference-policy KL term.
+    """
+    with torch.no_grad():
+        ratio = torch.exp(log_ratio.float().clamp(-POLICY_DRIFT_LOG_RATIO_LIMIT, POLICY_DRIFT_LOG_RATIO_LIMIT))
+        abs_advantages = advantages.float().abs()
+
+        if config.loss_fn == GRPOLossType.dapo:
+            clipped = ((advantages > 0) & (ratio > 1.0 + config.clip_higher)) | (
+                (advantages < 0) & (ratio < 1.0 - config.clip_lower)
+            )
+            effective_ratio = ratio * (~clipped)
+        elif config.loss_fn == GRPOLossType.cispo:
+            effective_ratio = ratio.clamp(max=1.0 + config.clip_higher)
+        elif config.loss_fn == GRPOLossType.dppo:
+            effective_ratio = ratio.clamp(max=config.dppo_ratio_cap) if config.dppo_ratio_cap > 0.0 else ratio
+        elif config.loss_fn == GRPOLossType.tvpo:
+            effective_ratio = ratio.clamp(max=config.tvpo_truncation_cap)
+        else:
+            raise ValueError(f"Invalid loss function: {config.loss_fn}")
+
+        weights = abs_advantages * effective_ratio
+        if policy_weight is not None:
+            weights = weights * policy_weight.float()
+        if policy_freeze_mask is not None:
+            weights = weights * policy_freeze_mask.float()
+        return torch.nan_to_num(weights, nan=0.0, posinf=math.exp(POLICY_GRADIENT_LOG_WEIGHT_MAX), neginf=0.0)
+
+
+def compute_dppo_ratio(log_ratio: torch.Tensor) -> torch.Tensor:
+    """Exponentiate DPPO's log-ratio with standard symmetric numerical bounds."""
+    return torch.exp(log_ratio.clamp(-POLICY_DRIFT_LOG_RATIO_LIMIT, POLICY_DRIFT_LOG_RATIO_LIMIT))
+
+
+def compute_dppo_policy_loss(
+    new_logprobs: torch.Tensor, ratio: torch.Tensor, advantages: torch.Tensor, ratio_cap: float
+) -> torch.Tensor:
+    """Compute DPPO's per-token policy loss, optionally capping its gradient.
+
+    The detached REINFORCE form has the same gradient as ``-A * ratio`` below
+    the cap and bounds the coefficient on ``grad(log pi)`` above it. The
+    ratio is expected to have the standard numerical ``[-20, 20]`` log-ratio
+    bounds applied before exponentiation. A non-positive cap recovers the
+    uncapped Eq. 11 surrogate for that numerically bounded ratio.
+    """
+    if ratio_cap <= 0.0:
+        return -advantages * ratio
+    capped_ratio = ratio.clamp(max=ratio_cap).detach()
+    return -advantages * capped_ratio * new_logprobs
+
+
+def _fixed_histogram(
+    values: torch.Tensor, bins: int, min_value: float, max_value: float, weights: torch.Tensor | None = None
+) -> torch.Tensor:
+    """Build a fixed-width float64 histogram without moving values off device."""
+    histogram = torch.zeros(bins, dtype=torch.float64, device=values.device)
+    if values.numel() == 0:
+        return histogram
+    values = values.float().clamp(min_value, max_value)
+    indices = ((values - min_value) * bins / (max_value - min_value)).floor().long().clamp(0, bins - 1)
+    bin_values = torch.ones_like(values, dtype=torch.float64) if weights is None else weights.to(dtype=torch.float64)
+    histogram.scatter_add_(0, indices, bin_values)
+    return histogram
+
+
+def _histogram_quantile(histogram: torch.Tensor, quantile: float, max_value: float) -> float:
+    """Approximate a non-negative quantile using the lower edge of its bin."""
+    total = float(histogram.sum())
+    if total <= 0.0:
+        return float("nan")
+    cumulative = histogram.cumsum(0)
+    target = quantile * total
+    index = int(
+        torch.searchsorted(cumulative, torch.tensor(target, device=histogram.device)).clamp_max(len(histogram) - 1)
+    )
+    return index * max_value / len(histogram)
+
+
+def _top_fraction_mass_share(
+    count_histogram: torch.Tensor, mass_histogram: torch.Tensor, total_token_count: float, fraction: float
+) -> float:
+    """Approximate the mass owned by the largest ``fraction`` of tokens."""
+    total_mass = float(mass_histogram.sum())
+    if total_token_count <= 0.0 or total_mass <= 0.0:
+        return 0.0
+
+    remaining = total_token_count * fraction
+    selected_mass = 0.0
+    counts = count_histogram.tolist()
+    masses = mass_histogram.tolist()
+    for count, mass in zip(reversed(counts), reversed(masses), strict=True):
+        if remaining <= 0.0:
+            break
+        if count <= remaining:
+            selected_mass += mass
+            remaining -= count
+        elif count > 0.0:
+            selected_mass += mass * remaining / count
+            remaining = 0.0
+    return 100.0 * selected_mass / total_mass
+
+
+class PolicyDriftAccumulator:
+    """Accumulate human-readable policy-drift metrics for one optimizer update.
+
+    Values are collected across every packed microbatch. ``compute_metrics``
+    performs fixed-size distributed reductions so the reported moments and
+    histogram quantiles cover all trainer ranks rather than averaging rank-local
+    percentiles.
+    """
+
+    _TOKEN_COUNT = 0
+    _ABS_LOG_RATIO_SUM = 1
+    _ABS_LOG_RATIO_SQUARED_SUM = 2
+    _RATIO_SUM = 3
+    _RATIO_SQUARED_SUM = 4
+    _INCREASED_OVER_FIVE_COUNT = 5
+    _DECREASED_OVER_FIVE_COUNT = 6
+    _REVERSE_KL_SUM = 7
+    _NUM_SCALARS = 8
+
+    def __init__(
+        self, device: torch.device | str, max_staleness: int, histogram_bins: int = POLICY_DRIFT_HISTOGRAM_BINS
+    ):
+        self.histogram_bins = histogram_bins
+        self.max_staleness = max(max_staleness, 0)
+        self.scalars = torch.zeros(self._NUM_SCALARS, dtype=torch.float64, device=device)
+        self.abs_log_ratio_max = torch.zeros((), dtype=torch.float64, device=device)
+        self.abs_log_ratio_histogram = torch.zeros(histogram_bins, dtype=torch.float64, device=device)
+        self.age_abs_log_ratio_histograms = torch.zeros(
+            self.max_staleness + 1, histogram_bins, dtype=torch.float64, device=device
+        )
+        self.policy_gradient_weight_count_histogram = torch.zeros(histogram_bins, dtype=torch.float64, device=device)
+        self.policy_gradient_weight_mass_histogram = torch.zeros(histogram_bins, dtype=torch.float64, device=device)
+
+    @torch.no_grad()
+    def update(
+        self,
+        new_logprobs: torch.Tensor,
+        rollout_logprobs: torch.Tensor,
+        response_mask: torch.Tensor,
+        policy_gradient_weights: torch.Tensor,
+        model_steps: torch.Tensor | None = None,
+        training_step: int | None = None,
+    ) -> None:
+        valid = response_mask.bool() & torch.isfinite(new_logprobs) & torch.isfinite(rollout_logprobs)
+        if not bool(valid.any()):
+            return
+
+        raw_log_ratio = new_logprobs.float() - rollout_logprobs.float()
+        log_ratio = raw_log_ratio[valid].clamp(-POLICY_DRIFT_LOG_RATIO_LIMIT, POLICY_DRIFT_LOG_RATIO_LIMIT)
+        abs_log_ratio = log_ratio.abs()
+        ratio = torch.exp(log_ratio)
+        token_count = float(log_ratio.numel())
+
+        self.scalars[self._TOKEN_COUNT] += token_count
+        self.scalars[self._ABS_LOG_RATIO_SUM] += abs_log_ratio.double().sum()
+        self.scalars[self._ABS_LOG_RATIO_SQUARED_SUM] += abs_log_ratio.double().square().sum()
+        self.scalars[self._RATIO_SUM] += ratio.double().sum()
+        self.scalars[self._RATIO_SQUARED_SUM] += ratio.double().square().sum()
+        log_five = math.log(5.0)
+        self.scalars[self._INCREASED_OVER_FIVE_COUNT] += (log_ratio > log_five).double().sum()
+        self.scalars[self._DECREASED_OVER_FIVE_COUNT] += (log_ratio < -log_five).double().sum()
+        rollout_prob = torch.exp(rollout_logprobs.float()[valid].clamp(-30.0, 0.0))
+        self.scalars[self._REVERSE_KL_SUM] += (rollout_prob * -raw_log_ratio[valid]).double().sum()
+        self.abs_log_ratio_max.copy_(torch.maximum(self.abs_log_ratio_max, abs_log_ratio.double().max()))
+        self.abs_log_ratio_histogram += _fixed_histogram(
+            abs_log_ratio, self.histogram_bins, 0.0, POLICY_DRIFT_LOG_RATIO_LIMIT
+        )
+
+        if model_steps is not None and training_step is not None:
+            ages = training_step - model_steps.long()[valid]
+            valid_age = (ages >= 0) & (ages <= self.max_staleness)
+            if bool(valid_age.any()):
+                age_values = ages[valid_age]
+                abs_values = abs_log_ratio[valid_age]
+                value_bins = (
+                    (abs_values * self.histogram_bins / POLICY_DRIFT_LOG_RATIO_LIMIT)
+                    .floor()
+                    .long()
+                    .clamp(0, self.histogram_bins - 1)
+                )
+                flat_bins = age_values * self.histogram_bins + value_bins
+                age_histogram = torch.bincount(flat_bins, minlength=(self.max_staleness + 1) * self.histogram_bins)
+                self.age_abs_log_ratio_histograms += age_histogram.reshape_as(
+                    self.age_abs_log_ratio_histograms
+                ).double()
+
+        gradient_weights = policy_gradient_weights.float()[valid]
+        gradient_weights = torch.nan_to_num(
+            gradient_weights, nan=0.0, posinf=math.exp(POLICY_GRADIENT_LOG_WEIGHT_MAX), neginf=0.0
+        ).clamp_min(0.0)
+        positive_weight = gradient_weights > 0.0
+        if bool(positive_weight.any()):
+            positive_weights = gradient_weights[positive_weight]
+            log_weights = positive_weights.log().clamp(POLICY_GRADIENT_LOG_WEIGHT_MIN, POLICY_GRADIENT_LOG_WEIGHT_MAX)
+            self.policy_gradient_weight_count_histogram += _fixed_histogram(
+                log_weights, self.histogram_bins, POLICY_GRADIENT_LOG_WEIGHT_MIN, POLICY_GRADIENT_LOG_WEIGHT_MAX
+            )
+            self.policy_gradient_weight_mass_histogram += _fixed_histogram(
+                log_weights,
+                self.histogram_bins,
+                POLICY_GRADIENT_LOG_WEIGHT_MIN,
+                POLICY_GRADIENT_LOG_WEIGHT_MAX,
+                weights=positive_weights,
+            )
+
+    @torch.no_grad()
+    def compute_metrics(self, process_group: dist.ProcessGroup | None = None) -> dict[str, float]:
+        sum_parts = [
+            self.scalars,
+            self.abs_log_ratio_histogram,
+            self.age_abs_log_ratio_histograms.flatten(),
+            self.policy_gradient_weight_count_histogram,
+            self.policy_gradient_weight_mass_histogram,
+        ]
+        part_sizes = [part.numel() for part in sum_parts]
+        reduced = torch.cat(sum_parts)
+        max_abs_log_ratio = self.abs_log_ratio_max.clone()
+        if dist.is_initialized():
+            dist.all_reduce(reduced, op=dist.ReduceOp.SUM, group=process_group)
+            dist.all_reduce(max_abs_log_ratio, op=dist.ReduceOp.MAX, group=process_group)
+
+        offset = 0
+        reduced_parts = []
+        for size, original in zip(part_sizes, sum_parts, strict=True):
+            reduced_parts.append(reduced[offset : offset + size].reshape_as(original))
+            offset += size
+        scalars, abs_histogram, age_histograms, gradient_count_histogram, gradient_mass_histogram = reduced_parts
+        age_histograms = age_histograms.reshape_as(self.age_abs_log_ratio_histograms)
+
+        token_count = float(scalars[self._TOKEN_COUNT])
+        if token_count <= 0.0:
+            return {}
+        mean_abs_log_ratio = float(scalars[self._ABS_LOG_RATIO_SUM]) / token_count
+        abs_log_ratio_variance = max(
+            float(scalars[self._ABS_LOG_RATIO_SQUARED_SUM]) / token_count - mean_abs_log_ratio**2, 0.0
+        )
+        ratio_sum = float(scalars[self._RATIO_SUM])
+        ratio_squared_sum = float(scalars[self._RATIO_SQUARED_SUM])
+        effective_data_pct = (
+            100.0 * ratio_sum**2 / (token_count * ratio_squared_sum) if ratio_squared_sum > 0.0 else 0.0
+        )
+
+        metrics = {
+            "debug/vllm_vs_local_logprob_diff_mean": mean_abs_log_ratio,
+            "debug/vllm_vs_local_logprob_diff_max": float(max_abs_log_ratio),
+            "debug/vllm_vs_local_logprob_diff_std": math.sqrt(abs_log_ratio_variance),
+            "debug/vllm_local_reverse_kl": float(scalars[self._REVERSE_KL_SUM]) / token_count,
+            "policy_drift/probability_change_p50_x": math.exp(
+                _histogram_quantile(abs_histogram, 0.50, POLICY_DRIFT_LOG_RATIO_LIMIT)
+            ),
+            "policy_drift/probability_change_p95_x": math.exp(
+                _histogram_quantile(abs_histogram, 0.95, POLICY_DRIFT_LOG_RATIO_LIMIT)
+            ),
+            "policy_drift/probability_change_p99_x": math.exp(
+                _histogram_quantile(abs_histogram, 0.99, POLICY_DRIFT_LOG_RATIO_LIMIT)
+            ),
+            "policy_drift/probability_increased_over_5x_pct": 100.0
+            * float(scalars[self._INCREASED_OVER_FIVE_COUNT])
+            / token_count,
+            "policy_drift/probability_decreased_over_5x_pct": 100.0
+            * float(scalars[self._DECREASED_OVER_FIVE_COUNT])
+            / token_count,
+            "policy_drift/effective_data_pct": min(max(effective_data_pct, 0.0), 100.0),
+            "policy_gradient/top_1pct_token_weight_share_pct": _top_fraction_mass_share(
+                gradient_count_histogram, gradient_mass_histogram, token_count, 0.01
+            ),
+        }
+        for age in range(self.max_staleness + 1):
+            age_quantile = _histogram_quantile(age_histograms[age], 0.95, POLICY_DRIFT_LOG_RATIO_LIMIT)
+            metrics[f"policy_drift/age_{age}_probability_change_p95_x"] = (
+                math.exp(age_quantile) if math.isfinite(age_quantile) else float("nan")
+            )
+        return metrics
+
+
 def compute_tvpo_mask(
     new_logprobs: torch.Tensor,
     behavior_logprobs: torch.Tensor,
@@ -1060,8 +1365,9 @@ def compute_grpo_loss(
         # by a DPPO mask passed in via ``tis_weights`` (see
         # :func:`compute_dppo_mask`); the caller is responsible for computing
         # ``ratio`` as π_θ / μ_θ' (rollout/behavior policy) — see Takeaway 2.
-        # Eq. 11: L_DPPO = E[Σ_t M_t · r_t · A_t]. No symmetric clipping.
-        pg_losses = -advantages * ratio
+        # The Stable-RL reference implementation caps the detached importance
+        # weight in REINFORCE form. Set dppo_ratio_cap=0 for uncapped Eq. 11.
+        pg_losses = compute_dppo_policy_loss(new_logprobs, ratio, advantages, config.dppo_ratio_cap)
         pg_losses2 = pg_losses
     elif config.loss_fn == GRPOLossType.tvpo:
         # TVPO: REINFORCE-with-IS surrogate -A · clamp(r, max=c).detach() · log π.
@@ -1137,6 +1443,7 @@ class TiledGRPOLMHeadLoss(torch.autograd.Function):
         loss_fn: str,
         dppo_divergence_type: str,
         dppo_divergence_threshold: float,
+        dppo_ratio_cap: float,
         tvpo_truncation_cap: float,
         sequence_loss: bool,
         rollout_sample_ids: torch.Tensor,
@@ -1241,7 +1548,8 @@ class TiledGRPOLMHeadLoss(torch.autograd.Function):
                     with torch.no_grad():
                         entropy = model_utils.entropy_from_logits(logits)
 
-                ratio = torch.exp(new_logprobs - old_logprob_shards[shard_idx])
+                log_ratio = new_logprobs - old_logprob_shards[shard_idx]
+                ratio = compute_dppo_ratio(log_ratio) if loss_type == GRPOLossType.dppo else torch.exp(log_ratio)
                 if loss_type == GRPOLossType.dapo:
                     pg_losses = -advantage_shards[shard_idx] * ratio
                     pg_losses2 = -advantage_shards[shard_idx] * torch.clamp(ratio, 1.0 - clip_lower, 1.0 + clip_higher)
@@ -1250,7 +1558,9 @@ class TiledGRPOLMHeadLoss(torch.autograd.Function):
                     pg_losses = -advantage_shards[shard_idx] * clipped_ratio * new_logprobs
                     pg_losses2 = pg_losses
                 elif loss_type == GRPOLossType.dppo:
-                    pg_losses = -advantage_shards[shard_idx] * ratio
+                    pg_losses = compute_dppo_policy_loss(
+                        new_logprobs, ratio, advantage_shards[shard_idx], dppo_ratio_cap
+                    )
                     pg_losses2 = pg_losses
                     dppo_mask, _ = compute_dppo_mask(
                         new_logprobs=new_logprobs,
@@ -1331,7 +1641,7 @@ class TiledGRPOLMHeadLoss(torch.autograd.Function):
         grad = grads[0]
         if isinstance(grad, torch.Tensor):
             x_grad = x_grad * grad.to(dtype=x_grad.dtype)
-        return (None, x_grad, *([None] * 28))
+        return (None, x_grad, *([None] * 29))
 
 
 def deepspeed_gradient_reduction_divisor(world_size: int, sequence_parallel_size: int, zero_stage: int) -> int:
@@ -1381,6 +1691,7 @@ def tiled_grpo_lm_head_loss(
     loss_fn: str | GRPOLossType = GRPOLossType.dapo,
     dppo_divergence_type: str | DPPODivergenceType = DPPODivergenceType.tv,
     dppo_divergence_threshold: float = 0.1,
+    dppo_ratio_cap: float = 10.0,
     tvpo_truncation_cap: float = 20.0,
     loss_denominator: str = "token",
     rollout_sample_ids: torch.Tensor | None = None,
@@ -1429,6 +1740,7 @@ def tiled_grpo_lm_head_loss(
         loss_fn,
         dppo_divergence_type,
         dppo_divergence_threshold,
+        dppo_ratio_cap,
         tvpo_truncation_cap,
         loss_denominator == "sequence",
         rollout_sample_ids,

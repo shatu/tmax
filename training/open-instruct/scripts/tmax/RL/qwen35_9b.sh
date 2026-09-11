@@ -91,6 +91,7 @@ uv run python mason.py \
     --loss_fn dppo \
     --dppo_divergence_type tv \
     --dppo_divergence_threshold 0.1 \
+    --dppo_ratio_cap 10.0 \
     --rollouts_save_path /weka/oe-adapt-default/allennlp/deletable_rollouts/ \
     --output_dir /output \
     --exp_name qwen35_9b_dppo \

@@ -1,0 +1,212 @@
+{
+  "job": 287385,
+  "state": "COMPLETED",
+  "exit_code": "0:0",
+  "elapsed_seconds": 50,
+  "results": [
+    {
+      "count": 1,
+      "sp": 1,
+      "dp": 6,
+      "mode": "token",
+      "max_errors": {
+        "backbone.weight": 9.313225746154785e-10,
+        "backbone.bias": 7.450580596923828e-09,
+        "lm_head.weight": 7.450580596923828e-09
+      },
+      "norm_ratios": {
+        "backbone.weight": 1.0000001192092896,
+        "backbone.bias": 1.0000001192092896,
+        "lm_head.weight": 1.0
+      },
+      "passed": true
+    },
+    {
+      "count": 1,
+      "sp": 1,
+      "dp": 6,
+      "mode": "sequence",
+      "max_errors": {
+        "backbone.weight": 9.313225746154785e-10,
+        "backbone.bias": 7.450580596923828e-09,
+        "lm_head.weight": 7.450580596923828e-09
+      },
+      "norm_ratios": {
+        "backbone.weight": 1.0000001192092896,
+        "backbone.bias": 1.0000001192092896,
+        "lm_head.weight": 1.0
+      },
+      "passed": true
+    },
+    {
+      "count": 7,
+      "sp": 1,
+      "dp": 6,
+      "mode": "token",
+      "max_errors": {
+        "backbone.weight": 1.862645149230957e-09,
+        "backbone.bias": 7.450580596923828e-09,
+        "lm_head.weight": 7.450580596923828e-09
+      },
+      "norm_ratios": {
+        "backbone.weight": 1.0000001192092896,
+        "backbone.bias": 0.9999999403953552,
+        "lm_head.weight": 1.0
+      },
+      "passed": true
+    },
+    {
+      "count": 7,
+      "sp": 1,
+      "dp": 6,
+      "mode": "sequence",
+      "max_errors": {
+        "backbone.weight": 5.587935447692871e-09,
+        "backbone.bias": 7.450580596923828e-09,
+        "lm_head.weight": 1.4901161193847656e-08
+      },
+      "norm_ratios": {
+        "backbone.weight": 1.000000238418579,
+        "backbone.bias": 1.0,
+        "lm_head.weight": 1.0000001192092896
+      },
+      "passed": true
+    },
+    {
+      "count": 13,
+      "sp": 1,
+      "dp": 6,
+      "mode": "token",
+      "max_errors": {
+        "backbone.weight": 4.190951585769653e-09,
+        "backbone.bias": 7.450580596923828e-09,
+        "lm_head.weight": 2.9802322387695312e-08
+      },
+      "norm_ratios": {
+        "backbone.weight": 1.0,
+        "backbone.bias": 1.0,
+        "lm_head.weight": 1.0000001192092896
+      },
+      "passed": true
+    },
+    {
+      "count": 13,
+      "sp": 1,
+      "dp": 6,
+      "mode": "sequence",
+      "max_errors": {
+        "backbone.weight": 9.313225746154785e-09,
+        "backbone.bias": 1.4901161193847656e-08,
+        "lm_head.weight": 5.960464477539063e-08
+      },
+      "norm_ratios": {
+        "backbone.weight": 1.000000238418579,
+        "backbone.bias": 0.9999999403953552,
+        "lm_head.weight": 1.000000238418579
+      },
+      "passed": true
+    },
+    {
+      "count": 1,
+      "sp": 4,
+      "dp": 2,
+      "mode": "token",
+      "max_errors": {
+        "backbone.weight": 0.0,
+        "backbone.bias": 0.0,
+        "lm_head.weight": 0.0
+      },
+      "norm_ratios": {
+        "backbone.weight": 1.0,
+        "backbone.bias": 1.0,
+        "lm_head.weight": 1.0
+      },
+      "passed": true
+    },
+    {
+      "count": 1,
+      "sp": 4,
+      "dp": 2,
+      "mode": "sequence",
+      "max_errors": {
+        "backbone.weight": 0.0,
+        "backbone.bias": 0.0,
+        "lm_head.weight": 0.0
+      },
+      "norm_ratios": {
+        "backbone.weight": 1.0,
+        "backbone.bias": 1.0,
+        "lm_head.weight": 1.0
+      },
+      "passed": true
+    },
+    {
+      "count": 7,
+      "sp": 4,
+      "dp": 2,
+      "mode": "token",
+      "max_errors": {
+        "backbone.weight": 2.3283064365386963e-09,
+        "backbone.bias": 7.450580596923828e-09,
+        "lm_head.weight": 1.4901161193847656e-08
+      },
+      "norm_ratios": {
+        "backbone.weight": 1.0000001192092896,
+        "backbone.bias": 0.9999999403953552,
+        "lm_head.weight": 1.0
+      },
+      "passed": true
+    },
+    {
+      "count": 7,
+      "sp": 4,
+      "dp": 2,
+      "mode": "sequence",
+      "max_errors": {
+        "backbone.weight": 1.6298145055770874e-09,
+        "backbone.bias": 1.4901161193847656e-08,
+        "lm_head.weight": 7.450580596923828e-09
+      },
+      "norm_ratios": {
+        "backbone.weight": 1.0,
+        "backbone.bias": 0.9999998211860657,
+        "lm_head.weight": 1.0
+      },
+      "passed": true
+    },
+    {
+      "count": 13,
+      "sp": 4,
+      "dp": 2,
+      "mode": "token",
+      "max_errors": {
+        "backbone.weight": 5.587935447692871e-09,
+        "backbone.bias": 1.4901161193847656e-08,
+        "lm_head.weight": 1.4901161193847656e-08
+      },
+      "norm_ratios": {
+        "backbone.weight": 1.0,
+        "backbone.bias": 0.9999999403953552,
+        "lm_head.weight": 1.0000001192092896
+      },
+      "passed": true
+    },
+    {
+      "count": 13,
+      "sp": 4,
+      "dp": 2,
+      "mode": "sequence",
+      "max_errors": {
+        "backbone.weight": 5.587935447692871e-09,
+        "backbone.bias": 1.4901161193847656e-08,
+        "lm_head.weight": 5.960464477539063e-08
+      },
+      "norm_ratios": {
+        "backbone.weight": 1.0000001192092896,
+        "backbone.bias": 0.9999999403953552,
+        "lm_head.weight": 1.000000238418579
+      },
+      "passed": true
+    }
+  ]
+}

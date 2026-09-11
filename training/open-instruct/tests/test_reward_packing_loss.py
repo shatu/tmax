@@ -32,7 +32,7 @@ class RewardPackingLossTest(unittest.TestCase):
         )
         load_production("data_loader.py", {"compute_group_advantages"}, namespace)
         load_production("rl_utils.py", {"pack_sequences", "reset_position_ids"}, namespace)
-        load_production("grpo_utils.py", {"compute_grpo_loss"}, namespace)
+        load_production("grpo_utils.py", {"compute_grpo_loss", "compute_dppo_policy_loss"}, namespace)
         scores = np.array([0, 999, 0.5, 1, 1, 999, 999, 0])
         valid = np.array([True, False, True, True, True, False, False, True])
         kept = np.flatnonzero(valid).tolist()
@@ -60,7 +60,11 @@ class RewardPackingLossTest(unittest.TestCase):
                     token_advantages = lookup[mask]
                     token_logprobs = parameters[ids]
                     _, _, token_loss, _ = namespace["compute_grpo_loss"](
-                        token_logprobs, token_logprobs.exp(), token_advantages, None, SimpleNamespace(loss_fn="dppo")
+                        token_logprobs,
+                        token_logprobs.exp(),
+                        token_advantages,
+                        None,
+                        SimpleNamespace(loss_fn="dppo", dppo_ratio_cap=10.0),
                     )
                     loss = loss + token_loss[mask > 0].sum()
                     seen.update(ids[mask > 0].tolist())

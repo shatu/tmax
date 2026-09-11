@@ -130,7 +130,7 @@ def main():
                 masks=[[1] * 8] * count,
                 pack_length=9,
                 pad_token_id=0,
-                vllm_logprobs=[[-1.5] * 8] * count,
+                vllm_logprobs=[[-6.0, -1.5] * 4] * count,
                 rollout_sample_ids=list(range(count)),
             )
             packed.advantages = [(m.float() * 0.03) for m in packed.response_masks]
@@ -152,7 +152,9 @@ def main():
                 labels = packed.query_responses[i][1:].to(device)[None]
                 lp = logits.log_softmax(-1).gather(-1, labels[..., None]).squeeze(-1)
                 adv = packed.advantages[i][1:].to(device)[None]
-                expected_loss = expected_loss + (-adv * (lp + 1.5).exp() * weights).sum() / denominator
+                old = packed.vllm_logprobs[i][1:].to(device)[None]
+                coefficient = (lp - old).clamp(-20, 20).exp().clamp(max=10).detach()
+                expected_loss = expected_loss + (-adv * coefficient * lp * weights).sum() / denominator
             expected_loss.backward()
             worker = workers[rank // sp]
             # Extract a pack's source identity before slicing so token-local features match reference.

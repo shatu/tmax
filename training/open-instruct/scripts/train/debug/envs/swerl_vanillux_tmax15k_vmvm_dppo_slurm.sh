@@ -124,6 +124,7 @@ LIGER_GRPO_LOSS_CHUNK_SIZE="${LIGER_GRPO_LOSS_CHUNK_SIZE:-8}"
 LOSS_FN="${LOSS_FN:-dppo}"
 DPPO_DIVERGENCE_TYPE="${DPPO_DIVERGENCE_TYPE:-tv}"
 DPPO_DIVERGENCE_THRESHOLD="${DPPO_DIVERGENCE_THRESHOLD:-0.1}"
+DPPO_RATIO_CAP="${DPPO_RATIO_CAP:-10.0}"
 # PPO/CISPO clip bounds + per-token TIS mask (config defaults: 0.2 / 0.272 / 0 / 0).
 CLIP_LOWER="${CLIP_LOWER:-0.2}"
 CLIP_HIGHER="${CLIP_HIGHER:-0.272}"
@@ -248,7 +249,7 @@ echo "dataset=${DATASET_JSONL}"
 echo "task_data_hf_repo=${TASK_DATA_HF_REPO}"
 echo "model=${MODEL_NAME_OR_PATH}"
 echo "run_id=${RUN_ID} output_dir=${OUTPUT_DIR}"
-echo "loss_fn=${LOSS_FN} dppo(${DPPO_DIVERGENCE_TYPE}, thr=${DPPO_DIVERGENCE_THRESHOLD}) lm_head_fp32=${LM_HEAD_FP32}"
+echo "loss_fn=${LOSS_FN} dppo(${DPPO_DIVERGENCE_TYPE}, thr=${DPPO_DIVERGENCE_THRESHOLD}, ratio_cap=${DPPO_RATIO_CAP}) lm_head_fp32=${LM_HEAD_FP32}"
 echo "pool_size=${POOL_SIZE} backend=${SWERL_SANDBOX_BACKEND:-unset}"
 echo "WITH_X2P=${WITH_X2P:-unset}"
 
@@ -432,6 +433,7 @@ PY
             --loss_fn "'"${LOSS_FN}"'" \
             --dppo_divergence_type "'"${DPPO_DIVERGENCE_TYPE}"'" \
             --dppo_divergence_threshold "'"${DPPO_DIVERGENCE_THRESHOLD}"'" \
+            --dppo_ratio_cap "'"${DPPO_RATIO_CAP}"'" \
             --rollouts_save_path "'"${ROLLOUTS_SAVE_PATH}"'" \
             --output_dir "'"${OUTPUT_DIR}"'" \
             --exp_name "'"${EXP_NAME}"'" \
