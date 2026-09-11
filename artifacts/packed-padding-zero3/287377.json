@@ -1,0 +1,121 @@
+{
+  "job_id": 287377,
+  "cluster": "Tillicum",
+  "scheduler_state": "COMPLETED",
+  "exit_code": "0:0",
+  "elapsed_seconds": 28,
+  "expected_mismatch": true,
+  "summaries": [
+    {
+      "torch": "2.10.0+cu128",
+      "deepspeed": "0.18.4",
+      "world": 8,
+      "sp": 4,
+      "passed": false,
+      "results": [
+        {
+          "count": 1,
+          "sp": 4,
+          "dp": 2,
+          "mode": "token",
+          "max_errors": {
+            "backbone.weight": 0.0007549381698481739,
+            "backbone.bias": 0.009059257805347443,
+            "lm_head.weight": 0.011658315546810627
+          },
+          "norm_ratios": {
+            "backbone.weight": 0.0312500037252903,
+            "backbone.bias": 0.0312500037252903,
+            "lm_head.weight": 0.0312500037252903
+          },
+          "passed": false
+        },
+        {
+          "count": 1,
+          "sp": 4,
+          "dp": 2,
+          "mode": "sequence",
+          "max_errors": {
+            "backbone.weight": 0.0007549381698481739,
+            "backbone.bias": 0.009059257805347443,
+            "lm_head.weight": 0.011658315546810627
+          },
+          "norm_ratios": {
+            "backbone.weight": 0.0312500037252903,
+            "backbone.bias": 0.0312500037252903,
+            "lm_head.weight": 0.0312500037252903
+          },
+          "passed": false
+        },
+        {
+          "count": 7,
+          "sp": 4,
+          "dp": 2,
+          "mode": "token",
+          "max_errors": {
+            "backbone.weight": 0.003636488225311041,
+            "backbone.bias": 0.007038715295493603,
+            "lm_head.weight": 0.01452551782131195
+          },
+          "norm_ratios": {
+            "backbone.weight": 0.18845140933990479,
+            "backbone.bias": 0.16678714752197266,
+            "lm_head.weight": 0.16289426386356354
+          },
+          "passed": false
+        },
+        {
+          "count": 7,
+          "sp": 4,
+          "dp": 2,
+          "mode": "sequence",
+          "max_errors": {
+            "backbone.weight": 0.0026134501677006483,
+            "backbone.bias": 0.008241998963057995,
+            "lm_head.weight": 0.013208402320742607
+          },
+          "norm_ratios": {
+            "backbone.weight": 0.062293920665979385,
+            "backbone.bias": 0.058303430676460266,
+            "lm_head.weight": 0.06090692803263664
+          },
+          "passed": false
+        },
+        {
+          "count": 13,
+          "sp": 4,
+          "dp": 2,
+          "mode": "token",
+          "max_errors": {
+            "backbone.weight": 0.0032533835619688034,
+            "backbone.bias": 0.015347665175795555,
+            "lm_head.weight": 0.022515516728162766
+          },
+          "norm_ratios": {
+            "backbone.weight": 0.1604551076889038,
+            "backbone.bias": 0.13206696510314941,
+            "lm_head.weight": 0.15468427538871765
+          },
+          "passed": false
+        },
+        {
+          "count": 13,
+          "sp": 4,
+          "dp": 2,
+          "mode": "sequence",
+          "max_errors": {
+            "backbone.weight": 0.003989004995673895,
+            "backbone.bias": 0.021925944834947586,
+            "lm_head.weight": 0.028626546263694763
+          },
+          "norm_ratios": {
+            "backbone.weight": 0.05819930508732796,
+            "backbone.bias": 0.06110803037881851,
+            "lm_head.weight": 0.06026974320411682
+          },
+          "passed": false
+        }
+      ]
+    }
+  ]
+}

@@ -49,6 +49,7 @@ from open_instruct.model_utils import Batch
 from open_instruct.rl_utils import (
     PackedSequences,
     pack_sequences,
+    pad_packed_sequences,
     save_filtered_rollouts_to_disk,
     save_rollout_metadata,
     save_rollouts_to_disk,
@@ -1434,14 +1435,8 @@ def prepare_collated_data_for_workers(
         for query_responses, attention_masks, position_ids,
         advantages, response_masks, and vllm_logprobs.
     """
-    total_sequences = len(packed_sequences.query_responses)
-    if total_sequences % dp_world_size != 0:
-        new_total = (total_sequences // dp_world_size) * dp_world_size
-        logger.warning(
-            f"Total packed sequences ({total_sequences}) is not evenly divisible by dp_world_size ({dp_world_size}). "
-            f"Truncating to {new_total} sequences (dropping {total_sequences - new_total})."
-        )
-    B = total_sequences // dp_world_size
+    packed_sequences = pad_packed_sequences(packed_sequences, dp_world_size)
+    B = len(packed_sequences.query_responses) // dp_world_size
     collated_data = []
     assert packed_sequences.position_ids is not None
     assert packed_sequences.advantages is not None

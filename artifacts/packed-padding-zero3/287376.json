@@ -1,0 +1,232 @@
+{
+  "job_id": 287376,
+  "cluster": "Tillicum",
+  "scheduler_state": "COMPLETED",
+  "exit_code": "0:0",
+  "elapsed_seconds": 48,
+  "expected_mismatch": false,
+  "summaries": [
+    {
+      "torch": "2.10.0+cu128",
+      "deepspeed": "0.18.4",
+      "world": 6,
+      "sp": 1,
+      "passed": true,
+      "results": [
+        {
+          "count": 1,
+          "sp": 1,
+          "dp": 6,
+          "mode": "token",
+          "max_errors": {
+            "backbone.weight": 1.1641532182693481e-10,
+            "backbone.bias": 1.862645149230957e-09,
+            "lm_head.weight": 1.862645149230957e-09
+          },
+          "norm_ratios": {
+            "backbone.weight": 1.0000001192092896,
+            "backbone.bias": 1.0000001192092896,
+            "lm_head.weight": 1.0000001192092896
+          },
+          "passed": true
+        },
+        {
+          "count": 1,
+          "sp": 1,
+          "dp": 6,
+          "mode": "sequence",
+          "max_errors": {
+            "backbone.weight": 1.1641532182693481e-10,
+            "backbone.bias": 1.862645149230957e-09,
+            "lm_head.weight": 1.862645149230957e-09
+          },
+          "norm_ratios": {
+            "backbone.weight": 1.0000001192092896,
+            "backbone.bias": 1.0000001192092896,
+            "lm_head.weight": 1.0000001192092896
+          },
+          "passed": true
+        },
+        {
+          "count": 7,
+          "sp": 1,
+          "dp": 6,
+          "mode": "token",
+          "max_errors": {
+            "backbone.weight": 6.984919309616089e-10,
+            "backbone.bias": 9.313225746154785e-10,
+            "lm_head.weight": 1.862645149230957e-09
+          },
+          "norm_ratios": {
+            "backbone.weight": 1.0,
+            "backbone.bias": 1.0,
+            "lm_head.weight": 1.0000001192092896
+          },
+          "passed": true
+        },
+        {
+          "count": 7,
+          "sp": 1,
+          "dp": 6,
+          "mode": "sequence",
+          "max_errors": {
+            "backbone.weight": 3.4924596548080444e-10,
+            "backbone.bias": 4.656612873077393e-10,
+            "lm_head.weight": 1.862645149230957e-09
+          },
+          "norm_ratios": {
+            "backbone.weight": 1.0,
+            "backbone.bias": 1.0,
+            "lm_head.weight": 1.0
+          },
+          "passed": true
+        },
+        {
+          "count": 13,
+          "sp": 1,
+          "dp": 6,
+          "mode": "token",
+          "max_errors": {
+            "backbone.weight": 9.313225746154785e-10,
+            "backbone.bias": 1.862645149230957e-09,
+            "lm_head.weight": 3.725290298461914e-09
+          },
+          "norm_ratios": {
+            "backbone.weight": 1.0,
+            "backbone.bias": 1.0000001192092896,
+            "lm_head.weight": 1.0
+          },
+          "passed": true
+        },
+        {
+          "count": 13,
+          "sp": 1,
+          "dp": 6,
+          "mode": "sequence",
+          "max_errors": {
+            "backbone.weight": 9.313225746154785e-10,
+            "backbone.bias": 3.725290298461914e-09,
+            "lm_head.weight": 7.450580596923828e-09
+          },
+          "norm_ratios": {
+            "backbone.weight": 1.0000001192092896,
+            "backbone.bias": 1.000000238418579,
+            "lm_head.weight": 1.000000238418579
+          },
+          "passed": true
+        }
+      ]
+    },
+    {
+      "torch": "2.10.0+cu128",
+      "deepspeed": "0.18.4",
+      "world": 8,
+      "sp": 4,
+      "passed": true,
+      "results": [
+        {
+          "count": 1,
+          "sp": 4,
+          "dp": 2,
+          "mode": "token",
+          "max_errors": {
+            "backbone.weight": 1.1641532182693481e-10,
+            "backbone.bias": 9.313225746154785e-10,
+            "lm_head.weight": 9.313225746154785e-10
+          },
+          "norm_ratios": {
+            "backbone.weight": 1.0000001192092896,
+            "backbone.bias": 1.0000001192092896,
+            "lm_head.weight": 1.0000001192092896
+          },
+          "passed": true
+        },
+        {
+          "count": 1,
+          "sp": 4,
+          "dp": 2,
+          "mode": "sequence",
+          "max_errors": {
+            "backbone.weight": 1.1641532182693481e-10,
+            "backbone.bias": 9.313225746154785e-10,
+            "lm_head.weight": 9.313225746154785e-10
+          },
+          "norm_ratios": {
+            "backbone.weight": 1.0000001192092896,
+            "backbone.bias": 1.0000001192092896,
+            "lm_head.weight": 1.0000001192092896
+          },
+          "passed": true
+        },
+        {
+          "count": 7,
+          "sp": 4,
+          "dp": 2,
+          "mode": "token",
+          "max_errors": {
+            "backbone.weight": 9.313225746154785e-10,
+            "backbone.bias": 9.313225746154785e-10,
+            "lm_head.weight": 2.7939677238464355e-09
+          },
+          "norm_ratios": {
+            "backbone.weight": 1.0000001192092896,
+            "backbone.bias": 1.0000001192092896,
+            "lm_head.weight": 1.0000001192092896
+          },
+          "passed": true
+        },
+        {
+          "count": 7,
+          "sp": 4,
+          "dp": 2,
+          "mode": "sequence",
+          "max_errors": {
+            "backbone.weight": 6.984919309616089e-10,
+            "backbone.bias": 6.984919309616089e-10,
+            "lm_head.weight": 9.313225746154785e-10
+          },
+          "norm_ratios": {
+            "backbone.weight": 1.0000001192092896,
+            "backbone.bias": 1.0000001192092896,
+            "lm_head.weight": 1.0
+          },
+          "passed": true
+        },
+        {
+          "count": 13,
+          "sp": 4,
+          "dp": 2,
+          "mode": "token",
+          "max_errors": {
+            "backbone.weight": 9.313225746154785e-10,
+            "backbone.bias": 1.862645149230957e-09,
+            "lm_head.weight": 3.725290298461914e-09
+          },
+          "norm_ratios": {
+            "backbone.weight": 1.0,
+            "backbone.bias": 0.9999999403953552,
+            "lm_head.weight": 1.0
+          },
+          "passed": true
+        },
+        {
+          "count": 13,
+          "sp": 4,
+          "dp": 2,
+          "mode": "sequence",
+          "max_errors": {
+            "backbone.weight": 4.656612873077393e-10,
+            "backbone.bias": 5.820766091346741e-10,
+            "lm_head.weight": 1.862645149230957e-09
+          },
+          "norm_ratios": {
+            "backbone.weight": 0.9999998807907104,
+            "backbone.bias": 1.0,
+            "lm_head.weight": 1.0000001192092896
+          },
+          "passed": true
+        }
+      ]
+    }
+  ]
+}

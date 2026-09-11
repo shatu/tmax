@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 
 ### Changed
+- Port the merged public ZeRO-3/SP gradient-scaling fix to private training, including rank-local tiled normalization; validate together with padding on Tillicum GPUs (https://github.com/hamishivi/tmax-private/pull/14; upstream https://github.com/hamishivi/tmax/pull/9).
+- Preserve leftover distributed RL packs with masked padding and keep padding-only tiled sequence loss finite (https://github.com/hamishivi/tmax-private/pull/14).
 - Make Vanillux reward validity/filtering explicit and use command-scoped training cancellation with Sandfleet 0.7.3 (https://github.com/hamishivi/tmax-private/pull/10).
 - Keep scored siblings of invalid rollouts: use valid-only group advantages and remove invalid completions before packing, preserving original prompt IDs (https://github.com/hamishivi/tmax-private/pull/10).
 - Correct evaluation coverage for invalid rewards; preserve timeout scores and worker-loss errors, and drain or quarantine timed-out actors before reuse (https://github.com/hamishivi/tmax-private/pull/10).
