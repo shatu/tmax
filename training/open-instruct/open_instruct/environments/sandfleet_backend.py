@@ -165,7 +165,7 @@ class SandfleetBackend(SandboxBackend):
             request = Request(current_url.rstrip("/") + path, data=body, headers=headers, method=method)
             try:
                 request_timeout = self._request_timeout if timeout is None else timeout
-                if retry:
+                if retry and controller:
                     request_timeout = min(request_timeout, max(0.001, retry_deadline - time.monotonic()))
                 with urlopen(request, timeout=request_timeout) as response:  # noqa: S310
                     raw = response.read()

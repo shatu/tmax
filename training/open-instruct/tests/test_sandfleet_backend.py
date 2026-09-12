@@ -355,3 +355,19 @@ def test_renewal_retry_is_bounded_by_ttl(monkeypatch):
     assert calls[0]["retry_window"] == 30
     assert calls[0]["timeout"] == 10
     assert calls[0]["stop"] is backend._renew_stop
+
+
+def test_worker_file_read_keeps_its_operation_timeout(monkeypatch):
+    backend = SandfleetBackend()
+    backend._lease_id = "test"
+    backend._lease_token = "lease-token"
+    backend._agent_url = "http://worker"
+    calls = []
+
+    def request(req, *, timeout):
+        calls.append((req.full_url, timeout))
+        return io.BytesIO(b'{"content_b64":"b2s="}')
+
+    monkeypatch.setattr(module, "urlopen", request)
+    assert backend.read_file("/tmp/output") == "ok"
+    assert calls == [("http://worker/v1/leases/test/read-file", 120)]
