@@ -4,6 +4,7 @@ All notable changes to this project will be documented in this file.
 
 
 ### Changed
+- Support optional dataset-provided Vanillux setup commands with checked execution and persistent agent/verifier state (https://github.com/hamishivi/tmax-private/pull/18).
 - Snapshot rollout results before asynchronous trace saving so completion filtering cannot misalign the saved batch (https://github.com/hamishivi/tmax-private/pull/17).
 - Ask the training policy to think before acting without requiring a THOUGHT heading (https://github.com/hamishivi/tmax-private/pull/16).
 - Integrate historical capped DPPO and policy-drift telemetry with padded batches and ZeRO-3/SP scaling; validate on Tillicum (https://github.com/hamishivi/tmax-private/pull/15).

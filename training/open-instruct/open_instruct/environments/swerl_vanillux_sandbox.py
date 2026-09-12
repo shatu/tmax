@@ -52,6 +52,15 @@ _BASH_WRAPPER_PATH = "/tmp/.swerl_vanillux_bash_wrapper.sh"
 _BASH_WRAPPER_PATH_QUOTED = shlex.quote(_BASH_WRAPPER_PATH)
 _BASH_CWD_PATH = "/tmp/.swerl_vanillux_cwd"
 _BASH_ENV_PATH = "/tmp/.swerl_vanillux_env"
+
+_SETUP_CWD_PATH = "/tmp/.swerl_setup_cwd"
+_SETUP_ENV_PATH = "/tmp/.swerl_setup_env"
+
+
+class TaskSetupError(RuntimeError):
+    """Dataset-provided sandbox setup failed."""
+
+
 _BASH_WRAPPER = f"""#!/bin/bash
 # Default address-space limit: 2 GiB, configurable in KiB.
 ulimit -v "${{SWERL_SANDBOX_ULIMIT_AS_KB:-2097152}}" 2>/dev/null || true
@@ -141,8 +150,7 @@ _COMPOSE_PROVIDER_RE = re.compile(
     r"this message\. <<<<\n\n\x1b\[0m"
 )
 _DOCKER_EXEC_ERROR_RE = re.compile(
-    r"(?ms)^Error: executing [^\n]*(?:docker-compose|docker compose)"
-    r".*?: exit status \d+\s*$"
+    r"(?ms)^Error: executing [^\n]*(?:docker-compose|docker compose)" r".*?: exit status \d+\s*$"
 )
 
 
@@ -206,6 +214,7 @@ class SWERLVanilluxSandboxEnv(RLEnvironment):
         self._step_count = 0
         self._task_id: str | None = None
         self._task_data_dir = task_data_dir
+        self._has_task_setup = False
         self._task_data_hf_repo = task_data_hf_repo
         self._test_timeout = max(test_timeout, self._MIN_TEST_TIMEOUT_S)
         self._last_step_warning = last_step_warning
@@ -307,6 +316,11 @@ class SWERLVanilluxSandboxEnv(RLEnvironment):
             timings[name] = timings.get(name, 0.0) + (now - phase_start_time)
             phase_start_time = now
 
+        self._has_task_setup = False
+        self._tests_dir = None
+        setup_command = kwargs.get("setup_command")
+        if setup_command is not None and not isinstance(setup_command, str):
+            raise ValueError("env_config.setup_command must be a string or null")
         resolved_image = kwargs.get("image")
         if not resolved_image and self._task_data_dir and task_id:
             task_dir = os.path.join(self._task_data_dir, task_id)
@@ -389,6 +403,9 @@ class SWERLVanilluxSandboxEnv(RLEnvironment):
         self._prepare_vanillux_runtime()
         record_phase("prepare_vanillux")
 
+        self._apply_task_setup(setup_command)
+        record_phase("task_setup")
+
         reset_total_s = time.perf_counter() - reset_start_time
         if TIMING_LOGS and reset_total_s >= TIMING_LOG_THRESHOLD_S:
             logger.info(
@@ -468,6 +485,34 @@ class SWERLVanilluxSandboxEnv(RLEnvironment):
                         tar.addfile(info, f)
 
         self._backend.put_archive("/", tar_stream.getvalue())
+
+    def _apply_task_setup(self, command: str | None) -> None:
+        """Run optional dataset setup in the agent shell, bounded by its timeout.
+
+        Snapshot setup state for verification; later agent exports/cd must not
+        change the verifier's starting environment. Tests remain hidden until submit.
+        """
+        if not command or not command.strip():
+            return
+        assert self._backend is not None
+        started = time.perf_counter()
+        result = self._backend.run_command(
+            f"bash {_BASH_WRAPPER_PATH_QUOTED} {shlex.quote(command)}", timeout=self._timeout
+        )
+        if result.exit_code != 0:
+            raise TaskSetupError(
+                f"Task setup failed for {self._task_id!r} (exit={result.exit_code}, "
+                f"elapsed={time.perf_counter() - started:.2f}s, timeout={self._timeout}s): "
+                f"{(result.stderr or result.stdout or '')[-2000:]}"
+            )
+        snapshot = self._backend.run_command(
+            f"cp {shlex.quote(_BASH_CWD_PATH)} {shlex.quote(_SETUP_CWD_PATH)} && "
+            f"cp {shlex.quote(_BASH_ENV_PATH)} {shlex.quote(_SETUP_ENV_PATH)}"
+        )
+        if snapshot.exit_code != 0:
+            raise TaskSetupError(f"Could not save task setup state: {snapshot.stderr or snapshot.stdout}")
+        self._has_task_setup = True
+        logger.info("Task setup completed: task_id=%s elapsed=%.3fs", self._task_id, time.perf_counter() - started)
 
     def _prepare_vanillux_runtime(self) -> None:
         assert self._backend is not None
@@ -651,6 +696,11 @@ class SWERLVanilluxSandboxEnv(RLEnvironment):
         verifier_command = (
             f'bash /tests/test.sh; status=$?; printf \'%s\' "$status" > {shlex.quote(status_path)}; exit "$status"'
         )
+        if self._has_task_setup:
+            verifier_command = (
+                f". {shlex.quote(_SETUP_ENV_PATH)} && "
+                f'cd "$(cat {shlex.quote(_SETUP_CWD_PATH)})" && {verifier_command}'
+            )
         result = self._backend.run_command(verifier_command, timeout=self._test_timeout)
         completion = self._backend.run_command(
             f"if [ -f {shlex.quote(status_path)} ]; then cat {shlex.quote(status_path)}; "
