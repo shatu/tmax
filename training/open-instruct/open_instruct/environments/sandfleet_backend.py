@@ -101,6 +101,8 @@ class SandfleetBackend(SandboxBackend):
             payload = json.loads(Path(registry).read_text(encoding="utf-8"))
         except FileNotFoundError:
             return self._url
+        if not isinstance(payload, dict) or not isinstance(payload.get("url"), str):
+            raise ValueError("Sandfleet registry must contain a string URL")
         url = payload["url"]
         parsed = urlsplit(url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
