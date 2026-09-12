@@ -507,6 +507,11 @@ def save_rollouts_to_disk(
         total_samples_written: Total samples written so far, used for sharding.
     """
     shard_idx = total_samples_written // ROLLOUT_SHARD_SIZE
+    # DataPreparationActor replaces result's per-sample lists when masking
+    # completions after this call. Keep the original fields for the background
+    # writer so they remain aligned with the unfiltered batch and advantages.
+    # A shallow snapshot suffices: masking replaces lists, not their contents.
+    result = replace(result)
     future = _rollout_executor.submit(
         _save_rollouts, save_path, run_name, step, batch, result, advantages, num_samples_per_prompt, shard_idx
     )
