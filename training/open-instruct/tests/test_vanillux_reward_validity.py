@@ -34,6 +34,7 @@ def load_methods():
 class RewardValidityTest(unittest.TestCase):
     def setUp(self):
         self.env = load_methods()()
+        self.env._has_task_setup = False
         self.env._backend = Mock()
         self.env._tests_dir = "tests"
         self.env._task_id = "task"

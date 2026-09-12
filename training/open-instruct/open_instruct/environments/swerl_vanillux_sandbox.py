@@ -53,27 +53,13 @@ _BASH_WRAPPER_PATH_QUOTED = shlex.quote(_BASH_WRAPPER_PATH)
 _BASH_CWD_PATH = "/tmp/.swerl_vanillux_cwd"
 _BASH_ENV_PATH = "/tmp/.swerl_vanillux_env"
 
-# --- SWE-smith task setup (tmax-private#13, hamishivi 2026-09-11T23:17:52Z) ------
-# SWE-smith base images ship ONE git branch per bug variant, named exactly the
-# task_id, and the checkout is left on `main` (the FIXED code). Without selecting
-# the task's ref the graded fail-to-pass tests already pass at reset: measured
-# 68.8% of 48 sampled tasks returned reward 1.0 for a no-op submission.
-# Deliberately scoped to this dataset by image namespace -- NOT a generic
-# "checkout any matching branch in any image" heuristic.
-_SWESMITH_IMAGE_PREFIX = "jyangballin/swesmith."
-_SWESMITH_REPO_DIR = "/testbed"
-# The image's own intended interpreter lives in this conda env (python 3.10 +
-# pytest); the sandbox PATH exposes only miniconda base, so `python` in test.sh
-# resolves to an interpreter without pytest. We put the EXISTING env on PATH; we
-# do not install or substitute a different Python.
-_SWESMITH_ENV_BIN = "/opt/miniconda3/envs/testbed/bin"
-# Refs are task ids; keep them argv-safe and reject anything that could be
-# interpreted as an option or a path escape.
-_SWESMITH_TASK_ID_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+_SETUP_CWD_PATH = "/tmp/.swerl_setup_cwd"
+_SETUP_ENV_PATH = "/tmp/.swerl_setup_env"
 
 
-class SweSmithSetupError(RuntimeError):
-    """Raised when the pinned SWE-smith task ref cannot be selected."""
+class TaskSetupError(RuntimeError):
+    """Dataset-provided sandbox setup failed."""
+
 
 _BASH_WRAPPER = f"""#!/bin/bash
 # Default address-space limit: 2 GiB, configurable in KiB.
@@ -164,8 +150,7 @@ _COMPOSE_PROVIDER_RE = re.compile(
     r"this message\. <<<<\n\n\x1b\[0m"
 )
 _DOCKER_EXEC_ERROR_RE = re.compile(
-    r"(?ms)^Error: executing [^\n]*(?:docker-compose|docker compose)"
-    r".*?: exit status \d+\s*$"
+    r"(?ms)^Error: executing [^\n]*(?:docker-compose|docker compose)" r".*?: exit status \d+\s*$"
 )
 
 
@@ -229,11 +214,7 @@ class SWERLVanilluxSandboxEnv(RLEnvironment):
         self._step_count = 0
         self._task_id: str | None = None
         self._task_data_dir = task_data_dir
-        # SWE-smith provenance: which ref/commit this episode was pinned to.
-        self._source_image_ref: str = ""
-        self._swesmith_ref: str | None = None
-        self._swesmith_commit: str | None = None
-        self._swesmith_path_prefix: str | None = None
+        self._has_task_setup = False
         self._task_data_hf_repo = task_data_hf_repo
         self._test_timeout = max(test_timeout, self._MIN_TEST_TIMEOUT_S)
         self._last_step_warning = last_step_warning
@@ -335,6 +316,11 @@ class SWERLVanilluxSandboxEnv(RLEnvironment):
             timings[name] = timings.get(name, 0.0) + (now - phase_start_time)
             phase_start_time = now
 
+        self._has_task_setup = False
+        self._tests_dir = None
+        setup_command = kwargs.get("setup_command")
+        if setup_command is not None and not isinstance(setup_command, str):
+            raise ValueError("env_config.setup_command must be a string or null")
         resolved_image = kwargs.get("image")
         if not resolved_image and self._task_data_dir and task_id:
             task_dir = os.path.join(self._task_data_dir, task_id)
@@ -366,7 +352,6 @@ class SWERLVanilluxSandboxEnv(RLEnvironment):
             # per-lease pull + OCI->SIF conversion there (exit=255 under
             # restricted egress). Resolve to the prebuilt local pool when
             # configured.
-            self._source_image_ref = resolved_image
             resolved_image = prefer_local_sif(resolved_image)
         self._backend_kwargs["image"] = resolved_image
         if self._backend_type == "docker" and kwargs.get("docker_host"):
@@ -418,8 +403,8 @@ class SWERLVanilluxSandboxEnv(RLEnvironment):
         self._prepare_vanillux_runtime()
         record_phase("prepare_vanillux")
 
-        self._apply_swesmith_task_setup(task_id)
-        record_phase("swesmith_task_setup")
+        self._apply_task_setup(setup_command)
+        record_phase("task_setup")
 
         reset_total_s = time.perf_counter() - reset_start_time
         if TIMING_LOGS and reset_total_s >= TIMING_LOG_THRESHOLD_S:
@@ -501,65 +486,33 @@ class SWERLVanilluxSandboxEnv(RLEnvironment):
 
         self._backend.put_archive("/", tar_stream.getvalue())
 
-    def _apply_swesmith_task_setup(self, task_id: str | None) -> None:
-        """Select the pinned SWE-smith task commit and expose the image's interpreter.
+    def _apply_task_setup(self, command: str | None) -> None:
+        """Run optional dataset setup in the agent shell, bounded by its timeout.
 
-        No-op for every other dataset: gated on the SWE-smith image namespace, so
-        this cannot silently alter tasks from other corpora. Fails loudly rather
-        than leaving the sandbox on `main`, because silently staying on main is
-        the original defect -- it hands the agent already-fixed code and the
-        graded tests pass without any work.
+        Snapshot setup state for verification; later agent exports/cd must not
+        change the verifier's starting environment. Tests remain hidden until submit.
         """
-        source_ref = getattr(self, "_source_image_ref", "") or ""
-        if not source_ref.startswith(_SWESMITH_IMAGE_PREFIX):
+        if not command or not command.strip():
             return
-        if not task_id:
-            raise SweSmithSetupError(
-                f"SWE-smith image {source_ref} requires a task_id to select its pinned ref, none given"
-            )
-        if not _SWESMITH_TASK_ID_RE.match(task_id):
-            raise SweSmithSetupError(f"Unsafe SWE-smith task id {task_id!r}; refusing to use it as a git ref")
         assert self._backend is not None
-        repo = shlex.quote(_SWESMITH_REPO_DIR)
-        ref = f"refs/remotes/origin/{task_id}"
-        # Resolve to an exact commit first, so provenance records what was used
-        # and a missing ref is reported as such instead of a confusing checkout error.
-        rev = self._backend.run_command(
-            f"git -C {repo} rev-parse --verify --end-of-options {shlex.quote(ref + chr(94) + '{commit}')}"
+        started = time.perf_counter()
+        result = self._backend.run_command(
+            f"bash {_BASH_WRAPPER_PATH_QUOTED} {shlex.quote(command)}", timeout=self._timeout
         )
-        commit = (rev.stdout or "").strip()
-        if rev.exit_code != 0 or not re.fullmatch(r"[0-9a-f]{40}", commit):
-            raise SweSmithSetupError(
-                f"Pinned SWE-smith ref {ref} not found in {_SWESMITH_REPO_DIR} for task {task_id} "
-                f"(image {source_ref}, exit={rev.exit_code}): {(rev.stderr or rev.stdout or '').strip()[:200]}"
+        if result.exit_code != 0:
+            raise TaskSetupError(
+                f"Task setup failed for {self._task_id!r} (exit={result.exit_code}, "
+                f"elapsed={time.perf_counter() - started:.2f}s, timeout={self._timeout}s): "
+                f"{(result.stderr or result.stdout or '')[-2000:]}"
             )
-        # Detached checkout of the exact commit: faithful to the pin and free of
-        # branch-name side effects. Agent edits stay ordinary working-tree writes,
-        # so the verifier sees them exactly as before.
-        out = self._backend.run_command(f"git -C {repo} checkout --detach --force {commit}")
-        if out.exit_code != 0:
-            raise SweSmithSetupError(
-                f"Failed to check out pinned SWE-smith commit {commit} for task {task_id} "
-                f"(exit={out.exit_code}): {(out.stderr or out.stdout or '').strip()[:200]}"
-            )
-        self._swesmith_ref = ref
-        self._swesmith_commit = commit
-        # Put the image's OWN interpreter env on PATH for agent and verifier. The
-        # env already exists in the image; nothing is installed and no test
-        # definition is touched.
-        probe = self._backend.run_command(f"test -x {shlex.quote(_SWESMITH_ENV_BIN)}/python && echo yes")
-        if "yes" in (probe.stdout or ""):
-            self._backend.run_command(
-                f"printf '%s\\n' {shlex.quote('export PATH=' + _SWESMITH_ENV_BIN + ':$PATH')} >> {shlex.quote(_BASH_ENV_PATH)}"
-            )
-            self._swesmith_path_prefix = _SWESMITH_ENV_BIN
-        logger.info(
-            "SWE-smith task setup: task_id=%s ref=%s commit=%s path_prefix=%s",
-            task_id,
-            ref,
-            commit,
-            getattr(self, "_swesmith_path_prefix", None),
+        snapshot = self._backend.run_command(
+            f"cp {shlex.quote(_BASH_CWD_PATH)} {shlex.quote(_SETUP_CWD_PATH)} && "
+            f"cp {shlex.quote(_BASH_ENV_PATH)} {shlex.quote(_SETUP_ENV_PATH)}"
         )
+        if snapshot.exit_code != 0:
+            raise TaskSetupError(f"Could not save task setup state: {snapshot.stderr or snapshot.stdout}")
+        self._has_task_setup = True
+        logger.info("Task setup completed: task_id=%s elapsed=%.3fs", self._task_id, time.perf_counter() - started)
 
     def _prepare_vanillux_runtime(self) -> None:
         assert self._backend is not None
@@ -743,6 +696,11 @@ class SWERLVanilluxSandboxEnv(RLEnvironment):
         verifier_command = (
             f'bash /tests/test.sh; status=$?; printf \'%s\' "$status" > {shlex.quote(status_path)}; exit "$status"'
         )
+        if self._has_task_setup:
+            verifier_command = (
+                f". {shlex.quote(_SETUP_ENV_PATH)} && "
+                f'cd "$(cat {shlex.quote(_SETUP_CWD_PATH)})" && {verifier_command}'
+            )
         result = self._backend.run_command(verifier_command, timeout=self._test_timeout)
         completion = self._backend.run_command(
             f"if [ -f {shlex.quote(status_path)} ]; then cat {shlex.quote(status_path)}; "
