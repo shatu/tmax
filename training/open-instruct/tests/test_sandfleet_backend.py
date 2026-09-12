@@ -11,6 +11,7 @@ from urllib.error import HTTPError
 
 import pytest
 
+from open_instruct.environments import sandfleet_backend as module
 from open_instruct.environments.backends import ExecutionResult, SandboxLostError, SandboxOOMError, create_backend
 from open_instruct.environments.sandfleet_backend import SandfleetBackend
 
@@ -299,3 +300,74 @@ def test_failed_release_keeps_lease_releasable(service):
     with pytest.raises(RuntimeError, match="release failed"):
         backend.close()
     assert backend._lease_id == "lease-1"
+
+
+def test_controller_renewal_follows_changed_registry(monkeypatch, tmp_path):
+    registry = tmp_path / "endpoint.json"
+    registry.write_text(json.dumps({"url": "http://old"}))
+    monkeypatch.setenv("SANDFLEET_REGISTRY", str(registry))
+    backend = SandfleetBackend()
+    backend._url = "http://old"
+    backend._lease_id = "test"
+    backend._lease_ttl_seconds = 3600
+    seen = []
+
+    class Response(io.BytesIO):
+        pass
+
+    def request(req, **kwargs):
+        seen.append(req.full_url)
+        if len(seen) == 1:
+            registry.write_text(json.dumps({"url": "http://new"}))
+            raise ConnectionRefusedError("controller restarting")
+        return Response(b"{}")
+
+    monkeypatch.setattr(module, "urlopen", request)
+    monkeypatch.setattr(module, "_sleep_before_retry", lambda *_args: 0)
+    backend._renew_once()
+    assert seen == ["http://old/v1/leases/test/renew", "http://new/v1/leases/test/renew"]
+    # Direct worker traffic must never be redirected to the controller.
+    backend._request("http://worker", "/v1/leases/test/exec", token="lease", method="POST")
+    assert seen[-1] == "http://worker/v1/leases/test/exec"
+
+
+def test_registry_invalid_does_not_fall_back(monkeypatch, tmp_path):
+    path = tmp_path / "endpoint.json"
+    monkeypatch.setenv("SANDFLEET_REGISTRY", str(path))
+    backend = SandfleetBackend()
+    backend._url = "http://old"
+    assert backend._controller_url() == "http://old"
+    path.write_text("{")
+    with pytest.raises(ValueError):
+        backend._controller_url()
+    path.write_text(json.dumps({"url": "http://user:password@host"}))
+    with pytest.raises(ValueError):
+        backend._controller_url()
+
+
+def test_renewal_retry_is_bounded_by_ttl(monkeypatch):
+    backend = SandfleetBackend()
+    backend._lease_id = "test"
+    backend._lease_ttl_seconds = 60
+    calls = []
+    monkeypatch.setattr(backend, "_request", lambda *args, **kwargs: calls.append(kwargs))
+    backend._renew_once()
+    assert calls[0]["retry_window"] == 30
+    assert calls[0]["timeout"] == 10
+    assert calls[0]["stop"] is backend._renew_stop
+
+
+def test_worker_file_read_keeps_its_operation_timeout(monkeypatch):
+    backend = SandfleetBackend()
+    backend._lease_id = "test"
+    backend._lease_token = "lease-token"
+    backend._agent_url = "http://worker"
+    calls = []
+
+    def request(req, *, timeout):
+        calls.append((req.full_url, timeout))
+        return io.BytesIO(b'{"content_b64":"b2s="}')
+
+    monkeypatch.setattr(module, "urlopen", request)
+    assert backend.read_file("/tmp/output") == "ok"
+    assert calls == [("http://worker/v1/leases/test/read-file", 120)]

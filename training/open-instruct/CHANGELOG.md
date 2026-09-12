@@ -1,5 +1,7 @@
 # Changelog
 
+- Recover Sandfleet controller addresses through the shared registry and bound lease-renewal retries (https://github.com/hamishivi/tmax-private/pull/20).
+
 All notable changes to this project will be documented in this file.
 
 
