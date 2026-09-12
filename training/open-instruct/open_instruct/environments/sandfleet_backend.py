@@ -9,8 +9,10 @@ import random
 import threading
 import time
 import uuid
+from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from docker import errors as docker_errors
@@ -91,7 +93,22 @@ class SandfleetBackend(SandboxBackend):
         self._renew_thread: threading.Thread | None = None
         self._renewal_error: Exception | None = None
 
+    def _controller_url(self) -> str:
+        registry = os.getenv("SANDFLEET_REGISTRY")
+        if not registry:
+            return self._url
+        try:
+            payload = json.loads(Path(registry).read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return self._url
+        url = payload["url"]
+        parsed = urlsplit(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("Invalid Sandfleet registry URL")
+        return url.rstrip("/")
+
     def _ensure_configured(self) -> None:
+        self._url = self._controller_url()
         if not self._url:
             raise RuntimeError("Sandfleet service URL is unset; set SANDFLEET_URL")
         if not self._token:
@@ -126,6 +143,9 @@ class SandfleetBackend(SandboxBackend):
         payload: dict[str, Any] | None = None,
         timeout: float | None = None,
         retry: bool | None = None,
+        controller: bool = False,
+        retry_window: float = _RETRY_WINDOW_SECONDS,
+        stop: threading.Event | None = None,
     ) -> dict[str, Any]:
         body = None if payload is None else json.dumps(payload, separators=(",", ":")).encode("utf-8")
         if body is not None and len(body) > _MAX_REQUEST_BYTES:
@@ -133,13 +153,18 @@ class SandfleetBackend(SandboxBackend):
         headers = {"Accept": "application/json", "Authorization": f"Bearer {token}"}
         if body is not None:
             headers["Content-Type"] = "application/json"
-        request = Request(base_url.rstrip("/") + path, data=body, headers=headers, method=method)
         retry = method in {"GET", "DELETE"} if retry is None else retry
-        retry_deadline = time.monotonic() + _RETRY_WINDOW_SECONDS
+        retry_deadline = time.monotonic() + retry_window
         delay = _RETRY_INITIAL_DELAY_SECONDS
         while True:
+            if stop is not None and stop.is_set():
+                raise InterruptedError("Controller request stopped")
+            current_url = self._controller_url() if controller else base_url
+            request = Request(current_url.rstrip("/") + path, data=body, headers=headers, method=method)
             try:
                 request_timeout = self._request_timeout if timeout is None else timeout
+                if retry:
+                    request_timeout = min(request_timeout, max(0.001, retry_deadline - time.monotonic()))
                 with urlopen(request, timeout=request_timeout) as response:  # noqa: S310
                     raw = response.read()
                     return json.loads(raw) if raw else {}
@@ -153,7 +178,8 @@ class SandfleetBackend(SandboxBackend):
                 error_type, message = self._decode_error(error)
                 self._raise_remote_error(error_type, message, cause=error)
             except OSError as error:
-                if retry:
+                refused = isinstance(getattr(error, "reason", error), ConnectionRefusedError)
+                if retry or (controller and refused):
                     next_delay = _sleep_before_retry(retry_deadline, delay)
                     if next_delay is not None:
                         delay = next_delay
@@ -190,6 +216,7 @@ class SandfleetBackend(SandboxBackend):
                 status = self._request(
                     self._url,
                     f"/{_API_VERSION}/leases/{self._lease_id}",
+                    controller=True,
                     token=self._token,
                     timeout=self._request_timeout,
                 )
@@ -204,6 +231,7 @@ class SandfleetBackend(SandboxBackend):
         result = self._request(
             self._url,
             f"/{_API_VERSION}/lease-requests",
+            controller=True,
             token=self._token,
             method="POST",
             payload={**selection, "timeout_seconds": self._acquire_timeout},
@@ -218,14 +246,20 @@ class SandfleetBackend(SandboxBackend):
                 base_delay = max(delay, float(result["poll_after_seconds"]))
                 time.sleep(min(base_delay * random.uniform(0.9, 1.1), remaining))
                 delay = min(10.0, max(0.1, base_delay * 1.5))
-                result = self._request(self._url, f"/{_API_VERSION}/lease-requests/{request_id}", token=self._token)
+                result = self._request(
+                    self._url, f"/{_API_VERSION}/lease-requests/{request_id}", token=self._token, controller=True
+                )
             if result["status"] != "assigned":
                 raise TimeoutError(result["error"] or f"Could not acquire from Sandfleet selection {selection!r}")
             return result["lease"]
         except Exception as error:
             try:
                 self._request(
-                    self._url, f"/{_API_VERSION}/lease-requests/{request_id}", token=self._token, method="DELETE"
+                    self._url,
+                    f"/{_API_VERSION}/lease-requests/{request_id}",
+                    token=self._token,
+                    method="DELETE",
+                    controller=True,
                 )
             except Exception as cleanup_error:
                 error.add_note(f"Could not cancel Sandfleet lease request {request_id}: {cleanup_error}")
@@ -238,17 +272,23 @@ class SandfleetBackend(SandboxBackend):
         self._request(
             self._url,
             f"/{_API_VERSION}/leases/{lease_id}/renew",
+            controller=True,
             token=self._token,
             method="POST",
             payload={},
             retry=True,
+            timeout=10,
+            retry_window=min(300.0, self._lease_ttl_seconds / 2) if self._lease_ttl_seconds else 300,
+            stop=self._renew_stop,
         )
 
     def _renew_loop(self) -> None:
-        interval = max(1.0, self._lease_ttl_seconds / 3)
+        interval = max(0.1, min(30.0, self._lease_ttl_seconds / 3))
         while not self._renew_stop.wait(interval * random.uniform(0.9, 1.1)):
             try:
                 self._renew_once()
+            except InterruptedError:
+                return
             except Exception as error:
                 self._renewal_error = error
                 return
@@ -364,12 +404,13 @@ class SandfleetBackend(SandboxBackend):
         lease_id = self._lease_id
         self._renew_stop.set()
         if self._renew_thread is not None:
-            self._renew_thread.join(timeout=2)
+            self._renew_thread.join(timeout=16)
             self._renew_thread = None
         if lease_id is not None:
             self._request(
                 self._url,
                 f"/{_API_VERSION}/leases/{lease_id}",
+                controller=True,
                 token=self._token,
                 method="DELETE",
                 timeout=max(120, self._request_timeout),
