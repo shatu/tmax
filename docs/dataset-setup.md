@@ -20,24 +20,35 @@ current row's command in the fresh sandbox. These commands execute trusted datas
 code, just like the dataset's verifier; there is no task-id interpolation by the
 harness.
 
-For example, a SWE-smith dataset producer can populate each row as follows:
+For example, a dataset can ship a setup script under `environment/seeds` and
+set `env_config["setup_command"] = "source /workspace/setup.sh"`. Sourcing the
+script preserves its exports and working directory. Dataset scripts should use
+`set -e` or explicit checked commands, and quote task-derived arguments.
 
-```python
-import shlex
+## SWE-smith integration requirements
 
-ref = f"refs/remotes/origin/{task_id}^{{commit}}"
-env_config["setup_command"] = (
-    "set -e\n"
-    "cd /testbed\n"
-    f"commit=$(git rev-parse --verify --end-of-options {shlex.quote(ref)})\n"
-    'git checkout --detach --force "$commit"\n'
-    "test -x /opt/miniconda3/envs/testbed/bin/python\n"
-    'export PATH="/opt/miniconda3/envs/testbed/bin:$PATH"\n'
-    'printf "Task commit: %s\\n" "$commit"\n'
-)
-```
+Checkout alone is not a complete SWE-smith adapter. At upstream source revision
+`9b74ac08118a85c39c356802f7961893af73e07f`, the official evaluation harness:
 
-The dataset producer owns repository paths, interpreter selection, and ref
-availability. Missing refs must be fixed in the dataset/images before launching;
-this hook does not substitute refs or filter tasks. Existing SWE-smith rows need
-this metadata added in a separately pinned dataset revision before using the hook.
+- Fetches task refs before checkout. Resolve refs to immutable commits when
+  preparing campaign artifacts; avoid a network fetch for every rollout.
+- Evaluates from the bug commit beneath the test-removal commit (`HEAD~1` in
+  upstream's documented two-commit layout). Preserve the task branch state for
+  the agent, then restore the authoritative test files at verification time.
+  Do not blindly move the agent to the parent commit or undo agent source edits.
+- Reverts prediction changes to test files before grading. An in-place training
+  verifier must similarly restore authoritative tests without reverting the fix.
+- Uses the repository profile's environment activation, test command, and log
+  parser. Go tasks use Go tests, not pytest; some Python profiles override the
+  default command as well.
+- Checks both `FAIL_TO_PASS` and `PASS_TO_PASS` by default. Missing expected test
+  results count as failures; exit zero or an empty test selection is insufficient.
+
+Use the pinned upstream profile/harness to prepare setup and verifier artifacts,
+and record any deliberate reward-policy difference. The generic setup hook does
+not implement these dataset semantics. Test artifacts remain deferred until
+submission. Validate no-op, known repair, regression, and modified/missing-test
+cases before launching the converted dataset.
+
+References: [upstream execution](https://github.com/SWE-bench/SWE-smith/blob/9b74ac08118a85c39c356802f7961893af73e07f/swesmith/harness/utils.py),
+[upstream grading](https://github.com/SWE-bench/SWE-smith/blob/9b74ac08118a85c39c356802f7961893af73e07f/swesmith/harness/grading.py).
