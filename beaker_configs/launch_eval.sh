@@ -400,7 +400,15 @@ GANTRY_CMD=(
 #   --synchronized-start-timeout: don't start the agent replica against a server
 #     replica that is still queued.
 if [ "$VLLM_MODE" = "split" ]; then
+    # Beaker expands `replicas: 2` server-side into <task-name>-replica-0 and
+    # -replica-1; there is no per-replica naming hook, so the ONLY way to say
+    # which is which is to encode the fixed rank->role mapping in the task name:
+    #   vllm0-agent1-replica-0  = rank 0 = the vLLM server
+    #   vllm0-agent1-replica-1  = rank 1 = harbor / the agent
+    # run_eval_in_job.sh assigns roles from BEAKER_REPLICA_RANK on exactly this
+    # convention, so the name stays true as long as that holds.
     GANTRY_CMD+=(
+        --task-name "${SPLIT_TASK_NAME:-vllm0-agent1}"
         --replicas 2
         --leader-selection
         --propagate-preemption
