@@ -38,6 +38,9 @@ Usage
         --mirror-url host:5000,host2:5000 --min-runtime 8h
 
 Add --dry-run to print the spec without submitting.
+
+Note: `--min-runtime` is dropped for any task aimed at saturn (by cluster or by
+pinned hostname) -- we do not request guaranteed runtime on that cluster.
 """
 
 from __future__ import annotations
@@ -136,6 +139,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+# Saturn is a dev cluster; we do not ask for guaranteed runtime there. Applies
+# whether the task is aimed at the cluster by name or pinned to one of its hosts.
+SATURN_MARKER = "saturn"
+
+
+def _min_runtime_for(target: str, requested: str) -> tuple[str, bool]:
+    """Return (min_runtime, was_dropped) for a task aimed at `target`."""
+    if requested and SATURN_MARKER in (target or "").lower():
+        return "", True
+    return requested, False
+
+
 def build_spec(a: argparse.Namespace) -> tuple[str, dict]:
     served = a.name or Path(a.model_path).name
     job_name = a.job_name or f"{served}-{a.dataset.replace('@', '-').replace('.', '-')}"
@@ -232,9 +247,12 @@ def build_spec(a: argparse.Namespace) -> tuple[str, dict]:
         ),
         "tasks": [
             task("vllm-server", "vllm", vllm_cluster, a.gpus, a.vllm_hostname,
-                 a.min_runtime),
+                 _min_runtime_for(a.vllm_hostname or vllm_cluster, a.min_runtime)[0]),
             task("agent-eval", "eval", agent_cluster, a.agent_gpus, a.agent_hostname,
-                 a.min_runtime if a.agent_min_runtime is None else a.agent_min_runtime),
+                 _min_runtime_for(
+                     a.agent_hostname or agent_cluster,
+                     a.min_runtime if a.agent_min_runtime is None else a.agent_min_runtime,
+                 )[0]),
         ],
     }
     if a.budget:
@@ -255,8 +273,15 @@ def main(argv: list[str]) -> int:
     print(f"  agent-eval:   {a.agent_hostname or agent_cluster}  gpus={a.agent_gpus}")
     if a.agent_kwarg:
         print(f"  agent kwargs: {', '.join(a.agent_kwarg)}")
-    agent_mr = a.min_runtime if a.agent_min_runtime is None else a.agent_min_runtime
-    print(f"  minRuntime:   vllm={a.min_runtime or '<filler>'}  agent={agent_mr or '<filler>'}")
+    agent_mr_req = a.min_runtime if a.agent_min_runtime is None else a.agent_min_runtime
+    vllm_mr, vllm_dropped = _min_runtime_for(a.vllm_hostname or vllm_cluster, a.min_runtime)
+    agent_mr, agent_dropped = _min_runtime_for(a.agent_hostname or agent_cluster, agent_mr_req)
+    print(f"  minRuntime:   vllm={vllm_mr or '<filler>'}  agent={agent_mr or '<filler>'}")
+    for side, dropped, req in (("vllm-server", vllm_dropped, a.min_runtime),
+                               ("agent-eval", agent_dropped, agent_mr_req)):
+        if dropped:
+            print(f"  NOTE: dropped minRuntime={req} on {side} -- we do not request "
+                  "guaranteed runtime on saturn.")
     if (a.vllm_hostname and a.agent_hostname
             and a.vllm_hostname == a.agent_hostname):
         print("  ERROR: both tasks pinned to the SAME host; the in-job guard will")

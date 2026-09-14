@@ -412,6 +412,18 @@ if [ "$DRY_RUN" = "1" ]; then
     GANTRY_CMD+=(--dry-run)
 fi
 
+# We do not request guaranteed runtime on saturn (a dev cluster). Catches both
+# --cluster ai2/saturn and --hostname saturn-cs-aus-NNN.
+if [ -n "$MIN_RUNTIME" ]; then
+    case "${CLUSTER},${HOSTNAME_CONSTRAINT}" in
+        *saturn*)
+            echo "note: dropping --min-runtime $MIN_RUNTIME (target includes saturn;"
+            echo "      we do not request guaranteed runtime there)."
+            MIN_RUNTIME=""
+            ;;
+    esac
+fi
+
 if [ -n "$MIN_RUNTIME" ]; then
     GANTRY_CMD+=(--min-runtime "$MIN_RUNTIME")
 fi
