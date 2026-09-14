@@ -151,7 +151,14 @@ if [ "$VLLM_MODE" = "split" ]; then
 fi
 
 # How long each side tolerates the other going quiet.
-RDV_WAIT_MAX_SEC="${RDV_WAIT_MAX_SEC:-5400}"          # eval waits for vLLM's URL
+# The agent side waits this long for the server to publish its endpoint. Set to a
+# full day because the two sides are scheduled INDEPENDENTLY in the named-task
+# shape (synchronizedStartTimeout is replica-only), and the agent task requests
+# 0 GPUs so it starts almost immediately while the GPU-bound server can sit in
+# the queue. Waiting is nearly free -- it is a CPU-only slot -- and a server that
+# actually FAILS cancels this task via propagateFailure rather than leaving it to
+# time out. So the only thing this bounds is "server never got scheduled at all".
+RDV_WAIT_MAX_SEC="${RDV_WAIT_MAX_SEC:-86400}"         # eval waits for vLLM's URL (24h)
 EVAL_HEARTBEAT_INTERVAL_SEC="${EVAL_HEARTBEAT_INTERVAL_SEC:-30}"
 EVAL_HEARTBEAT_STALE_SEC="${EVAL_HEARTBEAT_STALE_SEC:-900}"
 VLLM_WATCHDOG_INTERVAL_SEC="${VLLM_WATCHDOG_INTERVAL_SEC:-30}"
@@ -582,11 +589,14 @@ elif [ "$ROLE" = "eval" ]; then
     # rank 0 only writes the file after its own completion probe passes, so the
     # presence of the file already means "ready"; we re-probe anyway because the
     # first hop is now a network hop.
-    log "waiting up to $((RDV_WAIT_MAX_SEC / 60)) min for rank 0 to publish $RDV_URL_FILE"
+    log "waiting up to $((RDV_WAIT_MAX_SEC / 3600))h$(( (RDV_WAIT_MAX_SEC % 3600) / 60 ))m for the vLLM task to publish $RDV_URL_FILE"
     waited=0
     while [ ! -s "$RDV_URL_FILE" ]; do
         if [ "$waited" -ge "$RDV_WAIT_MAX_SEC" ]; then
-            log "FATAL: rank 0 never published a vLLM URL after ${waited}s (is the server replica alive?)"
+            log "FATAL: the vLLM side never published a URL after ${waited}s."
+            log "       It was most likely never scheduled (a failure there would have"
+            log "       cancelled this task via propagateFailure). Raise RDV_WAIT_MAX_SEC"
+            log "       or check the vllm-server task's queue status."
             exit 1
         fi
         sleep 5

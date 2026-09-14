@@ -339,7 +339,7 @@ All read from the job env, all with working defaults:
 
 | Var | Default | Meaning |
 |---|---|---|
-| `RDV_WAIT_MAX_SEC` | `5400` | How long rank 1 waits for rank 0's endpoint. |
+| `RDV_WAIT_MAX_SEC` | `86400` (24h) | How long the agent side waits for the server's endpoint. Long on purpose: the two sides schedule independently, the agent (0 GPUs) starts first, and waiting costs only a CPU slot. A server that *fails* cancels the agent via `propagateFailure`, so this only bounds "never scheduled at all". |
 | `EVAL_HEARTBEAT_STALE_SEC` | `900` | Rank 0 releases its GPUs after this much heartbeat silence. |
 | `EVAL_START_GRACE_SEC` | `7200` | Rank 0 gives up if rank 1 never checks in at all. |
 | `VLLM_WATCHDOG_MAX_MISSES` × `VLLM_WATCHDOG_INTERVAL_SEC` | `20` × `30s` | Outage length that invalidates a run. |
