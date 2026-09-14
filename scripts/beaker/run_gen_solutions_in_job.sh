@@ -293,7 +293,12 @@ mkdir -p "${SUMMARY_CACHE_DIR:-/tmp/tmax_solutions}"
 VLLM_LOG=/tmp/vllm.log
 VLLM_LOG_TAIL_LINES="${VLLM_LOG_TAIL_LINES:-300}"
 
-VLLM_CMD=( uvx "vllm==${VLLM_VERSION}" serve "$VLLM_MODEL"
+UVX_ARGS=()
+case "$VLLM_VERSION" in
+    # Same pin as run_eval_in_job.sh: vllm 0.19.x is incompatible with fastapi >= 0.137.
+    0.19.*) UVX_ARGS+=( --with "fastapi<0.137" ) ;;
+esac
+VLLM_CMD=( uvx "${UVX_ARGS[@]}" "vllm==${VLLM_VERSION}" serve "$VLLM_MODEL"
            --served-model-name "$SERVED_MODEL_NAME"
            --port "$VLLM_PORT"
            --tensor-parallel-size "$TP_SIZE"
