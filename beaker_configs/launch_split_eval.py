@@ -91,12 +91,23 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--mirror-url", default=os.environ.get("MIRROR_URL", ""))
     p.add_argument("--agent-gpus", type=int, default=0,
                    help="GPUs for the harbor task (default 0 -- it needs none)")
+    p.add_argument("--agent-kwarg", action="append", default=[],
+                   help="harbor --agent-kwarg, repeatable (e.g. temperature=0)")
+    p.add_argument("--agent-env", action="append", default=[],
+                   help="harbor --agent-env, repeatable")
 
     # placement
     p.add_argument("--cluster", default="ai2/jupiter",
                    help="cluster for both tasks unless overridden per side")
     p.add_argument("--vllm-cluster", default=None)
     p.add_argument("--agent-cluster", default=None)
+    # Beaker has no anti-affinity, between tasks OR between experiments. Pinning
+    # hostnames is the only way to guarantee a specific layout -- e.g. two
+    # concurrent runs whose vLLM servers must not share a node and so contend.
+    p.add_argument("--vllm-hostname", default=None,
+                   help="pin the vLLM task to this node (overrides --vllm-cluster)")
+    p.add_argument("--agent-hostname", default=None,
+                   help="pin the harbor task to this node (overrides --agent-cluster)")
     p.add_argument("--priority", default="urgent")
     p.add_argument("--min-runtime", default="")
     p.add_argument("--workspace", default=os.environ.get("BEAKER_WORKSPACE", "ai2/oe-agents"))
@@ -151,6 +162,8 @@ def build_spec(a: argparse.Namespace) -> tuple[str, dict]:
         "N_CONCURRENT": str(a.n_concurrent),
         "N_ATTEMPTS": str(a.n_attempts),
         "N_TASKS": a.n_tasks,
+        "EXTRA_AGENT_KWARGS": "\n".join(a.agent_kwarg),
+        "EXTRA_AGENT_ENVS": "\n".join(a.agent_env),
         "MIRROR_URL": a.mirror_url,
         "JOB_NAME": job_name,
         "RESULTS_DIR": "/results",
@@ -173,7 +186,7 @@ def build_spec(a: argparse.Namespace) -> tuple[str, dict]:
         "exec bash scripts/beaker/run_eval_in_job.sh\n"
     )
 
-    def task(name: str, role: str, cluster: str, gpus: int) -> dict:
+    def task(name: str, role: str, cluster: str, gpus: int, hostname: str | None) -> dict:
         env_vars = [{"name": k, "value": v} for k, v in sorted(env.items())]
         env_vars.append({"name": "EVAL_ROLE", "value": role})
         env_vars.append({"name": "HF_TOKEN", "secret": a.hf_token_secret})
@@ -190,7 +203,10 @@ def build_spec(a: argparse.Namespace) -> tuple[str, dict]:
             "result": {"path": "/results"},
             "resources": {"gpuCount": gpus},
             "context": context,
-            "constraints": {"cluster": [cluster]},
+            # hostname alone when pinning: Beaker treats each constraint as an
+            # allow-list, and a cluster list alongside it is redundant at best.
+            "constraints": ({"hostname": [hostname]} if hostname
+                            else {"cluster": [cluster]}),
             "hostNetworking": True,
             # Experiment-wide: "if a job for this task fails, all other jobs in
             # the experiment are canceled". So a dead server takes the agent down
@@ -206,8 +222,8 @@ def build_spec(a: argparse.Namespace) -> tuple[str, dict]:
             f"[vLLM on {vllm_cluster}, harbor on {agent_cluster}]"
         ),
         "tasks": [
-            task("vllm-server", "vllm", vllm_cluster, a.gpus),
-            task("agent-eval", "eval", agent_cluster, a.agent_gpus),
+            task("vllm-server", "vllm", vllm_cluster, a.gpus, a.vllm_hostname),
+            task("agent-eval", "eval", agent_cluster, a.agent_gpus, a.agent_hostname),
         ],
     }
     if a.budget:
@@ -224,9 +240,16 @@ def main(argv: list[str]) -> int:
     print("=== split eval (two named Beaker tasks) ===")
     print(f"  experiment:   {exp_name}")
     print(f"  workspace:    {a.workspace}")
-    print(f"  vllm-server:  {vllm_cluster}  gpus={a.gpus}")
-    print(f"  agent-eval:   {agent_cluster}  gpus={a.agent_gpus}")
-    if vllm_cluster == agent_cluster:
+    print(f"  vllm-server:  {a.vllm_hostname or vllm_cluster}  gpus={a.gpus}")
+    print(f"  agent-eval:   {a.agent_hostname or agent_cluster}  gpus={a.agent_gpus}")
+    if a.agent_kwarg:
+        print(f"  agent kwargs: {', '.join(a.agent_kwarg)}")
+    if (a.vllm_hostname and a.agent_hostname
+            and a.vllm_hostname == a.agent_hostname):
+        print("  ERROR: both tasks pinned to the SAME host; the in-job guard will")
+        print("         fail the run. Pin different hosts.")
+        raise SystemExit(2)
+    if not (a.vllm_hostname or a.agent_hostname) and vllm_cluster == agent_cluster:
         print("  NOTE: both tasks target one cluster. Beaker has no anti-affinity,")
         print("        so they may land on the SAME node; the in-job guard will")
         print("        fail the run if they do. Use different clusters to guarantee")
