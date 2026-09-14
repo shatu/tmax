@@ -109,7 +109,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--agent-hostname", default=None,
                    help="pin the harbor task to this node (overrides --agent-cluster)")
     p.add_argument("--priority", default="urgent")
-    p.add_argument("--min-runtime", default="")
+    p.add_argument("--min-runtime", default="",
+                   help="minRuntime for the vLLM task (the one holding a GPU)")
+    # Per-task, because minRuntime requires an ALLOCATION on the target cluster:
+    # a workspace can be allocated on one cluster and not another, and asking for
+    # it where you have none is rejected outright ("set min_runtime to 0 to run as
+    # unallocated filler"). Empty string = filler.
+    p.add_argument("--agent-min-runtime", default=None,
+                   help="minRuntime for the harbor task (default: same as --min-runtime; "
+                        "pass '' to run it as unallocated filler)")
     p.add_argument("--workspace", default=os.environ.get("BEAKER_WORKSPACE", "ai2/oe-agents"))
     p.add_argument("--budget", default="")
     p.add_argument("--image", default=os.environ.get("BEAKER_IMAGE", "hamishivi/tmax-eval-interactive"))
@@ -186,14 +194,15 @@ def build_spec(a: argparse.Namespace) -> tuple[str, dict]:
         "exec bash scripts/beaker/run_eval_in_job.sh\n"
     )
 
-    def task(name: str, role: str, cluster: str, gpus: int, hostname: str | None) -> dict:
+    def task(name: str, role: str, cluster: str, gpus: int, hostname: str | None,
+             min_runtime: str) -> dict:
         env_vars = [{"name": k, "value": v} for k, v in sorted(env.items())]
         env_vars.append({"name": "EVAL_ROLE", "value": role})
         env_vars.append({"name": "HF_TOKEN", "secret": a.hf_token_secret})
         env_vars.append({"name": "DOCKER_PAT", "secret": a.docker_pat_secret})
         context: dict = {"priority": a.priority}
-        if a.min_runtime:
-            context["minRuntime"] = a.min_runtime
+        if min_runtime:
+            context["minRuntime"] = min_runtime
         return {
             "name": name,
             "image": {"beaker": a.image},
@@ -222,8 +231,10 @@ def build_spec(a: argparse.Namespace) -> tuple[str, dict]:
             f"[vLLM on {vllm_cluster}, harbor on {agent_cluster}]"
         ),
         "tasks": [
-            task("vllm-server", "vllm", vllm_cluster, a.gpus, a.vllm_hostname),
-            task("agent-eval", "eval", agent_cluster, a.agent_gpus, a.agent_hostname),
+            task("vllm-server", "vllm", vllm_cluster, a.gpus, a.vllm_hostname,
+                 a.min_runtime),
+            task("agent-eval", "eval", agent_cluster, a.agent_gpus, a.agent_hostname,
+                 a.min_runtime if a.agent_min_runtime is None else a.agent_min_runtime),
         ],
     }
     if a.budget:
@@ -244,6 +255,8 @@ def main(argv: list[str]) -> int:
     print(f"  agent-eval:   {a.agent_hostname or agent_cluster}  gpus={a.agent_gpus}")
     if a.agent_kwarg:
         print(f"  agent kwargs: {', '.join(a.agent_kwarg)}")
+    agent_mr = a.min_runtime if a.agent_min_runtime is None else a.agent_min_runtime
+    print(f"  minRuntime:   vllm={a.min_runtime or '<filler>'}  agent={agent_mr or '<filler>'}")
     if (a.vllm_hostname and a.agent_hostname
             and a.vllm_hostname == a.agent_hostname):
         print("  ERROR: both tasks pinned to the SAME host; the in-job guard will")
