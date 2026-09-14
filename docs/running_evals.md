@@ -251,19 +251,15 @@ defeat the point.
 
 Both replicas run `run_eval_in_job.sh`, which branches on `BEAKER_REPLICA_RANK`:
 
-| Beaker job | Rank | `ROLE` | What it does |
+| Rank | `ROLE` | Beaker job | What it does |
 |---|---|---|---|
-| `vllm0-agent1-replica-0` | 0 | `vllm` | Serves the model. Skips podman, compose, the harbor patches, and the Docker Hub login entirely — it never runs a container. |
-| `vllm0-agent1-replica-1` | 1 | `eval` | Everything else. Runs harbor's containers; never touches a GPU. |
+| 0 | `vllm` | `main-replica-0` | Serves the model. Skips podman, compose, the harbor patches, and the Docker Hub login entirely — it never runs a container. |
+| 1 | `eval` | `main-replica-1` | Everything else. Runs harbor's containers; never touches a GPU. |
 
-**Reading the Beaker UI.** Beaker expands `replicas: 2` server-side into
-`<task-name>-replica-0` / `-replica-1` and offers no per-replica naming hook, so
-the rank→role mapping is encoded in the task name instead: `--split-vllm` sets
-`--task-name vllm0-agent1`, i.e. *replica **0** is **vllm**, replica **1** is the
-**agent***. Override with `SPLIT_TASK_NAME=` if you want something else, but keep
-the ordering — `run_eval_in_job.sh` assigns roles from `BEAKER_REPLICA_RANK` on
-exactly this convention. **Rank 0 is always the server; rank 1 is always harbor.**
-Logs make it explicit too: each job's first line is
+The order is fixed: **rank 0 is always the server, rank 1 is always harbor.**
+Beaker names replicas positionally (`main-replica-0` / `-replica-1`) with no
+per-replica naming hook, so that ordering is how you tell them apart in the UI.
+Each job's first log line states it outright:
 `VLLM_MODE=split  BEAKER_REPLICA_RANK=N  ROLE=...`.
 
 They rendezvous through a directory on weka (`--rdv-root`, keyed by
