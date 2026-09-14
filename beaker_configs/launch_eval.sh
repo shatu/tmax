@@ -70,12 +70,19 @@ HARBOR_OVERRIDE_CPUS=""
 HARBOR_OVERRIDE_MEMORY_MB=""
 HARBOR_OVERRIDE_STORAGE_MB=""
 HARBOR_OVERRIDE_GPUS=""
+MIN_RUNTIME=""
+HOSTNAME_CONSTRAINT=""              # optional: pin to a specific beaker node hostname (gantry --hostname)
 HARBOR_TIMEOUT_MULTIPLIER=""
 HARBOR_AGENT_TIMEOUT_MULTIPLIER=""
 HARBOR_VERIFIER_TIMEOUT_MULTIPLIER=""
 HARBOR_AGENT_SETUP_TIMEOUT_MULTIPLIER=""
 HARBOR_ENVIRONMENT_BUILD_TIMEOUT_MULTIPLIER=""
 HARBOR_AGENT_TIMEOUT_SEC=""
+VLLM_MODE="colocated"               # colocated | split | external
+VLLM_BASE_URL=""                    # required for --vllm-base-url (external)
+SYNC_START_TIMEOUT="30m"            # gantry --synchronized-start-timeout (split)
+DRY_RUN=0
+RDV_ROOT="${RDV_ROOT:-/weka/oe-adapt-default/${USER:-$(whoami)}/tmax-eval/rendezvous}"
 
 usage() {
     cat <<EOF
@@ -140,6 +147,8 @@ Options:
   --override-storage-mb N
                         harbor per-task environment storage override in MB
   --override-gpus N      harbor per-task environment GPU override
+  --min-runtime DUR      gantry --min-runtime (e.g. 8h): guaranteed runtime before preemption
+  --hostname HOST        pin the job to one beaker node (gantry --hostname; repeatable via comma list)
   --timeout-multiplier X harbor task timeout multiplier
   --agent-timeout-multiplier X
                         harbor agent timeout multiplier
@@ -151,6 +160,26 @@ Options:
                         harbor environment build timeout multiplier
   --agent-timeout-sec SEC
                         exact harbor agent timeout override in seconds
+
+vLLM placement (see docs/running_evals.md, "Splitting vLLM off the agent node"):
+  --split-vllm           run vLLM and harbor on SEPARATE nodes, as two replicas
+                         of one Beaker task (replicas=2 + leaderSelection).
+                         Rank 0 serves the model and nothing else; rank 1 runs
+                         harbor's podman containers and never touches a GPU, so
+                         trial CPU/disk load can no longer starve vLLM's API
+                         server. Costs one extra node: Beaker replicas are
+                         homogeneous, so the agent replica is allocated --gpus
+                         GPUs it will not use, and the pair is scheduled
+                         all-or-nothing.
+  --vllm-base-url URL    do not start vLLM at all; point harbor at an existing
+                         server, e.g. from beaker_configs/launch_vllm.sh. URL
+                         must include /v1. Implies --gpus 0 unless overridden.
+  --sync-start-timeout D gantry --synchronized-start-timeout for --split-vllm
+                         (default: $SYNC_START_TIMEOUT)
+  --rdv-root DIR         weka dir for split-mode rendezvous state
+                         (default: $RDV_ROOT)
+
+  --dry-run              build and validate the gantry command, but submit nothing
 EOF
     exit 1
 }
@@ -200,12 +229,19 @@ while [ $# -gt 0 ]; do
         --override-memory-mb) HARBOR_OVERRIDE_MEMORY_MB="$2"; shift 2 ;;
         --override-storage-mb) HARBOR_OVERRIDE_STORAGE_MB="$2"; shift 2 ;;
         --override-gpus)   HARBOR_OVERRIDE_GPUS="$2"; shift 2 ;;
+        --min-runtime)     MIN_RUNTIME="$2"; shift 2 ;;
+        --hostname)        HOSTNAME_CONSTRAINT="$2"; shift 2 ;;
         --timeout-multiplier) HARBOR_TIMEOUT_MULTIPLIER="$2"; shift 2 ;;
         --agent-timeout-multiplier) HARBOR_AGENT_TIMEOUT_MULTIPLIER="$2"; shift 2 ;;
         --verifier-timeout-multiplier) HARBOR_VERIFIER_TIMEOUT_MULTIPLIER="$2"; shift 2 ;;
         --agent-setup-timeout-multiplier) HARBOR_AGENT_SETUP_TIMEOUT_MULTIPLIER="$2"; shift 2 ;;
         --environment-build-timeout-multiplier) HARBOR_ENVIRONMENT_BUILD_TIMEOUT_MULTIPLIER="$2"; shift 2 ;;
         --agent-timeout-sec) HARBOR_AGENT_TIMEOUT_SEC="$2"; shift 2 ;;
+        --split-vllm)      VLLM_MODE="split"; shift ;;
+        --vllm-base-url)   VLLM_MODE="external"; VLLM_BASE_URL="$2"; shift 2 ;;
+        --sync-start-timeout) SYNC_START_TIMEOUT="$2"; shift 2 ;;
+        --rdv-root)        RDV_ROOT="$2"; shift 2 ;;
+        --dry-run)         DRY_RUN=1; shift ;;
         -h|--help)         usage ;;
         *) echo "unknown option: $1"; usage ;;
     esac
@@ -226,6 +262,40 @@ fi
 
 BEAKER_NAME="eval-${JOB_NAME}"
 
+# --- vLLM placement validation ----------------------------------------------
+case "$VLLM_MODE" in
+    external)
+        case "$VLLM_BASE_URL" in
+            http://*|https://*) ;;
+            *) echo "error: --vllm-base-url must be an http(s) URL including /v1" >&2; exit 1 ;;
+        esac
+        # The eval job runs no model, so it needs no GPUs. Keep an explicit
+        # --gpus from the caller (some harbor tasks request GPUs of their own).
+        if [ "$GPU_COUNT" = "8" ]; then
+            GPU_COUNT=0
+        fi
+        ;;
+    split)
+        # A replica group is admitted all-or-nothing and placed on ONE cluster,
+        # so a comma-separated list only widens where the PAIR may land, not
+        # where each replica lands. Still worth saying out loud.
+        if [ -z "$HOSTNAME_CONSTRAINT" ] && [ "${CLUSTER//[^,]/}" != "" ]; then
+            echo "note: --split-vllm with multiple clusters — Beaker places the whole"
+            echo "      replica group on one of them; it will not straddle clusters."
+        fi
+        if [ -n "$HOSTNAME_CONSTRAINT" ]; then
+            echo "error: --split-vllm needs two nodes; --hostname pins the group to one." >&2
+            exit 1
+        fi
+        ;;
+esac
+
+VLLM_PLACEMENT_DESC="colocated (vLLM + harbor on one node)"
+case "$VLLM_MODE" in
+    split)    VLLM_PLACEMENT_DESC="split (replicas=2: rank 0 serves vLLM, rank 1 runs harbor)" ;;
+    external) VLLM_PLACEMENT_DESC="external (${VLLM_BASE_URL})" ;;
+esac
+
 cat <<EOF
 === Launching tmax eval on Beaker ===
   Model:        ${MODEL_PATH}@${REVISION}
@@ -236,6 +306,7 @@ cat <<EOF
   Reason parser: ${VLLM_REASONING_PARSER:-<none>}
   LM only:      ${VLLM_LANGUAGE_MODEL_ONLY}
   GPUs:         ${GPU_COUNT} (TP=${TP_SIZE}, DP=${DP_SIZE})
+  vLLM placement: ${VLLM_PLACEMENT_DESC}
   Dataset:      ${DATASET}
   Harbor env:   ${HARBOR_ENV}
   Agent:        ${AGENT_IMPORT_PATH}
@@ -310,6 +381,9 @@ GANTRY_CMD=(
     --env "HARBOR_ENVIRONMENT_BUILD_TIMEOUT_MULTIPLIER=${HARBOR_ENVIRONMENT_BUILD_TIMEOUT_MULTIPLIER}"
     --env "HARBOR_AGENT_TIMEOUT_SEC=${HARBOR_AGENT_TIMEOUT_SEC}"
     --env "JOB_NAME=${JOB_NAME}"
+    --env "VLLM_MODE=${VLLM_MODE}"
+    --env "VLLM_BASE_URL=${VLLM_BASE_URL}"
+    --env "RDV_ROOT=${RDV_ROOT}"
     --env BEAKER_ALLOW_SUBCONTAINERS=1
     --env BEAKER_SKIP_DOCKER_SOCKET=1
     --host-networking
@@ -317,10 +391,40 @@ GANTRY_CMD=(
     --no-python
 )
 
+# Split mode is one Beaker TASK with two REPLICAS, not two tasks: replicas are
+# the only thing Beaker gives cross-node discovery for (leaderSelection +
+# hostNetworking). Separate tasks in one experiment get no discovery env vars and
+# no guarantee they land on different nodes.
+#   --propagate-failure/-preemption: if the server replica dies, kill the agent
+#     replica rather than let it error out every remaining trial.
+#   --synchronized-start-timeout: don't start the agent replica against a server
+#     replica that is still queued.
+if [ "$VLLM_MODE" = "split" ]; then
+    GANTRY_CMD+=(
+        --replicas 2
+        --leader-selection
+        --propagate-preemption
+        --synchronized-start-timeout "$SYNC_START_TIMEOUT"
+    )
+fi
+
+if [ "$DRY_RUN" = "1" ]; then
+    GANTRY_CMD+=(--dry-run)
+fi
+
+if [ -n "$MIN_RUNTIME" ]; then
+    GANTRY_CMD+=(--min-runtime "$MIN_RUNTIME")
+fi
+if [ -n "$HOSTNAME_CONSTRAINT" ]; then
+    for h in ${HOSTNAME_CONSTRAINT//,/ }; do GANTRY_CMD+=(--hostname "$h"); done
+fi
+
 # Gantry accepts repeated --cluster flags; CLUSTER may be comma-separated.
-for cluster in ${CLUSTER//,/ }; do
-    GANTRY_CMD+=(--cluster "$cluster")
-done
+if [ -z "$HOSTNAME_CONSTRAINT" ]; then   # gantry forbids --cluster together with --hostname
+    for cluster in ${CLUSTER//,/ }; do
+        GANTRY_CMD+=(--cluster "$cluster")
+    done
+fi
 
 # The daytona backend needs an API key; only register the secret then, so the
 # default docker path doesn't require a DAYTONA_API_KEY secret in the workspace.

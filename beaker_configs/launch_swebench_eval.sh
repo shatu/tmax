@@ -118,6 +118,11 @@ Options:
   --workspace W            beaker workspace (default: $WORKSPACE)
   --job-name NAME          harbor job name (default: derived from model)
   --dry-run                print the launch_eval.sh command and exit
+  --split-vllm             serve vLLM on its own node (launch_eval.sh --split-vllm).
+                           Removes trial CPU/disk contention from the model server,
+                           which matters most here: 500 unique ~1.2 GiB image pulls
+                           run on the same node that serves the model.
+  --vllm-base-url URL      evaluate against an already-running vLLM (no GPUs used)
 EOF
     exit 1
 }
@@ -126,6 +131,8 @@ EOF
 MODEL_PATH="$1"; shift
 
 DRY_RUN=0
+SPLIT_VLLM=0
+VLLM_BASE_URL=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --mirror-url)             MIRROR_URL="$2"; shift 2 ;;
@@ -144,6 +151,8 @@ while [ $# -gt 0 ]; do
         --workspace)              WORKSPACE="$2"; shift 2 ;;
         --job-name)               JOB_NAME="$2"; shift 2 ;;
         --dry-run)                DRY_RUN=1; shift ;;
+        --split-vllm)             SPLIT_VLLM=1; shift ;;
+        --vllm-base-url)          VLLM_BASE_URL="$2"; shift 2 ;;
         -h|--help)                usage ;;
         *) echo "unknown option: $1" >&2; usage ;;
     esac
@@ -213,6 +222,8 @@ CMD=( "$REPO_ROOT/beaker_configs/launch_eval.sh" "$MODEL_PATH"
       --job-name "$JOB_NAME" )
 [ "$LANGUAGE_MODEL_ONLY" = "1" ] && CMD+=( --language-model-only )
 [ -n "$N_TASKS" ] && CMD+=( --n-tasks "$N_TASKS" )
+[ "$SPLIT_VLLM" = "1" ] && CMD+=( --split-vllm )
+[ -n "$VLLM_BASE_URL" ] && CMD+=( --vllm-base-url "$VLLM_BASE_URL" )
 
 echo
 log "swebench-verified launch"

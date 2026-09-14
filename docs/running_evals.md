@@ -106,6 +106,10 @@ This is the canonical way to evaluate **your own trained checkpoint**: a single
 Beaker task allocates N GPUs, serves the model with vLLM on `localhost`, brings
 up podman + harbor, and runs a dataset against it. Results land on weka.
 
+vLLM and harbor share a node here, and they contend for it. If you are chasing
+run-to-run variance, see [Splitting vLLM off the agent
+node](#splitting-vllm-off-the-agent-node).
+
 ### Quickstart
 
 ```bash
@@ -168,8 +172,13 @@ From [`run_eval_in_job.sh`](../scripts/beaker/run_eval_in_job.sh):
    (co-located jobs then pull over the local network; authenticated docker.io is
    the fallback if the mirror is down).
 7. Launch vLLM in the background (`uvx vllm==$VLLM_VERSION serve ...`) and poll
-   `/v1/models` for up to 30 min.
-8. `uv run harbor run --env docker --model hosted_vllm/$SERVED_MODEL_NAME --agent-kwarg api_base=...`.
+   it with a real chat completion for up to 60 min. With `--split-vllm` or
+   `--vllm-base-url` this step instead resolves an endpoint served elsewhere;
+   either way the result lands in `$AGENT_API_BASE`, which is the single source
+   of truth for steps 8+ (see [Splitting vLLM off the agent
+   node](#splitting-vllm-off-the-agent-node)).
+8. `uv run harbor run --env docker --model hosted_vllm/$SERVED_MODEL_NAME --agent-kwarg api_base=...`,
+   with a background watchdog that fails the job if the model server goes away.
 9. `scripts/compute_stats.py` → `stats.txt` + `metrics.json`.
 10. Copy `jobs/$JOB_NAME/` to `$RESULTS_DIR` on weka.
 
@@ -201,9 +210,159 @@ From [`run_eval_in_job.sh`](../scripts/beaker/run_eval_in_job.sh):
 | `--cluster` / `--workspace` / `--priority` / `--budget` | see script | Beaker placement. |
 | `--results-dir DIR` | `/results` (Gantry → weka) | Where to copy `jobs/`. |
 | `--repo-ref REF` | current HEAD SHA | **Must be pushed** to the remote. |
+| `--split-vllm` | off | Serve vLLM on a separate node from harbor (2 replicas). See [Splitting vLLM off the agent node](#splitting-vllm-off-the-agent-node). |
+| `--vllm-base-url URL` | unset | Evaluate against an already-running vLLM; implies `--gpus 0`. |
+| `--dry-run` | off | Build and validate the gantry command without submitting. |
 
 > ⚠️ Gantry submits a git SHA, not your working tree. Commit and push first, or
 > pass `--repo-ref`. The script warns if the SHA isn't on a remote branch.
+
+### Splitting vLLM off the agent node
+
+By default vLLM and harbor share one node. Nothing isolates them: the job runs
+with `cgroups="disabled"` in `containers.conf`, so harbor's `--n-concurrent`
+task containers can take every core and every spare IOP on the box — and they
+do, because they compile, run test suites, and pull multi-GB task images. The
+process they starve is vLLM's API server, whose frontend (tokenizer, detokenizer,
+HTTP) is single-process and CPU-bound. The result is not a clean failure: token
+streaming slows, agent-side LLM calls hit their timeouts, and trials that would
+have passed get recorded as errors. Error rates across our tb2.1 runs span
+**5.6%–48%** (`scripts/beaker/terminalbench_combined_evals.csv`), which is far
+more spread than the models themselves explain.
+
+`--split-vllm` puts the two on different machines:
+
+```bash
+./beaker_configs/launch_eval.sh allenai/open_instruct_dev \
+    --revision sft_qwen3_4b_tmax_4node \
+    --name sft-4b --dataset terminal-bench@2.0 \
+    --split-vllm
+```
+
+#### How it works
+
+One Beaker **task** with `replicas: 2`, not two tasks. That is forced by Beaker,
+not a preference: `leaderSelection` — the only cross-node discovery Beaker
+offers — [requires `replicas >= 2` and
+`hostNetworking: true`](https://beaker-docs.allen.ai/concept/experiments.html).
+Two separate `tasks:` entries in one experiment get no discovery env vars at all,
+and nothing stops the scheduler from putting them on the *same* node, which would
+defeat the point.
+
+Both replicas run `run_eval_in_job.sh`, which branches on `BEAKER_REPLICA_RANK`:
+
+| Rank | `ROLE` | What it does |
+|---|---|---|
+| 0 | `vllm` | Serves the model. Skips podman, compose, the harbor patches, and the Docker Hub login entirely — it never runs a container. |
+| 1 | `eval` | Everything else. Runs harbor's containers; never touches a GPU. |
+
+They rendezvous through a directory on weka (`--rdv-root`, keyed by
+`BEAKER_WORKLOAD_ID`) rather than through `BEAKER_LEADER_REPLICA_HOSTNAME` alone,
+because the hostname cannot carry the **port** — and the port has to stay
+randomized. Under host networking a fixed port collides with any co-located job,
+which historically made harbor talk to a neighbour's vLLM serving a different
+model ("model does not exist" on every trial).
+
+```
+rank 0                                     rank 1
+  start vLLM on a random free port
+  probe localhost until it GENERATES
+  resolve own routable IP
+  probe http://IP:PORT/v1  ← catches a
+      server that is up but unreachable
+  write $RDV/vllm_url  ───────────────────▶ read $RDV/vllm_url (polls, 90 min cap)
+                                            re-probe over the network
+                                            touch $RDV/eval_heartbeat every 30s
+  poll: eval_done? heartbeat stale?         run harbor
+        vLLM process alive?
+                          ◀──────────────── write $RDV/eval_done on exit
+  exit 0
+```
+
+Rank 0 publishes an **IP, not a hostname**: harbor's task containers run under
+podman with `netns=host`, so they share the node's network but resolve DNS
+through the node's `resolv.conf`, where short Beaker hostnames are not reliable.
+(open-instruct's `ray_node_setup.sh` does the same `getent hosts` dance for the
+same reason.)
+
+#### Failure handling
+
+A remote model server introduces a failure mode co-location did not have: the
+server dies and every remaining trial errors, which harbor reports as a
+legitimately low pass@1. Four things guard it.
+
+- **`propagateFailure` / `propagatePreemption`** (set by `--split-vllm`): if
+  either replica fails or is preempted, Beaker cancels the other.
+- **Rank 0 exits non-zero if vLLM dies while serving**, so the above fires.
+- **Rank 1 aborts** if rank 0 never publishes a URL, or if the published endpoint
+  won't answer a chat completion for `$SERVED_MODEL_NAME`.
+- **A liveness watchdog** polls `/v1/models` during the harbor run. After 10
+  minutes unreachable it logs loudly and forces the job to exit `75`, so an
+  invalid run cannot be mistaken for a bad score. `FAIL_ON_VLLM_OUTAGE=0` keeps
+  harbor's own exit code. This applies to colocated runs too.
+
+Rank 0 also **releases its GPUs on its own**: `propagateFailure` only couples
+failures, so without the `eval_done` sentinel a server replica would sit on N
+GPUs until the task timeout after a *successful* eval. It also gives up if the
+agent heartbeat goes stale for 15 min (`EVAL_HEARTBEAT_STALE_SEC`) or never
+appears within 2 h (`EVAL_START_GRACE_SEC`).
+
+#### What it costs
+
+- **One extra node.** Beaker replicas are homogeneous — `resources` is a
+  task-level field — so the agent replica is allocated the same `--gpus` count
+  and leaves it idle. There is no way around this inside one experiment.
+- **Harder scheduling.** A replica group is [admitted
+  all-or-nothing](https://beaker-docs.allen.ai/scheduling/distributed-training.html#scheduling-considerations)
+  and queued as one unit, so `--gpus 8 --split-vllm` needs 16 free slots
+  together, under every slot limit covering the workspace. Expect longer queues,
+  and check the workspace's allocated slot limit before the first run.
+- **Whole-group preemption.** `propagatePreemption` means losing either replica
+  loses the run. Pair `--split-vllm` with `--min-runtime` on long jobs.
+- `--split-vllm` is refused with `--hostname` (that pins the group to one node),
+  and a multi-cluster `--cluster` list only widens where the *pair* may land.
+- **Beaker does not promise one replica per node.** With `--gpus 8` the node has
+  no room for both, but a small run (`--gpus 1 --split-vllm`) can land both
+  replicas on one machine and silently revert to colocated contention. Rank 1
+  compares `BEAKER_NODE_HOSTNAME` against `BEAKER_LEADER_REPLICA_HOSTNAME` and
+  **fails the job** if they match; `REQUIRE_SEPARATE_NODES=0` runs anyway.
+
+#### Tuning knobs
+
+All read from the job env, all with working defaults:
+
+| Var | Default | Meaning |
+|---|---|---|
+| `RDV_WAIT_MAX_SEC` | `5400` | How long rank 1 waits for rank 0's endpoint. |
+| `EVAL_HEARTBEAT_STALE_SEC` | `900` | Rank 0 releases its GPUs after this much heartbeat silence. |
+| `EVAL_START_GRACE_SEC` | `7200` | Rank 0 gives up if rank 1 never checks in at all. |
+| `VLLM_WATCHDOG_MAX_MISSES` × `VLLM_WATCHDOG_INTERVAL_SEC` | `20` × `30s` | Outage length that invalidates a run. |
+| `FAIL_ON_VLLM_OUTAGE` | `1` | Set `0` to keep harbor's exit code after an outage. |
+| `REQUIRE_SEPARATE_NODES` | `1` | Set `0` to tolerate both replicas on one node. |
+
+#### `--vllm-base-url`: no extra node at all
+
+If you're running several evals against one checkpoint, serve it once and point
+the eval jobs at it. Those jobs request **0 GPUs**, so neither cost above applies:
+
+```bash
+# 1. serve (own experiment, stays up until you stop it)
+./beaker_configs/launch_vllm.sh allenai/open_instruct_dev \
+    --revision sft_qwen3_4b_tmax_4node --name sft-4b --gpus 8
+
+# 2. find the node it landed on
+beaker experiment get <EXP_ID> --format json | jq -r '.[0].jobs[0].node'
+
+# 3. point any number of evals at it (0 GPUs each)
+./beaker_configs/launch_eval.sh allenai/open_instruct_dev --name sft-4b \
+    --dataset terminal-bench@2.0 \
+    --vllm-base-url http://<node-hostname>:8008/v1
+```
+
+`--name` must still match the server's `--served-model-name`; that string is what
+harbor sends as the model id. The tradeoffs are manual lifecycle (nothing stops
+the server when the evals finish) and no preemption coupling — but the watchdog
+above still turns a dead server into a failed job rather than a wrong number.
 
 ### Running the podman path locally
 

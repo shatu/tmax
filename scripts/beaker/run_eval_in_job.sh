@@ -39,10 +39,97 @@
 #   REPO_GIT_URL, REPO_GIT_REF
 #                            optional — if set, this script self-clones into a
 #                            workdir; otherwise it assumes pwd is the repo.
+#
+# vLLM placement (VLLM_MODE) — see docs/running_evals.md "Splitting vLLM off the
+# agent node":
+#   colocated (default)  vLLM and harbor run in the SAME job on the SAME node,
+#                        talking over localhost. Historical behaviour.
+#   split                One Beaker task, `replicas: 2` + `leaderSelection`.
+#                        BEAKER_REPLICA_RANK 0 serves vLLM and nothing else;
+#                        rank >=1 runs harbor and never touches a GPU. The two
+#                        replicas land on different nodes, so harbor's podman
+#                        containers can no longer starve vLLM's API server of
+#                        CPU/disk. They find each other through a rendezvous
+#                        dir on weka (RDV_DIR) and talk over host networking.
+#   external             No vLLM is started here at all; harbor points at a
+#                        pre-existing server given by VLLM_BASE_URL. Use this to
+#                        amortise one vLLM experiment over several eval jobs.
+#
+#   VLLM_MODE                colocated | split | external (default: colocated)
+#   VLLM_BASE_URL            required for VLLM_MODE=external, e.g.
+#                            http://jupiter-cs-aus-101.reviz.ai2.in:8008/v1
+#   RDV_ROOT                 weka dir holding rendezvous state for split mode
+#                            (default: /weka/oe-adapt-default/$USER/tmax-eval/rendezvous)
+#   RDV_ID                   rendezvous key shared by both replicas
+#                            (default: $BEAKER_WORKLOAD_ID)
 
 set -euo pipefail
 
 log() { printf '\n=== [%s] %s ===\n' "$(date -u +%H:%M:%S)" "$*"; }
+
+# --- 0a. Resolve this replica's role ----------------------------------------
+# colocated -> "both"; split -> rank 0 is "vllm", the rest are "eval";
+# external  -> "eval" (somebody else is already serving the model).
+VLLM_MODE="${VLLM_MODE:-colocated}"
+case "$VLLM_MODE" in
+    colocated) ROLE="both" ;;
+    split)
+        if [ "${BEAKER_REPLICA_RANK:-0}" = "0" ]; then ROLE="vllm"; else ROLE="eval"; fi
+        ;;
+    external)
+        ROLE="eval"
+        if [ -z "${VLLM_BASE_URL:-}" ]; then
+            echo "FATAL: VLLM_MODE=external requires VLLM_BASE_URL" >&2
+            exit 1
+        fi
+        ;;
+    *) echo "FATAL: unknown VLLM_MODE='$VLLM_MODE' (colocated|split|external)" >&2; exit 1 ;;
+esac
+log "VLLM_MODE=$VLLM_MODE  BEAKER_REPLICA_RANK=${BEAKER_REPLICA_RANK:-<unset>}  ROLE=$ROLE"
+
+# --- 0b. Rendezvous paths (split mode only) ---------------------------------
+# Both replicas mount the same weka bucket, so a directory keyed by the Beaker
+# workload id is the simplest channel that carries BOTH the vLLM port (which
+# must stay randomized — under host networking a fixed port collides with
+# co-located jobs) and the lifecycle sentinels. BEAKER_LEADER_REPLICA_HOSTNAME
+# alone cannot carry the port.
+if [ "$VLLM_MODE" = "split" ]; then
+    RDV_ROOT="${RDV_ROOT:-/weka/oe-adapt-default/${USER:-root}/tmax-eval/rendezvous}"
+    RDV_ID="${RDV_ID:-${BEAKER_WORKLOAD_ID:-}}"
+    if [ -z "$RDV_ID" ]; then
+        echo "FATAL: VLLM_MODE=split needs RDV_ID (or BEAKER_WORKLOAD_ID) to rendezvous" >&2
+        exit 1
+    fi
+    RDV_DIR="$RDV_ROOT/$RDV_ID"
+    RDV_URL_FILE="$RDV_DIR/vllm_url"
+    RDV_DONE_FILE="$RDV_DIR/eval_done"
+    RDV_HEARTBEAT_FILE="$RDV_DIR/eval_heartbeat"
+    mkdir -p "$RDV_DIR"
+    log "rendezvous dir: $RDV_DIR"
+
+    # leaderSelection needs replicas >= 2; without a second replica rank 0 would
+    # serve a model nobody ever evaluates.
+    if [ "${BEAKER_REPLICA_COUNT:-1}" -lt 2 ]; then
+        echo "FATAL: VLLM_MODE=split needs replicas >= 2 (BEAKER_REPLICA_COUNT=${BEAKER_REPLICA_COUNT:-<unset>})." >&2
+        echo "       Launch with beaker_configs/launch_eval.sh --split-vllm, which sets them." >&2
+        exit 1
+    fi
+
+    # RDV_ID defaults to the workload id, which SURVIVES a Beaker retry/auto-resume.
+    # A stale eval_done from the previous attempt would make the fresh server
+    # replica shut down the moment it came up, so rank 0 clears the dir before it
+    # serves. Safe ordering: rank 1 writes nothing until rank 0 publishes vllm_url.
+    if [ "${BEAKER_REPLICA_RANK:-0}" = "0" ]; then
+        rm -f "$RDV_URL_FILE" "$RDV_DONE_FILE" "$RDV_HEARTBEAT_FILE"
+    fi
+fi
+
+# How long each side tolerates the other going quiet.
+RDV_WAIT_MAX_SEC="${RDV_WAIT_MAX_SEC:-5400}"          # eval waits for vLLM's URL
+EVAL_HEARTBEAT_INTERVAL_SEC="${EVAL_HEARTBEAT_INTERVAL_SEC:-30}"
+EVAL_HEARTBEAT_STALE_SEC="${EVAL_HEARTBEAT_STALE_SEC:-900}"
+VLLM_WATCHDOG_INTERVAL_SEC="${VLLM_WATCHDOG_INTERVAL_SEC:-30}"
+VLLM_WATCHDOG_MAX_MISSES="${VLLM_WATCHDOG_MAX_MISSES:-20}"   # 20 * 30s = 10 min
 
 # --- 0. Workdir: clone repo if URL given, else use cwd ----------------------
 if [ -n "${REPO_GIT_URL:-}" ]; then
@@ -57,6 +144,21 @@ if [ -n "${REPO_GIT_URL:-}" ]; then
     fi
     cd "$WORKDIR"
 fi
+
+# --- 0c. Make sure uv exists (both roles: vLLM runs through uvx) -------------
+if ! command -v uv >/dev/null 2>&1; then
+    log "installing uv"
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.local/bin:$PATH"
+fi
+
+# ============================================================================
+# AGENT-SIDE SETUP (steps 1-4a). The vLLM-only replica in VLLM_MODE=split skips
+# all of it: it never runs a container, so podman/compose/harbor/Docker-Hub auth
+# are pure startup cost (and the DOCKER_PAT hard-abort below would fail the
+# whole experiment for a replica that does not need it).
+# ============================================================================
+if [ "$ROLE" != "vllm" ]; then
 
 # --- 1. Install podman + deps -----------------------------------------------
 if ! command -v podman >/dev/null 2>&1; then
@@ -413,113 +515,294 @@ else
     exit 1
 fi
 
-# --- 5. Start vLLM in the background ----------------------------------------
+fi   # end AGENT-SIDE SETUP
+
+# --- 5. Locate (or start) vLLM ----------------------------------------------
 : "${VLLM_VERSION:=0.19.1}"
 : "${VLLM_TOOL_CALL_PARSER:=hermes}"
 : "${VLLM_REASONING_PARSER:=}"
 : "${VLLM_PORT:=8008}"
 : "${DP_SIZE:=1}"
-# Under gantry --host-networking, co-located jobs share the host netns, so any
-# FIXED port collides across jobs. Two consequences, both fixed by randomizing:
-#   1. vLLM derives its INTERNAL TP-rendezvous ports from the VLLM_PORT env var
-#      (VLLM_PORT+1, etc.) — a fixed value makes co-located TP>1 jobs collide and
-#      die at startup ("DistNetworkError ... EADDRINUSE"). UNSET it so vLLM picks
-#      random free internal ports.
-#   2. The OpenAI API server port: a fixed 8008 makes a job's harbor reach a
-#      *neighbor's* vLLM (a different served model), so every trial fails with
-#      "model does not exist". Bind the API server to a per-job free high port.
-unset VLLM_PORT
-API_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); p=s.getsockname()[1]; s.close(); print(p)')"
 VLLM_LOG=/tmp/vllm.log
 VLLM_LOG_TAIL_LINES="${VLLM_LOG_TAIL_LINES:-300}"
-# Pin fastapi < 0.137: fastapi 0.137 changed the router internals and breaks
-# prometheus-fastapi-instrumentator (which vLLM mounts on every route), so the
-# API server 500s on every request including /v1/models — the readiness probe
-# below then never passes and the job is killed after 30 min.
-# See vllm-project/vllm#45596 and #45597.
-VLLM_CMD=( uvx --with "fastapi<0.137"
-           "vllm==${VLLM_VERSION}" serve "$MODEL_PATH"
-           --revision "$MODEL_REVISION"
-           --tokenizer-revision "$MODEL_REVISION"
-           --served-model-name "$SERVED_MODEL_NAME"
-           --enable-auto-tool-choice
-           --enable-prefix-caching
-           --tool-call-parser "$VLLM_TOOL_CALL_PARSER"
-           --port "$API_PORT"
-           --gpu-memory-utilization 0.85
-           --tensor-parallel-size "$TP_SIZE"
-           --data-parallel-size "$DP_SIZE" )
-if [ -n "${MAX_MODEL_LEN:-}" ]; then
-    VLLM_CMD+=( --max-model-len "$MAX_MODEL_LEN" )
-fi
-# Reasoning models (e.g. Qwen3) emit <think>...</think>; --reasoning-parser
-# splits that into reasoning_content so tool-calls/content parse cleanly. Leave
-# empty for non-reasoning models (e.g. Qwen3.5).
-if [ -n "${VLLM_REASONING_PARSER:-}" ]; then
-    VLLM_CMD+=( --reasoning-parser "$VLLM_REASONING_PARSER" )
-fi
-if [ "${VLLM_LANGUAGE_MODEL_ONLY:-0}" = "1" ]; then
-    VLLM_CMD+=( --language_model_only )
-fi
+VLLM_PID=""
 
-log "launching vllm: ${VLLM_CMD[*]}"
-"${VLLM_CMD[@]}" >"$VLLM_LOG" 2>&1 &
-VLLM_PID=$!
+# AGENT_API_BASE is the ONE place the rest of this script learns where the model
+# is served. Everything downstream reads it: OPENAI_API_BASE / OPENAI_BASE_URL
+# (which harbor forwards into task containers for installed agents), the
+# api_base agent-kwarg (for import-path agents), the readiness probe, and the
+# liveness watchdog. Historically this was hard-coded to localhost in four
+# places, which is exactly what made splitting vLLM off the agent node painful.
+AGENT_API_BASE=""
 
-cleanup() {
-    log "cleanup: killing vllm pid $VLLM_PID"
-    kill "$VLLM_PID" 2>/dev/null || true
-    wait "$VLLM_PID" 2>/dev/null || true
-}
-trap cleanup EXIT
-
-# A 200 on /v1/models can precede the engine actually being able to GENERATE
-# (CUDA-graph capture etc.) — the first completion then fails with "model does
-# not exist", fatal for small runs and lost trials for large ones (notably the
-# 9B). So gate readiness on a real /v1/chat/completions succeeding.
+# `curl` a chat completion, because a 200 on /v1/models can precede the engine
+# actually being able to GENERATE (CUDA-graph capture etc.) — the first
+# completion then fails with "model does not exist", fatal for small runs and
+# lost trials for large ones (notably the 9B).
 vllm_can_generate() {
-    curl -sf -X POST "http://localhost:$API_PORT/v1/chat/completions" \
+    curl -sf -X POST "${1%/}/chat/completions" \
         -H 'Content-Type: application/json' \
         -d "{\"model\":\"$SERVED_MODEL_NAME\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":1}" \
         >/dev/null 2>&1
 }
-# Readiness cap: 5s * VLLM_READY_MAX_ITERS. Default 720 = 60 min (large models
-# like the 27B on TP>1 need >30 min for weight-load + torch.compile before the
-# API server binds). Override with VLLM_READY_MAX_ITERS.
-VLLM_READY_MAX_ITERS="${VLLM_READY_MAX_ITERS:-720}"
-log "waiting for vllm to serve completions on :$API_PORT (up to $((VLLM_READY_MAX_ITERS*5/60)) min)"
-VLLM_READY=0
-for _ in $(seq 1 "$VLLM_READY_MAX_ITERS"); do
-    if vllm_can_generate; then
-        log "vllm ready (completion probe ok)"
-        VLLM_READY=1
-        break
+
+if [ "$ROLE" = "eval" ] && [ "$VLLM_MODE" = "external" ]; then
+    # --- 5a-external: somebody else is already serving the model -------------
+    AGENT_API_BASE="${VLLM_BASE_URL%/}"
+    log "external vLLM endpoint: $AGENT_API_BASE"
+
+elif [ "$ROLE" = "eval" ]; then
+    # --- 5a-split(agent): wait for rank 0 to publish a READY endpoint --------
+    # rank 0 only writes the file after its own completion probe passes, so the
+    # presence of the file already means "ready"; we re-probe anyway because the
+    # first hop is now a network hop.
+    log "waiting up to $((RDV_WAIT_MAX_SEC / 60)) min for rank 0 to publish $RDV_URL_FILE"
+    waited=0
+    while [ ! -s "$RDV_URL_FILE" ]; do
+        if [ "$waited" -ge "$RDV_WAIT_MAX_SEC" ]; then
+            log "FATAL: rank 0 never published a vLLM URL after ${waited}s (is the server replica alive?)"
+            exit 1
+        fi
+        sleep 5
+        waited=$((waited + 5))
+    done
+    AGENT_API_BASE="$(cat "$RDV_URL_FILE")"
+    log "rank 0 published vLLM at $AGENT_API_BASE (waited ${waited}s)"
+
+    # Beaker does NOT promise one replica per node. With 8-GPU replicas the node
+    # simply has no room for both, but a small run (--gpus 1 --split-vllm) can
+    # land both replicas on the same machine — which silently reverts to the
+    # colocated contention this mode exists to remove, and would make a
+    # split-vs-colocated comparison meaningless. Fail rather than quietly no-op.
+    if [ -n "${BEAKER_NODE_HOSTNAME:-}" ] && [ -n "${BEAKER_LEADER_REPLICA_HOSTNAME:-}" ]; then
+        if [ "$BEAKER_NODE_HOSTNAME" = "$BEAKER_LEADER_REPLICA_HOSTNAME" ]; then
+            log "co-location detected: this replica and the vLLM replica are both on $BEAKER_NODE_HOSTNAME"
+            if [ "${REQUIRE_SEPARATE_NODES:-1}" = "1" ]; then
+                log "FATAL: --split-vllm asked for separate nodes and did not get them."
+                log "       Raise --gpus so one node cannot hold both replicas, or set"
+                log "       REQUIRE_SEPARATE_NODES=0 to run anyway (equivalent to colocated)."
+                exit 1
+            fi
+            log "REQUIRE_SEPARATE_NODES=0 — continuing on one node anyway"
+        else
+            log "node split confirmed: harbor on $BEAKER_NODE_HOSTNAME, vLLM on $BEAKER_LEADER_REPLICA_HOSTNAME"
+        fi
     fi
-    if ! kill -0 "$VLLM_PID" 2>/dev/null; then
-        log "vllm process died — tail of $VLLM_LOG:"
+
+else
+    # --- 5a-serve: ROLE=both (colocated) or ROLE=vllm (split rank 0) ---------
+    # Under gantry --host-networking, co-located jobs share the host netns, so any
+    # FIXED port collides across jobs. Two consequences, both fixed by randomizing:
+    #   1. vLLM derives its INTERNAL TP-rendezvous ports from the VLLM_PORT env var
+    #      (VLLM_PORT+1, etc.) — a fixed value makes co-located TP>1 jobs collide and
+    #      die at startup ("DistNetworkError ... EADDRINUSE"). UNSET it so vLLM picks
+    #      random free internal ports.
+    #   2. The OpenAI API server port: a fixed 8008 makes a job's harbor reach a
+    #      *neighbor's* vLLM (a different served model), so every trial fails with
+    #      "model does not exist". Bind the API server to a per-job free high port.
+    # This is why split mode cannot just agree on a port up front and why the port
+    # travels through the rendezvous file.
+    unset VLLM_PORT
+    API_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); p=s.getsockname()[1]; s.close(); print(p)')"
+    # Pin fastapi < 0.137: fastapi 0.137 changed the router internals and breaks
+    # prometheus-fastapi-instrumentator (which vLLM mounts on every route), so the
+    # API server 500s on every request including /v1/models — the readiness probe
+    # below then never passes and the job is killed after 30 min.
+    # See vllm-project/vllm#45596 and #45597.
+    VLLM_CMD=( uvx --with "fastapi<0.137"
+               "vllm==${VLLM_VERSION}" serve "$MODEL_PATH"
+               --revision "$MODEL_REVISION"
+               --tokenizer-revision "$MODEL_REVISION"
+               --served-model-name "$SERVED_MODEL_NAME"
+               --enable-auto-tool-choice
+               --enable-prefix-caching
+               --tool-call-parser "$VLLM_TOOL_CALL_PARSER"
+               --host 0.0.0.0
+               --port "$API_PORT"
+               --gpu-memory-utilization 0.85
+               --tensor-parallel-size "$TP_SIZE"
+               --data-parallel-size "$DP_SIZE" )
+    if [ -n "${MAX_MODEL_LEN:-}" ]; then
+        VLLM_CMD+=( --max-model-len "$MAX_MODEL_LEN" )
+    fi
+    # Reasoning models (e.g. Qwen3) emit <think>...</think>; --reasoning-parser
+    # splits that into reasoning_content so tool-calls/content parse cleanly. Leave
+    # empty for non-reasoning models (e.g. Qwen3.5).
+    if [ -n "${VLLM_REASONING_PARSER:-}" ]; then
+        VLLM_CMD+=( --reasoning-parser "$VLLM_REASONING_PARSER" )
+    fi
+    if [ "${VLLM_LANGUAGE_MODEL_ONLY:-0}" = "1" ]; then
+        VLLM_CMD+=( --language_model_only )
+    fi
+
+    log "launching vllm: ${VLLM_CMD[*]}"
+    "${VLLM_CMD[@]}" >"$VLLM_LOG" 2>&1 &
+    VLLM_PID=$!
+
+    cleanup() {
+        log "cleanup: killing vllm pid $VLLM_PID"
+        kill "$VLLM_PID" 2>/dev/null || true
+        wait "$VLLM_PID" 2>/dev/null || true
+    }
+    trap cleanup EXIT
+
+    # Readiness cap: 5s * VLLM_READY_MAX_ITERS. Default 720 = 60 min (large models
+    # like the 27B on TP>1 need >30 min for weight-load + torch.compile before the
+    # API server binds). Override with VLLM_READY_MAX_ITERS.
+    VLLM_READY_MAX_ITERS="${VLLM_READY_MAX_ITERS:-720}"
+    log "waiting for vllm to serve completions on :$API_PORT (up to $((VLLM_READY_MAX_ITERS * 5 / 60)) min)"
+    VLLM_READY=0
+    for _ in $(seq 1 "$VLLM_READY_MAX_ITERS"); do
+        if vllm_can_generate "http://localhost:$API_PORT/v1"; then
+            log "vllm ready (completion probe ok)"
+            VLLM_READY=1
+            break
+        fi
+        if ! kill -0 "$VLLM_PID" 2>/dev/null; then
+            log "vllm process died — tail of $VLLM_LOG:"
+            tail -"$VLLM_LOG_TAIL_LINES" "$VLLM_LOG" || true
+            exit 1
+        fi
+        sleep 5
+    done
+
+    if [ "$VLLM_READY" -ne 1 ]; then
+        log "vllm did not become ready in $((VLLM_READY_MAX_ITERS * 5 / 60)) min — tail of $VLLM_LOG:"
         tail -"$VLLM_LOG_TAIL_LINES" "$VLLM_LOG" || true
         exit 1
     fi
-    sleep 5
-done
 
-if [ "$VLLM_READY" -ne 1 ]; then
-    log "vllm did not become ready in 30 min — tail of $VLLM_LOG:"
-    tail -"$VLLM_LOG_TAIL_LINES" "$VLLM_LOG" || true
+    if [ "$ROLE" = "vllm" ]; then
+        # Publish an IP, not a hostname. harbor's task containers run under podman
+        # with netns=host, so they share the node's network — but they resolve DNS
+        # through whatever the node's resolv.conf says, and short Beaker hostnames
+        # do not reliably resolve in there. An IP always works. (Same reason
+        # open-instruct's ray_node_setup.sh does `getent hosts` on the leader
+        # hostname rather than passing the hostname straight to ray.)
+        NODE_IP="$(getent hosts "${BEAKER_NODE_HOSTNAME:-$(hostname)}" 2>/dev/null | awk '{print $1; exit}')"
+        if [ -z "$NODE_IP" ]; then
+            NODE_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == "src") {print $(i + 1); exit}}')"
+        fi
+        if [ -z "$NODE_IP" ]; then
+            NODE_IP="$(hostname -i 2>/dev/null | awk '{print $1}')"
+        fi
+        if [ -z "$NODE_IP" ]; then
+            log "FATAL: could not determine this node's routable IP to publish"
+            exit 1
+        fi
+        PUBLISHED_URL="http://$NODE_IP:$API_PORT/v1"
+        # Sanity-check the routable address before advertising it: if we publish an
+        # address the agent node cannot reach, every trial fails with a connection
+        # error and the run looks like a bad model instead of a bad launch.
+        if ! vllm_can_generate "$PUBLISHED_URL"; then
+            log "FATAL: vllm answers on localhost:$API_PORT but NOT on $PUBLISHED_URL"
+            log "       (host networking may not be enabled, or $NODE_IP is not this node)"
+            exit 1
+        fi
+        printf '%s' "$PUBLISHED_URL" > "$RDV_URL_FILE.tmp"
+        mv "$RDV_URL_FILE.tmp" "$RDV_URL_FILE"
+        log "published vllm endpoint: $PUBLISHED_URL -> $RDV_URL_FILE"
+    else
+        AGENT_API_BASE="http://localhost:$API_PORT/v1"
+    fi
+fi
+
+# --- 5b. vLLM-only replica: serve until the agent replica is done ------------
+# Nothing below this point applies to rank 0 in split mode. It has to stay alive
+# for the whole eval and then exit on its own: Beaker's propagateFailure only
+# couples FAILURES, so a server replica that ignored the agent's completion
+# would hold N GPUs until the task timeout.
+if [ "$ROLE" = "vllm" ]; then
+    EVAL_START_GRACE_SEC="${EVAL_START_GRACE_SEC:-7200}"
+    log "serving; waiting for the agent replica (done file: $RDV_DONE_FILE)"
+    seen_heartbeat=0
+    waited=0
+    while true; do
+        if [ -f "$RDV_DONE_FILE" ]; then
+            log "agent replica finished: $(cat "$RDV_DONE_FILE" 2>/dev/null || echo '<unreadable>')"
+            log "shutting down vllm"
+            exit 0
+        fi
+        if ! kill -0 "$VLLM_PID" 2>/dev/null; then
+            # Exit non-zero so propagateFailure cancels the agent replica loudly,
+            # instead of leaving it to error out every remaining trial and report
+            # a silently-near-zero pass@1.
+            log "FATAL: vllm process died while serving — tail of $VLLM_LOG:"
+            tail -"$VLLM_LOG_TAIL_LINES" "$VLLM_LOG" || true
+            exit 1
+        fi
+        if [ -f "$RDV_HEARTBEAT_FILE" ]; then
+            seen_heartbeat=1
+            age=$(( $(date +%s) - $(stat -c %Y "$RDV_HEARTBEAT_FILE" 2>/dev/null || date +%s) ))
+            if [ "$age" -gt "$EVAL_HEARTBEAT_STALE_SEC" ]; then
+                log "agent replica heartbeat is ${age}s stale (> ${EVAL_HEARTBEAT_STALE_SEC}s); assuming it is gone"
+                exit 0
+            fi
+        elif [ "$seen_heartbeat" -eq 0 ] && [ "$waited" -gt "$EVAL_START_GRACE_SEC" ]; then
+            log "no agent heartbeat after ${waited}s; refusing to hold GPUs any longer"
+            exit 0
+        fi
+        sleep 15
+        waited=$((waited + 15))
+    done
+fi
+
+# --- 5c. Agent side: confirm the endpoint really answers ---------------------
+if [ -z "$AGENT_API_BASE" ]; then
+    log "FATAL: no vLLM endpoint resolved (mode=$VLLM_MODE role=$ROLE)"
     exit 1
 fi
+if [ "$VLLM_MODE" != "colocated" ]; then
+    REMOTE_READY_MAX_ITERS="${REMOTE_READY_MAX_ITERS:-120}"   # 120 * 5s = 10 min
+    log "probing remote vllm at $AGENT_API_BASE (up to $((REMOTE_READY_MAX_ITERS * 5 / 60)) min)"
+    REMOTE_READY=0
+    for _ in $(seq 1 "$REMOTE_READY_MAX_ITERS"); do
+        if vllm_can_generate "$AGENT_API_BASE"; then
+            REMOTE_READY=1
+            break
+        fi
+        sleep 5
+    done
+    if [ "$REMOTE_READY" -ne 1 ]; then
+        log "FATAL: $AGENT_API_BASE never answered a chat completion for model '$SERVED_MODEL_NAME'."
+        log "       Check: (a) the served-model-name matches, (b) host networking is on,"
+        log "       (c) the server replica is on a reachable node in the same cluster."
+        exit 1
+    fi
+    log "remote vllm reachable and generating"
+fi
+
+# Heartbeat + completion sentinel, so the server replica knows we are alive and
+# knows when to release its GPUs.
+if [ "$VLLM_MODE" = "split" ]; then
+    touch "$RDV_HEARTBEAT_FILE"
+    (
+        while true; do
+            touch "$RDV_HEARTBEAT_FILE" 2>/dev/null || true
+            sleep "$EVAL_HEARTBEAT_INTERVAL_SEC"
+        done
+    ) &
+    HEARTBEAT_PID=$!
+    signal_done() {
+        rc=$?
+        kill "$HEARTBEAT_PID" 2>/dev/null || true
+        printf 'rc=%s at %s\n' "$rc" "$(date -u +%FT%TZ)" > "$RDV_DONE_FILE" 2>/dev/null || true
+    }
+    trap signal_done EXIT
+fi
+
 
 # --- 6. Run harbor ----------------------------------------------------------
 : "${N_CONCURRENT:=8}"
 : "${N_ATTEMPTS:=1}"
 export OPENAI_API_KEY="${OPENAI_API_KEY:-dummy}"
-export OPENAI_API_BASE="http://localhost:$API_PORT/v1"
+export OPENAI_API_BASE="$AGENT_API_BASE"
 # Harbor's SWE-agent adapter copies OPENAI_BASE_URL (litellm convention) —
 # not OPENAI_API_BASE — into the container, and only then does it pass
 # --agent.model.api_base=... to sweagent. Without this, litellm in the
 # container falls back to https://api.openai.com and every trial exits
 # with NotFoundError: Hosted_vllmException on step 1.
-export OPENAI_BASE_URL="http://localhost:$API_PORT/v1"
+export OPENAI_BASE_URL="$AGENT_API_BASE"
 
 if [ -z "${HOSTED_VLLM_MODEL_INFO:-}" ]; then
     MODEL_INFO_MAX_INPUT_TOKENS="${MAX_MODEL_LEN:-40960}"
@@ -625,7 +908,7 @@ if [ -n "${EXTRA_AGENT_ENVS:-}" ]; then
 fi
 if [[ "$AGENT_IMPORT_PATH" == *:* ]]; then
     HARBOR_CMD+=( --agent-import-path "$AGENT_IMPORT_PATH"
-                  --agent-kwarg "api_base=http://localhost:$API_PORT/v1" )
+                  --agent-kwarg "api_base=$AGENT_API_BASE" )
 else
     HARBOR_CMD+=( --agent "$AGENT_IMPORT_PATH" )
 fi
@@ -667,6 +950,33 @@ PY
 ) &
 PROGRESS_PID=$!
 
+# vLLM liveness watchdog. Once the model server lives on another node, a
+# network partition / OOM / preemption over there turns into "every remaining
+# trial errors", which harbor reports as a legitimately low pass@1. Record any
+# sustained outage so the run fails loudly instead of producing a plausible,
+# wrong number. (Colocated runs get this too — it is equally silent there.)
+VLLM_OUTAGE_FLAG=/tmp/vllm-outage
+rm -f "$VLLM_OUTAGE_FLAG"
+(
+    misses=0
+    while true; do
+        sleep "$VLLM_WATCHDOG_INTERVAL_SEC"
+        if curl -sf -m 10 "${AGENT_API_BASE%/}/models" >/dev/null 2>&1; then
+            misses=0
+        else
+            misses=$((misses + 1))
+            if [ "$misses" -eq "$VLLM_WATCHDOG_MAX_MISSES" ]; then
+                secs=$((VLLM_WATCHDOG_MAX_MISSES * VLLM_WATCHDOG_INTERVAL_SEC))
+                printf 'vllm at %s unreachable for %ss\n' "$AGENT_API_BASE" "$secs" \
+                    > "$VLLM_OUTAGE_FLAG"
+                printf '\n=== [%s] WARNING: vllm at %s has been unreachable for %ss — remaining trials will error ===\n' \
+                    "$(date -u +%H:%M:%S)" "$AGENT_API_BASE" "$secs"
+            fi
+        fi
+    done
+) &
+VLLM_WATCHDOG_PID=$!
+
 set +e
 "${HARBOR_CMD[@]}"
 HARBOR_RC=$?
@@ -674,6 +984,20 @@ set -e
 
 kill "$PROGRESS_PID" 2>/dev/null || true
 wait "$PROGRESS_PID" 2>/dev/null || true
+kill "$VLLM_WATCHDOG_PID" 2>/dev/null || true
+wait "$VLLM_WATCHDOG_PID" 2>/dev/null || true
+
+# A score computed while the model server was down is not a score. Fail the job
+# unless the caller explicitly opts out.
+if [ -f "$VLLM_OUTAGE_FLAG" ]; then
+    log "MODEL SERVER OUTAGE DETECTED: $(cat "$VLLM_OUTAGE_FLAG")"
+    log "  Trials running during the outage errored. Treat this run's score as invalid;"
+    log "  check stats.n_errored_trials in result.json."
+    if [ "${FAIL_ON_VLLM_OUTAGE:-1}" = "1" ] && [ "$HARBOR_RC" -eq 0 ]; then
+        HARBOR_RC=75
+        log "  failing the job with rc=75 (set FAIL_ON_VLLM_OUTAGE=0 to keep harbor's rc)"
+    fi
+fi
 
 # --- 7. Compute aggregate stats ---------------------------------------------
 JOB_DIR="jobs/$JOB_NAME"
