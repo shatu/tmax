@@ -74,7 +74,26 @@ VLLM_MODE="${VLLM_MODE:-colocated}"
 case "$VLLM_MODE" in
     colocated) ROLE="both" ;;
     split)
-        if [ "${BEAKER_REPLICA_RANK:-0}" = "0" ]; then ROLE="vllm"; else ROLE="eval"; fi
+        # Two launch shapes produce VLLM_MODE=split:
+        #   named tasks (launch_split_eval.py) - two Beaker TASKS, each carrying an
+        #     explicit EVAL_ROLE. Tasks can be named, sized and CLUSTERED
+        #     independently, so the agent task takes 0 GPUs and the pair can even
+        #     straddle two clusters (which is the only way to *guarantee* they land
+        #     on different nodes -- Beaker has no anti-affinity).
+        #   replicas (launch_eval.sh --split-vllm) - one task, replicas=2 +
+        #     leaderSelection; role comes from BEAKER_REPLICA_RANK. Cheaper to
+        #     launch, but Beaker packs both replicas onto one node whenever they
+        #     fit, and forces them to share a gpuCount.
+        if [ -n "${EVAL_ROLE:-}" ]; then
+            case "$EVAL_ROLE" in
+                vllm|eval) ROLE="$EVAL_ROLE" ;;
+                *) echo "FATAL: unknown EVAL_ROLE='$EVAL_ROLE' (vllm|eval)" >&2; exit 1 ;;
+            esac
+        elif [ "${BEAKER_REPLICA_RANK:-0}" = "0" ]; then
+            ROLE="vllm"
+        else
+            ROLE="eval"
+        fi
         ;;
     external)
         ROLE="eval"
@@ -85,7 +104,11 @@ case "$VLLM_MODE" in
         ;;
     *) echo "FATAL: unknown VLLM_MODE='$VLLM_MODE' (colocated|split|external)" >&2; exit 1 ;;
 esac
-log "VLLM_MODE=$VLLM_MODE  BEAKER_REPLICA_RANK=${BEAKER_REPLICA_RANK:-<unset>}  ROLE=$ROLE"
+log "VLLM_MODE=$VLLM_MODE  EVAL_ROLE=${EVAL_ROLE:-<unset>}  BEAKER_REPLICA_RANK=${BEAKER_REPLICA_RANK:-<unset>}  ROLE=$ROLE"
+# Logged from BOTH sides on purpose: the rendezvous key defaults to
+# BEAKER_WORKLOAD_ID, and the two tasks only ever meet if Beaker gives them
+# the same one. Proven for replicas; compare these lines to confirm it for tasks.
+log "BEAKER_WORKLOAD_ID=${BEAKER_WORKLOAD_ID:-<unset>}  BEAKER_TASK_ID=${BEAKER_TASK_ID:-<unset>}  BEAKER_NODE_HOSTNAME=${BEAKER_NODE_HOSTNAME:-<unset>}"
 
 # --- 0b. Rendezvous paths (split mode only) ---------------------------------
 # Both replicas mount the same weka bucket, so a directory keyed by the Beaker
@@ -102,6 +125,9 @@ if [ "$VLLM_MODE" = "split" ]; then
     fi
     RDV_DIR="$RDV_ROOT/$RDV_ID"
     RDV_URL_FILE="$RDV_DIR/vllm_url"
+    # The server's node hostname. Named tasks get no BEAKER_LEADER_REPLICA_HOSTNAME
+    # (that is replica-only), so this is what the co-location check compares against.
+    RDV_HOST_FILE="$RDV_DIR/vllm_host"
     RDV_DONE_FILE="$RDV_DIR/eval_done"
     RDV_HEARTBEAT_FILE="$RDV_DIR/eval_heartbeat"
     mkdir -p "$RDV_DIR"
@@ -109,7 +135,7 @@ if [ "$VLLM_MODE" = "split" ]; then
 
     # leaderSelection needs replicas >= 2; without a second replica rank 0 would
     # serve a model nobody ever evaluates.
-    if [ "${BEAKER_REPLICA_COUNT:-1}" -lt 2 ]; then
+    if [ -z "${EVAL_ROLE:-}" ] && [ "${BEAKER_REPLICA_COUNT:-1}" -lt 2 ]; then
         echo "FATAL: VLLM_MODE=split needs replicas >= 2 (BEAKER_REPLICA_COUNT=${BEAKER_REPLICA_COUNT:-<unset>})." >&2
         echo "       Launch with beaker_configs/launch_eval.sh --split-vllm, which sets them." >&2
         exit 1
@@ -119,8 +145,8 @@ if [ "$VLLM_MODE" = "split" ]; then
     # A stale eval_done from the previous attempt would make the fresh server
     # replica shut down the moment it came up, so rank 0 clears the dir before it
     # serves. Safe ordering: rank 1 writes nothing until rank 0 publishes vllm_url.
-    if [ "${BEAKER_REPLICA_RANK:-0}" = "0" ]; then
-        rm -f "$RDV_URL_FILE" "$RDV_DONE_FILE" "$RDV_HEARTBEAT_FILE"
+    if [ "$ROLE" = "vllm" ]; then
+        rm -f "$RDV_URL_FILE" "$RDV_HOST_FILE" "$RDV_DONE_FILE" "$RDV_HEARTBEAT_FILE"
     fi
 fi
 
@@ -574,18 +600,25 @@ elif [ "$ROLE" = "eval" ]; then
     # land both replicas on the same machine — which silently reverts to the
     # colocated contention this mode exists to remove, and would make a
     # split-vs-colocated comparison meaningless. Fail rather than quietly no-op.
-    if [ -n "${BEAKER_NODE_HOSTNAME:-}" ] && [ -n "${BEAKER_LEADER_REPLICA_HOSTNAME:-}" ]; then
-        if [ "$BEAKER_NODE_HOSTNAME" = "$BEAKER_LEADER_REPLICA_HOSTNAME" ]; then
-            log "co-location detected: this replica and the vLLM replica are both on $BEAKER_NODE_HOSTNAME"
+    # The server publishes its hostname, so this works for named tasks too;
+    # BEAKER_LEADER_REPLICA_HOSTNAME is only populated in the replica shape.
+    VLLM_NODE="$(cat "$RDV_HOST_FILE" 2>/dev/null || true)"
+    [ -n "$VLLM_NODE" ] || VLLM_NODE="${BEAKER_LEADER_REPLICA_HOSTNAME:-}"
+    if [ -n "${BEAKER_NODE_HOSTNAME:-}" ] && [ -n "$VLLM_NODE" ]; then
+        if [ "$BEAKER_NODE_HOSTNAME" = "$VLLM_NODE" ]; then
+            log "co-location detected: harbor and vLLM are both on $BEAKER_NODE_HOSTNAME"
             if [ "${REQUIRE_SEPARATE_NODES:-1}" = "1" ]; then
-                log "FATAL: --split-vllm asked for separate nodes and did not get them."
-                log "       Raise --gpus so one node cannot hold both replicas, or set"
-                log "       REQUIRE_SEPARATE_NODES=0 to run anyway (equivalent to colocated)."
+                log "FATAL: split mode asked for separate nodes and did not get them."
+                log "       Beaker has no anti-affinity and packs whenever both fit. Either"
+                log "       give the two sides different --vllm-cluster/--agent-cluster"
+                log "       (guaranteed separation), raise the GPU request so one node cannot"
+                log "       hold both, or set REQUIRE_SEPARATE_NODES=0 to run anyway"
+                log "       (equivalent to colocated)."
                 exit 1
             fi
             log "REQUIRE_SEPARATE_NODES=0 — continuing on one node anyway"
         else
-            log "node split confirmed: harbor on $BEAKER_NODE_HOSTNAME, vLLM on $BEAKER_LEADER_REPLICA_HOSTNAME"
+            log "node split confirmed: harbor on $BEAKER_NODE_HOSTNAME, vLLM on $VLLM_NODE"
         fi
     fi
 
@@ -699,9 +732,13 @@ else
             log "       (host networking may not be enabled, or $NODE_IP is not this node)"
             exit 1
         fi
+        # Order matters: the eval side treats vllm_url appearing as the signal, so
+        # everything it might read must already be on disk when that file lands.
+        printf '%s' "${BEAKER_NODE_HOSTNAME:-$(hostname)}" > "$RDV_HOST_FILE.tmp"
+        mv "$RDV_HOST_FILE.tmp" "$RDV_HOST_FILE"
         printf '%s' "$PUBLISHED_URL" > "$RDV_URL_FILE.tmp"
         mv "$RDV_URL_FILE.tmp" "$RDV_URL_FILE"
-        log "published vllm endpoint: $PUBLISHED_URL -> $RDV_URL_FILE"
+        log "published vllm endpoint: $PUBLISHED_URL (host ${BEAKER_NODE_HOSTNAME:-$(hostname)}) -> $RDV_DIR"
     else
         AGENT_API_BASE="http://localhost:$API_PORT/v1"
     fi

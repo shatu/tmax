@@ -346,6 +346,56 @@ All read from the job env, all with working defaults:
 | `FAIL_ON_VLLM_OUTAGE` | `1` | Set `0` to keep harbor's exit code after an outage. |
 | `REQUIRE_SEPARATE_NODES` | `1` | Set `0` to tolerate both replicas on one node. |
 
+#### Two named tasks — `launch_split_eval.py`
+
+`--split-vllm` above has a hole: **Beaker has no anti-affinity.** It packs both
+replicas onto one node whenever they fit, silently reverting to the co-located
+contention the split exists to remove. With `--gpus 1` on jupiter this happened
+twice in a row on the same node. The in-job guard fails the run rather than
+letting it produce a meaningless number, but it does not make the run happen.
+
+[`launch_split_eval.py`](../beaker_configs/launch_split_eval.py) builds **two
+explicitly-named Beaker tasks** instead of one replicated task:
+
+```bash
+./beaker_configs/launch_split_eval.py allenai/tmax-9b \
+    --name tmax-9b --job-name tmax-9b-tb21-split \
+    --dataset-path /weka/oe-adapt-default/$USER/datasets/terminal-bench-2-1 \
+    --vllm-cluster ai2/jupiter --agent-cluster ai2/saturn \
+    --tool-call-parser qwen3_xml --language-model-only --model-provider openai \
+    --max-model-len 65536 --n-attempts 5 --min-runtime 8h
+```
+
+| Task | Role | GPUs | Cluster |
+|---|---|---|---|
+| `vllm-server` | `EVAL_ROLE=vllm` | `--gpus` (default 1) | `--vllm-cluster` |
+| `agent-eval` | `EVAL_ROLE=eval` | `--agent-gpus` (**default 0**) | `--agent-cluster` |
+
+Three things this buys:
+
+- **Guaranteed separation** when the clusters differ — two clusters cannot be one
+  node. (Same cluster on both sides is allowed and still works, but it is back to
+  hoping Beaker does not pack them; the launcher warns.)
+- **No wasted GPU.** `resources` is per-task, so the agent task takes 0.
+- **Any workspace.** Gantry's source dataset is named per gantry-version and
+  Beaker dataset names are unique per *user*, so `launch_eval.sh` 400s in every
+  workspace after the first one it was used in. This path does not use gantry.
+
+Discovery is not lost by dropping `leaderSelection`, because it never came from
+there: the rendezvous dir on weka is what carries vLLM's randomized port, and it
+works the same for tasks as for replicas. The server also publishes its hostname
+(`vllm_host`) so the co-location guard still functions without
+`BEAKER_LEADER_REPLICA_HOSTNAME`, which is replica-only.
+
+The cost is that gantry's work is re-done by hand: the task clones the repo at
+`--repo-ref` itself (public repo, no token) and mounts weka, secrets and
+`/results` explicitly. **`--repo-ref` must be pushed**, same as before.
+
+Cross-cluster adds a network hop per LLM call, but all Ai2 clusters are
+`*.reviz.ai2.in` in one region — milliseconds against multi-second generations,
+so it should not move agent timeouts. Both clusters must carry the weka bucket
+(`storage:weka`; jupiter and saturn both do).
+
 #### `--vllm-base-url`: no extra node at all
 
 If you're running several evals against one checkpoint, serve it once and point
