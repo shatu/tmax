@@ -21,6 +21,12 @@ build-backend = "setuptools.build_meta"
 packages = ["Vanillux2Agent", "rl_data", "rl_data.generator"]
 
 [project.optional-dependencies]
+# Harbor sandbox backends whose vendor SDK is an optional import. Kept as our
+# own extras rather than `harbor[modal]` so `uv lock` cannot re-resolve harbor
+# itself off the pinned version.
+modal = [
+    "modal>=1.4.0",
+]
 rl_data = [
     "litellm",
     "pydantic",

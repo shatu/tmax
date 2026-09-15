@@ -16,7 +16,15 @@
 #   DP_SIZE                  --data-parallel-size (default: 1)
 #   MAX_MODEL_LEN            optional --max-model-len
 #   DATASET                  harbor dataset, e.g. terminal-bench@2.0
-#   HARBOR_ENV               harbor environment backend (default: docker)
+#   HARBOR_ENV               harbor environment backend (default: docker).
+#                            `docker` = podman-in-job (the stack set up by
+#                            sections 1/2/4/4a below). `modal` = task containers
+#                            run as Modal cloud sandboxes; NONE of the local
+#                            container plumbing is installed or required.
+#   HARBOR_ENV_KWARGS        optional newline-separated harbor --environment-kwarg
+#                            values (key=value), e.g. app_name=tmax-eval
+#   MODAL_TOKEN_ID / MODAL_TOKEN_SECRET
+#                            required when HARBOR_ENV=modal (beaker secrets)
 #   AGENT_IMPORT_PATH        e.g. Vanillux2Agent:Vanillux2Agent
 #   EXTRA_UV_PIP_INSTALLS    optional space-separated packages to uv pip install
 #   EXTRA_AGENT_KWARGS       optional newline-separated harbor --agent-kwarg values
@@ -44,6 +52,22 @@ set -euo pipefail
 
 log() { printf '\n=== [%s] %s ===\n' "$(date -u +%H:%M:%S)" "$*"; }
 
+# --- Backend selection -------------------------------------------------------
+# Only the `docker` backend runs task containers on THIS node, and only it needs
+# podman + compose + containers.conf + a Docker Hub login + the podman-compat
+# harbor patches. Remote-sandbox backends (modal, daytona) run the task
+# container elsewhere, so all of that is skipped: installing it costs minutes of
+# startup, and section 4a's "FATAL: DOCKER_PAT not set" would abort a run that
+# never pulls an image locally in the first place.
+HARBOR_ENV="${HARBOR_ENV:-docker}"
+if [ "$HARBOR_ENV" = "docker" ]; then
+    LOCAL_CONTAINER_RUNTIME=1
+else
+    LOCAL_CONTAINER_RUNTIME=0
+fi
+export PATCH_PODMAN_COMPAT="$LOCAL_CONTAINER_RUNTIME"
+log "harbor env backend: $HARBOR_ENV (local container runtime: $LOCAL_CONTAINER_RUNTIME)"
+
 # --- 0. Workdir: clone repo if URL given, else use cwd ----------------------
 if [ -n "${REPO_GIT_URL:-}" ]; then
     WORKDIR="${WORKDIR:-/workspace/tmax}"
@@ -58,36 +82,37 @@ if [ -n "${REPO_GIT_URL:-}" ]; then
     cd "$WORKDIR"
 fi
 
-# --- 1. Install podman + deps -----------------------------------------------
-if ! command -v podman >/dev/null 2>&1; then
-    log "installing podman + helpers"
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update -qq
-    apt-get install -y -qq podman crun uidmap fuse-overlayfs slirp4netns \
-        curl git ca-certificates
-fi
+if [ "$LOCAL_CONTAINER_RUNTIME" = "1" ]; then
+    # --- 1. Install podman + deps -----------------------------------------------
+    if ! command -v podman >/dev/null 2>&1; then
+        log "installing podman + helpers"
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update -qq
+        apt-get install -y -qq podman crun uidmap fuse-overlayfs slirp4netns \
+            curl git ca-certificates
+    fi
 
-# Some images (e.g. AI2's cuda gantry images) ship a real Docker CLI without
-# the compose plugin. Harbor shells out to `docker compose ...`, so without
-# the plugin every up/down errors with "unknown shorthand flag: 'p' in -p"
-# (Docker CLI rejects `compose` as a subcommand and then mis-parses `-p`).
-# Drop in the official compose v2 static binary as a user-level CLI plugin —
-# it talks the Docker API, which podman serves on /tmp/podman.sock.
-if ! docker compose version >/dev/null 2>&1; then
-    log "installing docker compose v2 plugin"
-    DOCKER_COMPOSE_VERSION="${DOCKER_COMPOSE_VERSION:-v2.39.4}"
-    DOCKER_COMPOSE_ARCH="$(uname -m)"
-    mkdir -p /root/.docker/cli-plugins
-    curl -fsSL \
-        "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-linux-${DOCKER_COMPOSE_ARCH}" \
-        -o /root/.docker/cli-plugins/docker-compose
-    chmod +x /root/.docker/cli-plugins/docker-compose
-fi
+    # Some images (e.g. AI2's cuda gantry images) ship a real Docker CLI without
+    # the compose plugin. Harbor shells out to `docker compose ...`, so without
+    # the plugin every up/down errors with "unknown shorthand flag: 'p' in -p"
+    # (Docker CLI rejects `compose` as a subcommand and then mis-parses `-p`).
+    # Drop in the official compose v2 static binary as a user-level CLI plugin —
+    # it talks the Docker API, which podman serves on /tmp/podman.sock.
+    if ! docker compose version >/dev/null 2>&1; then
+        log "installing docker compose v2 plugin"
+        DOCKER_COMPOSE_VERSION="${DOCKER_COMPOSE_VERSION:-v2.39.4}"
+        DOCKER_COMPOSE_ARCH="$(uname -m)"
+        mkdir -p /root/.docker/cli-plugins
+        curl -fsSL \
+            "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-linux-${DOCKER_COMPOSE_ARCH}" \
+            -o /root/.docker/cli-plugins/docker-compose
+        chmod +x /root/.docker/cli-plugins/docker-compose
+    fi
 
-# --- 2. Write containers.conf -----------------------------------------------
-log "writing /etc/containers/containers.conf"
-mkdir -p /etc/containers
-cat > /etc/containers/containers.conf <<'CONF'
+    # --- 2. Write containers.conf -----------------------------------------------
+    log "writing /etc/containers/containers.conf"
+    mkdir -p /etc/containers
+    cat > /etc/containers/containers.conf <<'CONF'
 [containers]
 netns="host"
 userns="auto:size=65536"
@@ -108,9 +133,10 @@ runtime="crun"
 compose_warning_logs=false
 CONF
 
-# Ensure root has a subuid/subgid range big enough for the userns size above.
-grep -q '^root:' /etc/subuid 2>/dev/null || echo 'root:10000:65536' >> /etc/subuid
-grep -q '^root:' /etc/subgid 2>/dev/null || echo 'root:10000:65536' >> /etc/subgid
+    # Ensure root has a subuid/subgid range big enough for the userns size above.
+    grep -q '^root:' /etc/subuid 2>/dev/null || echo 'root:10000:65536' >> /etc/subuid
+    grep -q '^root:' /etc/subgid 2>/dev/null || echo 'root:10000:65536' >> /etc/subgid
+fi
 
 log "running uv sync"
 if ! command -v uv >/dev/null 2>&1; then
@@ -118,9 +144,24 @@ if ! command -v uv >/dev/null 2>&1; then
     export PATH="$HOME/.local/bin:$PATH"
 fi
 uv sync
-if [ "${HARBOR_ENV:-docker}" = "daytona" ]; then
-    log "installing harbor daytona extra"
-    uv pip install 'harbor[daytona]'
+# Backend SDKs live behind harbor extras. Install the SDK directly rather than
+# `harbor[<extra>]`: the latter re-resolves harbor itself and would silently
+# upgrade it off the version uv.lock pins (0.6.6), changing the harness under us.
+if [ "$HARBOR_ENV" = "daytona" ]; then
+    log "installing daytona SDK"
+    uv pip install 'daytona>=0.165.0'
+fi
+if [ "$HARBOR_ENV" = "modal" ]; then
+    log "installing modal SDK"
+    uv pip install 'modal>=1.4.0'
+    # Fail fast and loudly here rather than 30 minutes later: vLLM startup runs
+    # BEFORE the first harbor call, so a missing token would otherwise burn a
+    # full model load before harbor's own preflight rejects it.
+    if [ -z "${MODAL_TOKEN_ID:-}" ] || [ -z "${MODAL_TOKEN_SECRET:-}" ]; then
+        log "FATAL: HARBOR_ENV=modal requires MODAL_TOKEN_ID and MODAL_TOKEN_SECRET. Aborting."
+        exit 1
+    fi
+    log "modal credentials present (token id: ${MODAL_TOKEN_ID:0:8}...)"
 fi
 if [ -n "${EXTRA_UV_PIP_INSTALLS:-}" ]; then
     log "installing extra packages: ${EXTRA_UV_PIP_INSTALLS}"
@@ -128,75 +169,82 @@ if [ -n "${EXTRA_UV_PIP_INSTALLS:-}" ]; then
     uv pip install ${EXTRA_UV_PIP_INSTALLS}
 fi
 
-log "patching harbor for podman compat"
+log "patching harbor (podman compat: $LOCAL_CONTAINER_RUNTIME)"
 uv run python - <<'PY'
 import os, pathlib, harbor
 hdir = pathlib.Path(harbor.__file__).parent
 
-compose = hdir / "environments/docker/docker-compose-base.yaml"
-text = compose.read_text()
-if "network_mode: host" not in text:
-    text = text.replace(
-        "  main:\n    volumes:",
-        "  main:\n    network_mode: host\n    volumes:",
-    )
-    for host, env in (
-        ("HOST_VERIFIER_LOGS_PATH", "ENV_VERIFIER_LOGS_PATH"),
-        ("HOST_AGENT_LOGS_PATH", "ENV_AGENT_LOGS_PATH"),
-        ("HOST_ARTIFACTS_PATH", "ENV_ARTIFACTS_PATH"),
-    ):
+# Podman-compat patches. These are WRONG for any other backend: `:U` is
+# podman-only bind-mount syntax that a real dockerd (e.g. inside a Modal
+# DinD sandbox) rejects, and the chmod widening only exists to work around
+# podman's user-namespace remapping of host bind mounts.
+if os.environ.get("PATCH_PODMAN_COMPAT", "1") == "1":
+    compose = hdir / "environments/docker/docker-compose-base.yaml"
+    text = compose.read_text()
+    if "network_mode: host" not in text:
         text = text.replace(
-            f"${{{host}}}:${{{env}}}",
-            f"${{{host}}}:${{{env}}}:U",
+            "  main:\n    volumes:",
+            "  main:\n    network_mode: host\n    volumes:",
         )
-    compose.write_text(text)
-    print("patched docker-compose-base.yaml")
+        for host, env in (
+            ("HOST_VERIFIER_LOGS_PATH", "ENV_VERIFIER_LOGS_PATH"),
+            ("HOST_AGENT_LOGS_PATH", "ENV_AGENT_LOGS_PATH"),
+            ("HOST_ARTIFACTS_PATH", "ENV_ARTIFACTS_PATH"),
+        ):
+            text = text.replace(
+                f"${{{host}}}:${{{env}}}",
+                f"${{{host}}}:${{{env}}}:U",
+            )
+        compose.write_text(text)
+        print("patched docker-compose-base.yaml")
 
-oracle = hdir / "agents/oracle.py"
-text = oracle.read_text()
-if "host_oracle_path.chmod(0o666)" not in text:
-    text = text.replace(
-        "if environment.is_mounted:\n            host_oracle_path.touch()",
-        "if environment.is_mounted:\n"
-        "            host_oracle_path.touch()\n"
-        "            host_oracle_path.chmod(0o666)\n"
-        "            host_oracle_path.parent.chmod(0o777)",
-    )
-    oracle.write_text(text)
-    print("patched oracle.py")
+    oracle = hdir / "agents/oracle.py"
+    text = oracle.read_text()
+    if "host_oracle_path.chmod(0o666)" not in text:
+        text = text.replace(
+            "if environment.is_mounted:\n            host_oracle_path.touch()",
+            "if environment.is_mounted:\n"
+            "            host_oracle_path.touch()\n"
+            "            host_oracle_path.chmod(0o666)\n"
+            "            host_oracle_path.parent.chmod(0o777)",
+        )
+        oracle.write_text(text)
+        print("patched oracle.py")
 
-verifier = hdir / "verifier/verifier.py"
-text = verifier.read_text()
-if "test_stdout_path.chmod(0o666)" not in text:
-    text = text.replace(
-        "self._trial_paths.test_stdout_path.touch()",
-        "self._trial_paths.test_stdout_path.touch()\n"
-        "        self._trial_paths.test_stdout_path.chmod(0o666)\n"
-        "        self._trial_paths.test_stdout_path.parent.chmod(0o777)",
-    )
-    verifier.write_text(text)
-    print("patched verifier.py")
+    verifier = hdir / "verifier/verifier.py"
+    text = verifier.read_text()
+    if "test_stdout_path.chmod(0o666)" not in text:
+        text = text.replace(
+            "self._trial_paths.test_stdout_path.touch()",
+            "self._trial_paths.test_stdout_path.touch()\n"
+            "        self._trial_paths.test_stdout_path.chmod(0o666)\n"
+            "        self._trial_paths.test_stdout_path.parent.chmod(0o777)",
+        )
+        verifier.write_text(text)
+        print("patched verifier.py")
 
-# Make agent_dir / verifier_dir / artifacts_dir world-writable on the host so
-# user-namespaced container writes (anything that doesn't go through a
-# pre-touched harbor file: SWE-agent's *.traj, swe-agent.txt, etc.) don't
-# silently fail with permission-denied on the bind mount.
-paths_py = hdir / "models/trial/paths.py"
-text = paths_py.read_text()
-if "agent_dir.chmod(0o777)" not in text:
-    text = text.replace(
-        "self.agent_dir.mkdir(parents=True, exist_ok=True)\n"
-        "        self.verifier_dir.mkdir(parents=True, exist_ok=True)\n"
-        "        self.artifacts_dir.mkdir(parents=True, exist_ok=True)",
-        "self.agent_dir.mkdir(parents=True, exist_ok=True)\n"
-        "        self.verifier_dir.mkdir(parents=True, exist_ok=True)\n"
-        "        self.artifacts_dir.mkdir(parents=True, exist_ok=True)\n"
-        "        self.agent_dir.chmod(0o777)\n"
-        "        self.verifier_dir.chmod(0o777)\n"
-        "        self.artifacts_dir.chmod(0o777)",
-    )
-    paths_py.write_text(text)
-    print("patched paths.py")
+    # Make agent_dir / verifier_dir / artifacts_dir world-writable on the host so
+    # user-namespaced container writes (anything that doesn't go through a
+    # pre-touched harbor file: SWE-agent's *.traj, swe-agent.txt, etc.) don't
+    # silently fail with permission-denied on the bind mount.
+    paths_py = hdir / "models/trial/paths.py"
+    text = paths_py.read_text()
+    if "agent_dir.chmod(0o777)" not in text:
+        text = text.replace(
+            "self.agent_dir.mkdir(parents=True, exist_ok=True)\n"
+            "        self.verifier_dir.mkdir(parents=True, exist_ok=True)\n"
+            "        self.artifacts_dir.mkdir(parents=True, exist_ok=True)",
+            "self.agent_dir.mkdir(parents=True, exist_ok=True)\n"
+            "        self.verifier_dir.mkdir(parents=True, exist_ok=True)\n"
+            "        self.artifacts_dir.mkdir(parents=True, exist_ok=True)\n"
+            "        self.agent_dir.chmod(0o777)\n"
+            "        self.verifier_dir.chmod(0o777)\n"
+            "        self.artifacts_dir.chmod(0o777)",
+        )
+        paths_py.write_text(text)
+        print("patched paths.py")
+else:
+    print("skipping podman-compat patches (PATCH_PODMAN_COMPAT=0)")
 
 # Image retention after each trial (harbor stock = `compose down --rmi all`,
 # i.e. DELETE the task image after every trial).
@@ -358,59 +406,61 @@ if '"--override-with-envs",' not in text:
     print("patched openhands.py: apply env settings in headless mode")
 PY
 
-# --- 4. Bring podman service up (uses scripts/setup_podman_harbor.sh) -------
-log "starting podman service"
-# shellcheck disable=SC1091
-source scripts/setup_podman_harbor.sh
-export DOCKER_HOST="${DOCKER_HOST:-unix:///tmp/podman.sock}"
+if [ "$LOCAL_CONTAINER_RUNTIME" = "1" ]; then
+    # --- 4. Bring podman service up (uses scripts/setup_podman_harbor.sh) -------
+    log "starting podman service"
+    # shellcheck disable=SC1091
+    source scripts/setup_podman_harbor.sh
+    export DOCKER_HOST="${DOCKER_HOST:-unix:///tmp/podman.sock}"
 
-# --- 4a. Docker Hub auth + mirror -------------------------------------------
-# tb2 task images live on Docker Hub; on a 267-trial run, harbor's
-# `compose down --rmi all` deletes each image after a trial, so the next
-# trial re-pulls and we blow past Docker Hub's 100 pulls/6hr unauthenticated
-# cap somewhere around trial 100 (whole 2nd half of the run fails with
-# "toomanyrequests: You have reached your unauthenticated pull rate limit").
-# Defense in depth:
-#   - if the image ships an internal Docker Hub mirror, use it
-#   - if DOCKER_PAT is set (beaker secret), write the auth config (200/6hr
-#     authenticated cap, or unlimited on a Docker Hub paid account)
-#   - image retention is controlled in step 3 by HARBOR_KEEP_TASK_IMAGES
-#     (default 0 = keep harbor's stock --rmi all; set 1 to persist images,
-#     only sane for small image sets like tb2's 89)
-if [ -x /usr/local/bin/setup_dockerio_mirror ]; then
-    /usr/local/bin/setup_dockerio_mirror || log "setup_dockerio_mirror failed (continuing)"
-fi
-if [ -n "${DOCKER_PAT:-}" ]; then
-    # Authenticate to Docker Hub so task-image pulls don't hit the
-    # unauthenticated rate cap. We `docker login` to VERIFY the credentials and
-    # HARD-ABORT on failure — no anonymous fallback — so a wrong username/PAT
-    # fails fast and unambiguously here, rather than silently rate-limiting or
-    # erroring on every image pull mid-run. DOCKERHUB_USERNAME must be the
-    # Docker Hub account that owns the DOCKER_PAT secret.
-    DOCKERHUB_USERNAME="${DOCKERHUB_USERNAME:-shashankg209}"
-    log "docker login as '$DOCKERHUB_USERNAME'"
-    if printf '%s' "$DOCKER_PAT" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin docker.io >/dev/null 2>&1; then
-        log "Docker Hub login OK ($DOCKERHUB_USERNAME)"
-    else
-        log "FATAL: Docker Hub login failed for '$DOCKERHUB_USERNAME'. Check DOCKERHUB_USERNAME and the DOCKER_PAT secret. Aborting."
-        exit 1
+    # --- 4a. Docker Hub auth + mirror -------------------------------------------
+    # tb2 task images live on Docker Hub; on a 267-trial run, harbor's
+    # `compose down --rmi all` deletes each image after a trial, so the next
+    # trial re-pulls and we blow past Docker Hub's 100 pulls/6hr unauthenticated
+    # cap somewhere around trial 100 (whole 2nd half of the run fails with
+    # "toomanyrequests: You have reached your unauthenticated pull rate limit").
+    # Defense in depth:
+    #   - if the image ships an internal Docker Hub mirror, use it
+    #   - if DOCKER_PAT is set (beaker secret), write the auth config (200/6hr
+    #     authenticated cap, or unlimited on a Docker Hub paid account)
+    #   - image retention is controlled in step 3 by HARBOR_KEEP_TASK_IMAGES
+    #     (default 0 = keep harbor's stock --rmi all; set 1 to persist images,
+    #     only sane for small image sets like tb2's 89)
+    if [ -x /usr/local/bin/setup_dockerio_mirror ]; then
+        /usr/local/bin/setup_dockerio_mirror || log "setup_dockerio_mirror failed (continuing)"
     fi
-    # Harbor pulls task images via the podman socket (DOCKER_HOST=.../podman.sock);
-    # podman reads registry creds from containers/auth.json, NOT ~/.docker/config.json,
-    # so a plain `docker login` leaves the podman service pulling ANONYMOUSLY (which
-    # then hits the shared-IP unauthenticated rate cap under --host-networking, even
-    # with a paid account). Authenticate podman's own store too.
-    if command -v podman >/dev/null 2>&1; then
-        if printf '%s' "$DOCKER_PAT" | podman login -u "$DOCKERHUB_USERNAME" --password-stdin docker.io >/dev/null 2>&1; then
-            log "podman Docker Hub login OK ($DOCKERHUB_USERNAME)"
+    if [ -n "${DOCKER_PAT:-}" ]; then
+        # Authenticate to Docker Hub so task-image pulls don't hit the
+        # unauthenticated rate cap. We `docker login` to VERIFY the credentials and
+        # HARD-ABORT on failure — no anonymous fallback — so a wrong username/PAT
+        # fails fast and unambiguously here, rather than silently rate-limiting or
+        # erroring on every image pull mid-run. DOCKERHUB_USERNAME must be the
+        # Docker Hub account that owns the DOCKER_PAT secret.
+        DOCKERHUB_USERNAME="${DOCKERHUB_USERNAME:-shashankg209}"
+        log "docker login as '$DOCKERHUB_USERNAME'"
+        if printf '%s' "$DOCKER_PAT" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin docker.io >/dev/null 2>&1; then
+            log "Docker Hub login OK ($DOCKERHUB_USERNAME)"
         else
-            log "FATAL: podman Docker Hub login failed for '$DOCKERHUB_USERNAME'. Aborting."
+            log "FATAL: Docker Hub login failed for '$DOCKERHUB_USERNAME'. Check DOCKERHUB_USERNAME and the DOCKER_PAT secret. Aborting."
             exit 1
         fi
+        # Harbor pulls task images via the podman socket (DOCKER_HOST=.../podman.sock);
+        # podman reads registry creds from containers/auth.json, NOT ~/.docker/config.json,
+        # so a plain `docker login` leaves the podman service pulling ANONYMOUSLY (which
+        # then hits the shared-IP unauthenticated rate cap under --host-networking, even
+        # with a paid account). Authenticate podman's own store too.
+        if command -v podman >/dev/null 2>&1; then
+            if printf '%s' "$DOCKER_PAT" | podman login -u "$DOCKERHUB_USERNAME" --password-stdin docker.io >/dev/null 2>&1; then
+                log "podman Docker Hub login OK ($DOCKERHUB_USERNAME)"
+            else
+                log "FATAL: podman Docker Hub login failed for '$DOCKERHUB_USERNAME'. Aborting."
+                exit 1
+            fi
+        fi
+    else
+        log "FATAL: DOCKER_PAT not set; refusing to fall back to anonymous pulls. Provide the DOCKER_PAT secret. Aborting."
+        exit 1
     fi
-else
-    log "FATAL: DOCKER_PAT not set; refusing to fall back to anonymous pulls. Provide the DOCKER_PAT secret. Aborting."
-    exit 1
 fi
 
 # --- 5. Start vLLM in the background ----------------------------------------
@@ -562,7 +612,7 @@ fi
 
 HARBOR_CMD=( uv run harbor run
              --model "$HARBOR_MODEL_NAME"
-             --env "${HARBOR_ENV:-docker}"
+             --env "$HARBOR_ENV"
              --n-concurrent "$N_CONCURRENT"
              --job-name "$JOB_NAME"
              -k "$N_ATTEMPTS" )
@@ -605,6 +655,12 @@ fi
 if [ -n "${HARBOR_ENVIRONMENT_BUILD_TIMEOUT_MULTIPLIER:-}" ]; then
     HARBOR_CMD+=( --environment-build-timeout-multiplier "$HARBOR_ENVIRONMENT_BUILD_TIMEOUT_MULTIPLIER" )
 fi
+if [ -n "${HARBOR_ENV_KWARGS:-}" ]; then
+    while IFS= read -r env_kwarg; do
+        [ -n "$env_kwarg" ] || continue
+        HARBOR_CMD+=( --environment-kwarg "$env_kwarg" )
+    done <<< "$HARBOR_ENV_KWARGS"
+fi
 if [[ "$HARBOR_MODEL_NAME" == hosted_vllm/* ]]; then
     HARBOR_CMD+=( --agent-kwarg "model_info=$HOSTED_VLLM_MODEL_INFO" )
 fi
@@ -623,10 +679,28 @@ if [ -n "${EXTRA_AGENT_ENVS:-}" ]; then
         HARBOR_CMD+=( --agent-env "$agent_env" )
     done <<< "$EXTRA_AGENT_ENVS"
 fi
+# Where the AGENT process runs decides whether localhost:$API_PORT is a valid
+# api_base:
+#   * import-path agents (Vanillux2Agent) subclass harbor's BaseAgent and run
+#     IN THIS PROCESS, exec'ing shell commands into the sandbox. The LLM call
+#     never leaves this node, so localhost works for every backend.
+#   * harbor built-ins (mini-swe-agent, swe-agent, terminus-2, openhands) are
+#     INSTALLED AND RUN INSIDE the task container. Under --env docker that
+#     container shares this node's netns so localhost reaches vLLM; under a
+#     remote-sandbox backend it is a different machine entirely and localhost
+#     resolves to the sandbox itself. Every trial would fail on connection
+#     refused, so refuse the combination up front.
 if [[ "$AGENT_IMPORT_PATH" == *:* ]]; then
     HARBOR_CMD+=( --agent-import-path "$AGENT_IMPORT_PATH"
                   --agent-kwarg "api_base=http://localhost:$API_PORT/v1" )
 else
+    if [ "$LOCAL_CONTAINER_RUNTIME" != "1" ]; then
+        log "FATAL: agent '$AGENT_IMPORT_PATH' runs inside the task container, which"
+        log "       for HARBOR_ENV=$HARBOR_ENV is a remote sandbox that cannot reach"
+        log "       this node's vLLM at localhost:$API_PORT. Use an in-process agent"
+        log "       (e.g. --agent Vanillux2Agent:Vanillux2Agent) or a hosted API model."
+        exit 1
+    fi
     HARBOR_CMD+=( --agent "$AGENT_IMPORT_PATH" )
 fi
 log "running harbor: ${HARBOR_CMD[*]}"

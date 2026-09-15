@@ -47,6 +47,7 @@ MAX_MODEL_LEN=""
 DATASET="terminal-bench@2.0"
 DATASET_PATH=""
 HARBOR_ENV="docker"
+HARBOR_ENV_KWARGS=""
 AGENT_IMPORT_PATH="Vanillux2Agent:Vanillux2Agent"
 N_CONCURRENT=8
 N_ATTEMPTS=1
@@ -109,7 +110,19 @@ Options:
   --max-model-len LEN    pass --max-model-len to vllm
   --dataset DS           harbor dataset (default: terminal-bench@2.0; also
                          valid: openthoughts-tblite@2.0)
-  --harbor-env ENV       harbor environment backend (default: docker)
+  --harbor-env ENV       harbor environment backend (default: docker).
+                         'modal' runs each task container as a Modal cloud
+                         sandbox instead of podman-in-job; requires the
+                         MODAL_TOKEN_ID / MODAL_TOKEN_SECRET beaker secrets
+                         (override names with --modal-token-id-secret /
+                         --modal-token-secret-secret) and an in-process agent.
+  --env-kwarg K=V        harbor --environment-kwarg (repeatable). Modal accepts
+                         app_name, secrets, registry_secret, volumes,
+                         sandbox_timeout_secs, sandbox_idle_timeout_secs.
+  --modal-token-id-secret NAME
+                         beaker secret holding MODAL_TOKEN_ID (default: MODAL_TOKEN_ID)
+  --modal-token-secret-secret NAME
+                         beaker secret holding MODAL_TOKEN_SECRET (default: MODAL_TOKEN_SECRET)
   --agent AGENT          harbor agent import path or named agent (default: Vanillux2Agent:Vanillux2Agent)
   --n-concurrent N       harbor --n-concurrent (default: 8)
   --n-attempts N         harbor -k (default: 1)
@@ -177,6 +190,9 @@ while [ $# -gt 0 ]; do
         --dataset)         DATASET="$2"; shift 2 ;;
         --dataset-path)    DATASET_PATH="$2"; shift 2 ;;
         --harbor-env)      HARBOR_ENV="$2"; shift 2 ;;
+        --env-kwarg)       HARBOR_ENV_KWARGS+="${HARBOR_ENV_KWARGS:+$'\n'}$2"; shift 2 ;;
+        --modal-token-id-secret)     MODAL_TOKEN_ID_SECRET="$2"; shift 2 ;;
+        --modal-token-secret-secret) MODAL_TOKEN_SECRET_SECRET="$2"; shift 2 ;;
         --agent)           AGENT_IMPORT_PATH="$2"; shift 2 ;;
         --n-concurrent)    N_CONCURRENT="$2"; shift 2 ;;
         --n-attempts)      N_ATTEMPTS="$2"; shift 2 ;;
@@ -238,6 +254,7 @@ cat <<EOF
   GPUs:         ${GPU_COUNT} (TP=${TP_SIZE}, DP=${DP_SIZE})
   Dataset:      ${DATASET}
   Harbor env:   ${HARBOR_ENV}
+  Env kwargs:   ${HARBOR_ENV_KWARGS:-<none>}
   Agent:        ${AGENT_IMPORT_PATH}
   Agent kwargs: ${EXTRA_AGENT_KWARGS:-<none>}
   Agent envs:   ${EXTRA_AGENT_ENVS:-<none>}
@@ -291,6 +308,7 @@ GANTRY_CMD=(
     --env "DATASET=${DATASET}"
     --env "DATASET_PATH=${DATASET_PATH}"
     --env "HARBOR_ENV=${HARBOR_ENV}"
+    --env "HARBOR_ENV_KWARGS=${HARBOR_ENV_KWARGS}"
     --env "AGENT_IMPORT_PATH=${AGENT_IMPORT_PATH}"
     --env "EXTRA_AGENT_KWARGS=${EXTRA_AGENT_KWARGS}"
     --env "EXTRA_AGENT_ENVS=${EXTRA_AGENT_ENVS}"
@@ -326,6 +344,13 @@ done
 # default docker path doesn't require a DAYTONA_API_KEY secret in the workspace.
 if [ "$HARBOR_ENV" = "daytona" ]; then
     GANTRY_CMD+=(--env-secret "DAYTONA_API_KEY=${DAYTONA_API_KEY_SECRET:-hamishivi_DAYTONA_API_KEY}")
+fi
+
+# Same for modal: the sandboxes live in Modal's cloud, so the job needs a Modal
+# API token pair rather than anything container-runtime related.
+if [ "$HARBOR_ENV" = "modal" ]; then
+    GANTRY_CMD+=(--env-secret "MODAL_TOKEN_ID=${MODAL_TOKEN_ID_SECRET:-MODAL_TOKEN_ID}")
+    GANTRY_CMD+=(--env-secret "MODAL_TOKEN_SECRET=${MODAL_TOKEN_SECRET_SECRET:-MODAL_TOKEN_SECRET}")
 fi
 
 if [ -n "$BEAKER_IMAGE" ]; then

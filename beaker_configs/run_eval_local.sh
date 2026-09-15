@@ -18,7 +18,10 @@
 #     localhost:$VLLM_PORT, which only resolves to the host vLLM when the
 #     container shares the host network namespace.
 #   * Defaults to a tiny run: TP=1 on one GPU, 2 tasks, 2 concurrent.
-#   * NOT the Daytona route — uses harbor `--env docker`.
+#   * Defaults to harbor `--env docker`. Pass `--harbor-env modal` to run each
+#     task container as a Modal cloud sandbox instead: no local Docker daemon,
+#     no Docker Hub PAT, and no compose patch is needed, but the agent must be
+#     an in-process one (see the --harbor-env note below).
 #
 # Usage:
 #   ./beaker_configs/run_eval_local.sh [model_path] [options]
@@ -27,6 +30,19 @@
 #   ./beaker_configs/run_eval_local.sh
 #   ./beaker_configs/run_eval_local.sh Qwen/Qwen3.5-4B --n-concurrent 1 --task fix-git
 #   ./beaker_configs/run_eval_local.sh Qwen/Qwen3.5-4B --agent swe-agent --n-tasks 1
+#
+# Modal smoke test (containers in Modal's cloud, model served locally):
+#   export MODAL_TOKEN_ID=... MODAL_TOKEN_SECRET=...
+#   ./beaker_configs/run_eval_local.sh Qwen/Qwen3.5-4B \
+#       --harbor-env modal --agent Vanillux2Agent:Vanillux2Agent \
+#       --model-provider openai --tool-call-parser qwen3_xml \
+#       --max-model-len 32768 --n-tasks 2
+#
+# Fastest possible Modal wiring check — no GPU, no vLLM, hosted API model:
+#   export MODAL_TOKEN_ID=... MODAL_TOKEN_SECRET=... ANTHROPIC_API_KEY=...
+#   ./beaker_configs/run_eval_local.sh --harbor-env modal --skip-vllm \
+#       --harbor-model-name anthropic/claude-sonnet-4-5 \
+#       --agent Vanillux2Agent:Vanillux2Agent --n-tasks 1
 
 set -euo pipefail
 
@@ -67,6 +83,10 @@ N_TASKS=2                  # harbor -l / --n-tasks (small for a smoke test)
 SINGLE_TASK=""             # harbor --include-task-name (overrides N_TASKS when set)
 JOB_NAME=""
 RESULTS_DIR=""
+HARBOR_ENV="docker"        # harbor --env; "modal" runs containers as Modal sandboxes
+HARBOR_ENV_KWARGS=""       # newline-separated harbor --environment-kwarg values
+HARBOR_MODEL_NAME=""       # full litellm model id; overrides <provider>/<served-name>
+SKIP_VLLM=0                # skip serving a local model (needs --harbor-model-name)
 
 # first positional arg (if it doesn't start with --) is the model path
 if [ $# -gt 0 ] && [[ "$1" != --* ]]; then MODEL_PATH="$1"; shift; fi
@@ -95,11 +115,20 @@ while [ $# -gt 0 ]; do
         --task)             SINGLE_TASK="$2"; shift 2 ;;
         --job-name)         JOB_NAME="$2"; shift 2 ;;
         --results-dir)      RESULTS_DIR="$2"; shift 2 ;;
+        --harbor-env)       HARBOR_ENV="$2"; shift 2 ;;
+        --env-kwarg)        HARBOR_ENV_KWARGS+="${HARBOR_ENV_KWARGS:+$'\n'}$2"; shift 2 ;;
+        --harbor-model-name) HARBOR_MODEL_NAME="$2"; shift 2 ;;
+        --skip-vllm)        SKIP_VLLM=1; shift ;;
         -h|--help)
             grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown option: $1"; exit 1 ;;
     esac
 done
+
+if [ "$SKIP_VLLM" = "1" ] && [ -z "$HARBOR_MODEL_NAME" ]; then
+    echo "FATAL: --skip-vllm needs --harbor-model-name (e.g. anthropic/claude-sonnet-4-5),"
+    echo "       since there is no locally served model to point the agent at."; exit 1
+fi
 
 SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-$(basename "$MODEL_PATH")}"
 DATASET_SLUG="${DATASET//[^A-Za-z0-9]/-}"
@@ -114,59 +143,81 @@ cat <<EOF
   Dataset:      ${DATASET}
   Tasks:        ${SINGLE_TASK:-first ${N_TASKS}}  (n_concurrent=${N_CONCURRENT}, k=${N_ATTEMPTS})
   Agent:        ${AGENT_IMPORT_PATH}
+  Harbor env:   ${HARBOR_ENV}
+  Env kwargs:   ${HARBOR_ENV_KWARGS:-<none>}
+  Local vLLM:   $([ "$SKIP_VLLM" = "1" ] && echo "skipped (model: ${HARBOR_MODEL_NAME:-<unset!>})" || echo "yes")
   Job name:     ${JOB_NAME}
   DOCKER_HOST:  ${DOCKER_HOST:-(default: local docker daemon)}
 EOF
 
-# --- 0. Preconditions -------------------------------------------------------
-command -v docker >/dev/null 2>&1 || { echo "docker CLI not found"; exit 1; }
-docker info >/dev/null 2>&1 || { echo "docker daemon not reachable"; exit 1; }
-docker compose version >/dev/null 2>&1 || {
-    log "installing docker compose v2 plugin (harbor shells out to 'docker compose')"
-    mkdir -p /root/.docker/cli-plugins
-    curl -fsSL \
-        "https://github.com/docker/compose/releases/download/v2.39.4/docker-compose-linux-$(uname -m)" \
-        -o /root/.docker/cli-plugins/docker-compose
-    chmod +x /root/.docker/cli-plugins/docker-compose
-}
+# Everything below is specific to running task containers on THIS machine's
+# Docker daemon. Remote-sandbox backends (--harbor-env modal) need none of it:
+# no daemon, no compose plugin, no Docker Hub PAT — Modal pulls and builds the
+# task image on its own side.
+if [ "$HARBOR_ENV" = "docker" ]; then
+    # --- 0. Preconditions -------------------------------------------------------
+    command -v docker >/dev/null 2>&1 || { echo "docker CLI not found"; exit 1; }
+    docker info >/dev/null 2>&1 || { echo "docker daemon not reachable"; exit 1; }
+    docker compose version >/dev/null 2>&1 || {
+        log "installing docker compose v2 plugin (harbor shells out to 'docker compose')"
+        mkdir -p /root/.docker/cli-plugins
+        curl -fsSL \
+            "https://github.com/docker/compose/releases/download/v2.39.4/docker-compose-linux-$(uname -m)" \
+            -o /root/.docker/cli-plugins/docker-compose
+        chmod +x /root/.docker/cli-plugins/docker-compose
+    }
 
-# --- 0b. Docker Hub auth (mirrors scripts/beaker/run_eval_in_job.sh) ---------
-# harbor pulls task images from Docker Hub. Authenticate so pulls don't hit the
-# unauthenticated cap, VERIFY with `docker login`, and HARD-ABORT on failure —
-# no anonymous fallback (deterministic, matching the Beaker path). The PAT comes
-# from $DOCKER_PAT, else is read from the beaker secret via the beaker CLI.
-DOCKERHUB_USERNAME="${DOCKERHUB_USERNAME:-shashankg209}"
-DOCKER_PAT_SECRET="${DOCKER_PAT_SECRET:-shashankg_DOCKER_PAT}"
-AUTH_WORKSPACE="${BEAKER_WORKSPACE:-ai2/oe-agents}"
-if [ -z "${DOCKER_PAT:-}" ] && command -v beaker >/dev/null 2>&1; then
-    DOCKER_PAT="$(beaker secret read "$DOCKER_PAT_SECRET" --workspace "$AUTH_WORKSPACE" 2>/dev/null || true)"
-fi
-[ -n "${DOCKER_PAT:-}" ] || {
-    echo "FATAL: no Docker Hub PAT. Set DOCKER_PAT, or grant beaker access to secret '$DOCKER_PAT_SECRET' in '$AUTH_WORKSPACE'."; exit 1; }
-# A broken credsStore (e.g. the VS Code dev-containers credential helper) makes
-# `docker login` fail to persist the auth — drop it (keep other keys) so login
-# writes a plain auth entry.
-if [ -f "$HOME/.docker/config.json" ] && grep -q '"credsStore"' "$HOME/.docker/config.json" 2>/dev/null; then
-    log "neutralizing docker credsStore (backup: config.json.bak) so login persists"
-    cp "$HOME/.docker/config.json" "$HOME/.docker/config.json.bak"
-    python3 -c "import json,os;p=os.path.expanduser('~/.docker/config.json');d=json.load(open(p));d.pop('credsStore',None);d.pop('credHelpers',None);json.dump(d,open(p,'w'),indent=2)" \
-        || { echo "FATAL: failed to rewrite ~/.docker/config.json"; exit 1; }
-fi
-log "docker login as '$DOCKERHUB_USERNAME'"
-if printf '%s' "$DOCKER_PAT" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin docker.io >/dev/null 2>&1; then
-    log "Docker Hub login OK ($DOCKERHUB_USERNAME)"
-else
-    echo "FATAL: Docker Hub login failed for '$DOCKERHUB_USERNAME'. Check DOCKERHUB_USERNAME and DOCKER_PAT / secret '$DOCKER_PAT_SECRET'."; exit 1
+    # --- 0b. Docker Hub auth (mirrors scripts/beaker/run_eval_in_job.sh) ---------
+    # harbor pulls task images from Docker Hub. Authenticate so pulls don't hit the
+    # unauthenticated cap, VERIFY with `docker login`, and HARD-ABORT on failure —
+    # no anonymous fallback (deterministic, matching the Beaker path). The PAT comes
+    # from $DOCKER_PAT, else is read from the beaker secret via the beaker CLI.
+    DOCKERHUB_USERNAME="${DOCKERHUB_USERNAME:-shashankg209}"
+    DOCKER_PAT_SECRET="${DOCKER_PAT_SECRET:-shashankg_DOCKER_PAT}"
+    AUTH_WORKSPACE="${BEAKER_WORKSPACE:-ai2/oe-agents}"
+    if [ -z "${DOCKER_PAT:-}" ] && command -v beaker >/dev/null 2>&1; then
+        DOCKER_PAT="$(beaker secret read "$DOCKER_PAT_SECRET" --workspace "$AUTH_WORKSPACE" 2>/dev/null || true)"
+    fi
+    [ -n "${DOCKER_PAT:-}" ] || {
+        echo "FATAL: no Docker Hub PAT. Set DOCKER_PAT, or grant beaker access to secret '$DOCKER_PAT_SECRET' in '$AUTH_WORKSPACE'."; exit 1; }
+    # A broken credsStore (e.g. the VS Code dev-containers credential helper) makes
+    # `docker login` fail to persist the auth — drop it (keep other keys) so login
+    # writes a plain auth entry.
+    if [ -f "$HOME/.docker/config.json" ] && grep -q '"credsStore"' "$HOME/.docker/config.json" 2>/dev/null; then
+        log "neutralizing docker credsStore (backup: config.json.bak) so login persists"
+        cp "$HOME/.docker/config.json" "$HOME/.docker/config.json.bak"
+        python3 -c "import json,os;p=os.path.expanduser('~/.docker/config.json');d=json.load(open(p));d.pop('credsStore',None);d.pop('credHelpers',None);json.dump(d,open(p,'w'),indent=2)" \
+            || { echo "FATAL: failed to rewrite ~/.docker/config.json"; exit 1; }
+    fi
+    log "docker login as '$DOCKERHUB_USERNAME'"
+    if printf '%s' "$DOCKER_PAT" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin docker.io >/dev/null 2>&1; then
+        log "Docker Hub login OK ($DOCKERHUB_USERNAME)"
+    else
+        echo "FATAL: Docker Hub login failed for '$DOCKERHUB_USERNAME'. Check DOCKERHUB_USERNAME and DOCKER_PAT / secret '$DOCKER_PAT_SECRET'."; exit 1
+    fi
 fi
 
 log "uv sync"
 uv sync
 
-# --- 1. Patch harbor compose: network_mode: host ----------------------------
-# Only patch needed for rootful Docker. Lets the in-container SWE-agent reach
-# the host's vLLM at localhost:$VLLM_PORT.
-log "patching harbor docker-compose-base.yaml (network_mode: host)"
-uv run python - <<'PY'
+if [ "$HARBOR_ENV" = "modal" ]; then
+    # Install the SDK directly, not `harbor[modal]`: the extra re-resolves
+    # harbor itself and would upgrade it off the version uv.lock pins.
+    log "installing modal SDK"
+    uv pip install 'modal>=1.4.0'
+    if [ ! -f "$HOME/.modal.toml" ] && { [ -z "${MODAL_TOKEN_ID:-}" ] || [ -z "${MODAL_TOKEN_SECRET:-}" ]; }; then
+        echo "FATAL: --harbor-env modal needs credentials. Run 'modal token new',"
+        echo "       or export MODAL_TOKEN_ID and MODAL_TOKEN_SECRET."; exit 1
+    fi
+    log "modal credentials OK"
+fi
+
+if [ "$HARBOR_ENV" = "docker" ]; then
+    # --- 1. Patch harbor compose: network_mode: host ----------------------------
+    # Only patch needed for rootful Docker. Lets the in-container SWE-agent reach
+    # the host's vLLM at localhost:$VLLM_PORT.
+    log "patching harbor docker-compose-base.yaml (network_mode: host)"
+    uv run python - <<'PY'
 import pathlib, harbor
 hdir = pathlib.Path(harbor.__file__).parent
 compose = hdir / "environments/docker/docker-compose-base.yaml"
@@ -181,63 +232,69 @@ if "network_mode: host" not in text:
 else:
     print("already patched")
 PY
+fi
 
-# --- 2. Start vLLM in the background ----------------------------------------
-# Pin fastapi < 0.137: fastapi 0.137 changed the router internals and breaks
-# prometheus-fastapi-instrumentator (which vLLM mounts on every route), so the
-# API server 500s on every request including /v1/models — the readiness probe
-# then never passes. (Same pin as the Beaker run_eval_in_job.sh path.)
-VLLM_LOG=/tmp/vllm_local.log
-VLLM_CMD=( uvx --with "fastapi<0.137" "vllm==${VLLM_VERSION}" serve "$MODEL_PATH"
-           --revision "$REVISION"
-           --tokenizer-revision "$REVISION"
-           --served-model-name "$SERVED_MODEL_NAME"
-           --enable-auto-tool-choice
-           --tool-call-parser "$VLLM_TOOL_CALL_PARSER"
-           --port "$VLLM_PORT"
-           --gpu-memory-utilization "$GPU_MEM_UTIL"
-           --tensor-parallel-size "$TP_SIZE"
-           --data-parallel-size "$DP_SIZE" )
-[ -n "$MAX_MODEL_LEN" ] && VLLM_CMD+=( --max-model-len "$MAX_MODEL_LEN" )
-# Reasoning models (e.g. Qwen3) emit <think>...</think>; --reasoning-parser
-# splits that into reasoning_content so tool-calls/content parse cleanly.
-[ -n "$VLLM_REASONING_PARSER" ] && VLLM_CMD+=( --reasoning-parser "$VLLM_REASONING_PARSER" )
-[ "$VLLM_LANGUAGE_MODEL_ONLY" = "1" ] && VLLM_CMD+=( --language_model_only )
+# Serving a model locally is optional: --skip-vllm + --harbor-model-name runs
+# the eval against a hosted API instead, which is the quickest way to validate a
+# sandbox backend on its own (no GPU, no 10-minute model load).
+if [ "$SKIP_VLLM" != "1" ]; then
+    # --- 2. Start vLLM in the background ----------------------------------------
+    # Pin fastapi < 0.137: fastapi 0.137 changed the router internals and breaks
+    # prometheus-fastapi-instrumentator (which vLLM mounts on every route), so the
+    # API server 500s on every request including /v1/models — the readiness probe
+    # then never passes. (Same pin as the Beaker run_eval_in_job.sh path.)
+    VLLM_LOG=/tmp/vllm_local.log
+    VLLM_CMD=( uvx --with "fastapi<0.137" "vllm==${VLLM_VERSION}" serve "$MODEL_PATH"
+               --revision "$REVISION"
+               --tokenizer-revision "$REVISION"
+               --served-model-name "$SERVED_MODEL_NAME"
+               --enable-auto-tool-choice
+               --tool-call-parser "$VLLM_TOOL_CALL_PARSER"
+               --port "$VLLM_PORT"
+               --gpu-memory-utilization "$GPU_MEM_UTIL"
+               --tensor-parallel-size "$TP_SIZE"
+               --data-parallel-size "$DP_SIZE" )
+    [ -n "$MAX_MODEL_LEN" ] && VLLM_CMD+=( --max-model-len "$MAX_MODEL_LEN" )
+    # Reasoning models (e.g. Qwen3) emit <think>...</think>; --reasoning-parser
+    # splits that into reasoning_content so tool-calls/content parse cleanly.
+    [ -n "$VLLM_REASONING_PARSER" ] && VLLM_CMD+=( --reasoning-parser "$VLLM_REASONING_PARSER" )
+    [ "$VLLM_LANGUAGE_MODEL_ONLY" = "1" ] && VLLM_CMD+=( --language_model_only )
 
-log "launching vllm (CUDA_VISIBLE_DEVICES=$GPU_DEVICES): ${VLLM_CMD[*]}"
-CUDA_VISIBLE_DEVICES="$GPU_DEVICES" "${VLLM_CMD[@]}" >"$VLLM_LOG" 2>&1 &
-VLLM_PID=$!
+    log "launching vllm (CUDA_VISIBLE_DEVICES=$GPU_DEVICES): ${VLLM_CMD[*]}"
+    CUDA_VISIBLE_DEVICES="$GPU_DEVICES" "${VLLM_CMD[@]}" >"$VLLM_LOG" 2>&1 &
+    VLLM_PID=$!
 
-cleanup() {
-    log "cleanup: killing vllm pid $VLLM_PID"
-    kill "$VLLM_PID" 2>/dev/null || true
-    wait "$VLLM_PID" 2>/dev/null || true
-}
-trap cleanup EXIT
+    cleanup() {
+        log "cleanup: killing vllm pid $VLLM_PID"
+        kill "$VLLM_PID" 2>/dev/null || true
+        wait "$VLLM_PID" 2>/dev/null || true
+    }
+    trap cleanup EXIT
 
-# Gate readiness on a real completion: a 200 on /v1/models can precede the
-# engine being able to GENERATE (the first request then fails "model does not
-# exist", notably for the 9B). Probe /v1/chat/completions instead.
-vllm_can_generate() {
-    curl -sf -X POST "http://localhost:$VLLM_PORT/v1/chat/completions" \
-        -H 'Content-Type: application/json' \
-        -d "{\"model\":\"$SERVED_MODEL_NAME\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":1}" \
-        >/dev/null 2>&1
-}
-log "waiting for vllm to serve completions on :$VLLM_PORT (up to 30 min) — tail $VLLM_LOG"
-VLLM_READY=0
-for _ in $(seq 1 360); do
-    if vllm_can_generate; then
-        log "vllm ready (completion probe ok)"; VLLM_READY=1; break
-    fi
-    if ! kill -0 "$VLLM_PID" 2>/dev/null; then
-        log "vllm died — tail of $VLLM_LOG:"; tail -200 "$VLLM_LOG" || true; exit 1
-    fi
-    sleep 5
-done
-[ "$VLLM_READY" -eq 1 ] || {
-    log "vllm not ready in 30 min — tail of $VLLM_LOG:"; tail -200 "$VLLM_LOG" || true; exit 1
-}
+    # Gate readiness on a real completion: a 200 on /v1/models can precede the
+    # engine being able to GENERATE (the first request then fails "model does not
+    # exist", notably for the 9B). Probe /v1/chat/completions instead.
+    vllm_can_generate() {
+        curl -sf -X POST "http://localhost:$VLLM_PORT/v1/chat/completions" \
+            -H 'Content-Type: application/json' \
+            -d "{\"model\":\"$SERVED_MODEL_NAME\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":1}" \
+            >/dev/null 2>&1
+    }
+    log "waiting for vllm to serve completions on :$VLLM_PORT (up to 30 min) — tail $VLLM_LOG"
+    VLLM_READY=0
+    for _ in $(seq 1 360); do
+        if vllm_can_generate; then
+            log "vllm ready (completion probe ok)"; VLLM_READY=1; break
+        fi
+        if ! kill -0 "$VLLM_PID" 2>/dev/null; then
+            log "vllm died — tail of $VLLM_LOG:"; tail -200 "$VLLM_LOG" || true; exit 1
+        fi
+        sleep 5
+    done
+    [ "$VLLM_READY" -eq 1 ] || {
+        log "vllm not ready in 30 min — tail of $VLLM_LOG:"; tail -200 "$VLLM_LOG" || true; exit 1
+    }
+fi
 
 # --- 3. Run harbor ----------------------------------------------------------
 # CRITICAL networking note (local vs. Beaker):
@@ -249,22 +306,38 @@ done
 #   host's netns — NOT this container's — so localhost does NOT reach our vLLM.
 #   They CAN reach this container by its docker-bridge IP, so we point the
 #   agent at that IP instead of localhost.
-HOST_IP="${HOST_IP:-$(hostname -i 2>/dev/null | awk '{print $1}')}"
-[ -n "$HOST_IP" ] || { echo "could not determine container IP (set HOST_IP)"; exit 1; }
-AGENT_API_BASE="http://$HOST_IP:$VLLM_PORT/v1"
-log "agent will reach vLLM at $AGENT_API_BASE (this container's bridge IP)"
+#   Under --harbor-env modal the task container is in Modal's cloud, so NO
+#   address of ours is reachable from it. That is fine for in-process agents
+#   (Vanillux2Agent), whose LLM calls never leave this machine — they use plain
+#   localhost. It is fatal for harbor's built-in agents, which are installed and
+#   run INSIDE the task container; that combination is rejected below.
+if [ "$SKIP_VLLM" = "1" ]; then
+    AGENT_API_BASE=""
+elif [ "$HARBOR_ENV" = "docker" ]; then
+    HOST_IP="${HOST_IP:-$(hostname -i 2>/dev/null | awk '{print $1}')}"
+    [ -n "$HOST_IP" ] || { echo "could not determine container IP (set HOST_IP)"; exit 1; }
+    AGENT_API_BASE="http://$HOST_IP:$VLLM_PORT/v1"
+    log "agent will reach vLLM at $AGENT_API_BASE (this container's bridge IP)"
+else
+    AGENT_API_BASE="http://localhost:$VLLM_PORT/v1"
+    log "agent will reach vLLM at $AGENT_API_BASE (in-process agent, same machine)"
+fi
 
 export OPENAI_API_KEY="${OPENAI_API_KEY:-dummy}"
-export OPENAI_API_BASE="$AGENT_API_BASE"
+if [ -n "$AGENT_API_BASE" ]; then
+    export OPENAI_API_BASE="$AGENT_API_BASE"
+fi
 # litellm reads OPENAI_BASE_URL; harbor's mini/swe agents forward it + the
 # api-key var into the container. NOTE: do NOT set MSWEA_API_KEY — if it's set,
 # harbor's mini-swe-agent forwards only that and skips OPENAI_API_KEY, and
 # litellm's openai provider then fails with "Missing credentials".
 unset MSWEA_API_KEY
-export OPENAI_BASE_URL="$AGENT_API_BASE"
+if [ -n "$AGENT_API_BASE" ]; then
+    export OPENAI_BASE_URL="$AGENT_API_BASE"
+fi
 
 HARBOR_CMD=( uv run harbor run
-             --env docker
+             --env "$HARBOR_ENV"
              --n-concurrent "$N_CONCURRENT"
              --job-name "$JOB_NAME"
              --yes
@@ -287,13 +360,28 @@ fi
 # import-path agent but uses its own litellm loop → needs openai/, not hosted_vllm).
 if [[ "$AGENT_IMPORT_PATH" == *:* ]]; then
     MODEL_PROVIDER="${MODEL_PROVIDER:-hosted_vllm}"
-    HARBOR_CMD+=( --model "$MODEL_PROVIDER/$SERVED_MODEL_NAME"
-                  --agent-import-path "$AGENT_IMPORT_PATH"
-                  --agent-kwarg "api_base=$AGENT_API_BASE" )
+    HARBOR_CMD+=( --model "${HARBOR_MODEL_NAME:-$MODEL_PROVIDER/$SERVED_MODEL_NAME}"
+                  --agent-import-path "$AGENT_IMPORT_PATH" )
+    if [ -n "$AGENT_API_BASE" ]; then
+        HARBOR_CMD+=( --agent-kwarg "api_base=$AGENT_API_BASE" )
+    fi
 else
+    if [ "$HARBOR_ENV" != "docker" ]; then
+        echo "FATAL: agent '$AGENT_IMPORT_PATH' is a harbor built-in, which is installed"
+        echo "       and run INSIDE the task container. Under --harbor-env $HARBOR_ENV that"
+        echo "       container is a remote sandbox and cannot reach a model served here."
+        echo "       Use an in-process agent (--agent Vanillux2Agent:Vanillux2Agent)."
+        exit 1
+    fi
     MODEL_PROVIDER="${MODEL_PROVIDER:-openai}"
-    HARBOR_CMD+=( --model "$MODEL_PROVIDER/$SERVED_MODEL_NAME"
+    HARBOR_CMD+=( --model "${HARBOR_MODEL_NAME:-$MODEL_PROVIDER/$SERVED_MODEL_NAME}"
                   --agent "$AGENT_IMPORT_PATH" )
+fi
+if [ -n "$HARBOR_ENV_KWARGS" ]; then
+    while IFS= read -r env_kwarg; do
+        [ -n "$env_kwarg" ] || continue
+        HARBOR_CMD+=( --environment-kwarg "$env_kwarg" )
+    done <<< "$HARBOR_ENV_KWARGS"
 fi
 if [ -n "$SINGLE_TASK" ]; then
     HARBOR_CMD+=( --include-task-name "$SINGLE_TASK" )

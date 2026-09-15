@@ -62,6 +62,9 @@ about these scripts comes from conflating them.
    - `--env daytona`: each task runs in a fresh, fully-managed **cloud
      sandbox** from [Daytona](https://www.daytona.io/). Requires
      `DAYTONA_API_KEY`. No local container runtime needed.
+   - `--env modal`: each task runs as a [Modal](https://modal.com/) sandbox.
+     Requires `MODAL_TOKEN_ID` + `MODAL_TOKEN_SECRET`. No local container
+     runtime needed. See [§3b](#3b-path-c--modal-sandboxes).
 
 2. **Model serving** — chosen by the `--model` string (a
    [litellm](https://docs.litellm.ai/) identifier):
@@ -85,7 +88,8 @@ you're evaluating**.
 | Path | Script(s) | Sandbox | Typical model | Use when |
 |---|---|---|---|---|
 | **Beaker** | [`beaker_configs/launch_eval.sh`](../beaker_configs/launch_eval.sh) | podman (in-job) | self-hosted vLLM (your checkpoint) | Iterating on a checkpoint at AI2; you want model + sandboxes in one GPU job. |
-| **Local / direct** | [`beaker_configs/run_eval_local.sh`](../beaker_configs/run_eval_local.sh) or `uv run harbor run ...` | local Docker (default) **or** Daytona | API or vLLM | Quick smoke tests on a dev VM with a real Docker daemon, or any direct harbor run. |
+| **Local / direct** | [`beaker_configs/run_eval_local.sh`](../beaker_configs/run_eval_local.sh) or `uv run harbor run ...` | local Docker (default), **or** Modal / Daytona | API or vLLM | Quick smoke tests on a dev VM with a real Docker daemon, or any direct harbor run. |
+| **Modal sandboxes** | either script with `--harbor-env modal` | Modal cloud | API or vLLM | You want to skip the podman stack entirely, or scale sandbox concurrency past what one node can hold. |
 
 A useful rule of thumb that mirrors how this repo is actually used day to day:
 
@@ -97,6 +101,9 @@ A useful rule of thumb that mirrors how this repo is actually used day to day:
   before committing to a full Beaker job.
 - **Daytona** → clean, isolated cloud sandboxes (harbor `--env daytona`), useful
   when you have no local container runtime; requires a `DAYTONA_API_KEY`.
+- **Modal** → clean cloud sandboxes with no local container runtime and no
+  Docker Hub PAT (`--harbor-env modal`); requires `MODAL_TOKEN_ID` +
+  `MODAL_TOKEN_SECRET` and an **in-process agent**. See [§3b](#3b-path-c--modal-sandboxes).
 
 ---
 
@@ -261,6 +268,145 @@ It also neutralizes a broken `credsStore` (e.g. the VS Code dev-containers
 helper, which otherwise makes `docker login` fail to persist and turns every
 pull into `unauthorized`). To use a different account, set `DOCKERHUB_USERNAME`
 + `DOCKER_PAT` (or `DOCKER_PAT_SECRET`).
+
+---
+
+## 3b. Path C — Modal sandboxes
+
+`--harbor-env modal` swaps the **sandbox backend** only. The model, the agent,
+the dataset, the results layout, and `compute_stats.py` are all unchanged; the
+only thing that moves is where the task container runs.
+
+```
+   --env docker (today)                    --env modal
+   ────────────────────                    ───────────
+   Beaker job / dev VM                     Beaker job / dev VM
+     ├── vLLM (GPUs)                         ├── vLLM (GPUs)
+     ├── podman + compose                    └── harbor + agent ──┐
+     └── harbor + agent ──┐                                        │ Modal API
+                          │ exec                                   ▼
+            task container ◀┘                        Modal sandbox (task container)
+            (same netns)                             (someone else's machine)
+```
+
+### Why you'd want it
+
+- **No podman stack.** Sections 1/2/4/4a of `run_eval_in_job.sh` — podman, the
+  compose plugin, `containers.conf`, subuid ranges, the Docker Hub login, the
+  registry mirror, and the whole pile of podman-compat harbor patches — are all
+  skipped. That is the single most fragile part of the Beaker path.
+- **No `DOCKER_PAT` and no mirror.** Modal pulls and builds the task image on
+  its own side, so docker.io rate limits stop being our problem.
+- **Concurrency isn't capped by the node.** `--n-concurrent` is bounded by your
+  Modal limits, not by the job's CPU/disk.
+
+### The one hard constraint: the agent must run in-process
+
+This is the thing to internalise before using it:
+
+| Agent kind | Where the agent process runs | Works with `--env modal`? |
+|---|---|---|
+| import-path, e.g. `Vanillux2Agent:Vanillux2Agent` | in the **harbor process**, exec'ing commands into the sandbox | **Yes** — the LLM call never leaves our machine, so `api_base=http://localhost:PORT/v1` is still correct |
+| harbor built-in, e.g. `mini-swe-agent`, `swe-agent`, `terminus-2`, `openhands` | **inside the task container** | **No** — the container is in Modal's cloud; `localhost:PORT` there is the sandbox, not our vLLM. Every trial fails on connection refused |
+
+Both scripts reject that combination up front rather than letting you discover
+it 200 trials in. To use a built-in agent on Modal you'd have to expose vLLM on
+a publicly reachable URL first; that is not wired up.
+
+### Direct vs. DinD mode (harbor picks automatically)
+
+Harbor chooses per task, based on the task's `environment/` directory:
+
+- **`Dockerfile` only → Direct mode.** One Modal sandbox *is* the task
+  container. This is the fast path, and it is what every Terminal-Bench and
+  SWE-bench Verified task we run uses today.
+- **`docker-compose.yaml` present → DinD mode.** Modal runs a `docker:dind`
+  sandbox with `enable_docker`, and compose runs inside it. Works, but slower,
+  and it forces host networking on every service — no port isolation and no
+  compose DNS (service names resolve to `127.0.0.1` via `extra_hosts`).
+
+### Local smoke test
+
+Fastest possible wiring check — no GPU, no vLLM, hosted API model, one task:
+
+```bash
+export MODAL_TOKEN_ID=... MODAL_TOKEN_SECRET=... ANTHROPIC_API_KEY=...
+uv sync --extra modal
+./beaker_configs/run_eval_local.sh \
+    --harbor-env modal --skip-vllm \
+    --harbor-model-name anthropic/claude-sonnet-4-5 \
+    --agent Vanillux2Agent:Vanillux2Agent \
+    --n-tasks 1
+```
+
+Then the real shape — your checkpoint on local GPUs, containers on Modal:
+
+```bash
+./beaker_configs/run_eval_local.sh Qwen/Qwen3.5-4B \
+    --harbor-env modal \
+    --agent Vanillux2Agent:Vanillux2Agent \
+    --model-provider openai --tool-call-parser qwen3_xml \
+    --max-model-len 32768 --n-tasks 2
+```
+
+### On Beaker
+
+```bash
+./beaker_configs/launch_eval.sh Qwen/Qwen3.5-4B \
+    --name qwen35-4b-modal \
+    --harbor-env modal \
+    --agent Vanillux2Agent:Vanillux2Agent \
+    --model-provider openai --tool-call-parser qwen3_xml \
+    --gpus 1 --max-model-len 32768 \
+    --dataset terminal-bench-sample@2.0 \
+    --workspace ai2/oe-agents
+```
+
+`launch_eval.sh` registers two beaker secrets when `--harbor-env modal` is set:
+
+| Secret | Override flag |
+|---|---|
+| `MODAL_TOKEN_ID` | `--modal-token-id-secret NAME` |
+| `MODAL_TOKEN_SECRET` | `--modal-token-secret-secret NAME` |
+
+Create them once per workspace:
+
+```bash
+beaker secret write --workspace ai2/oe-agents MODAL_TOKEN_ID     "$MODAL_TOKEN_ID"
+beaker secret write --workspace ai2/oe-agents MODAL_TOKEN_SECRET "$MODAL_TOKEN_SECRET"
+```
+
+`--mirror-url`, `DOCKER_PAT`, and `HARBOR_KEEP_TASK_IMAGES` have no effect on
+this path.
+
+### Tuning the Modal environment
+
+`--env-kwarg K=V` (repeatable, both scripts) maps to harbor's
+`--environment-kwarg`, which harbor forwards to `ModalEnvironment.__init__`:
+
+| Kwarg | Meaning |
+|---|---|
+| `app_name` | Modal App all sandboxes attach to (default `__harbor__`). Set per-run to keep the Modal dashboard readable. |
+| `sandbox_timeout_secs` | Hard sandbox lifetime (default 24 h). |
+| `sandbox_idle_timeout_secs` | Terminate after N seconds of inactivity — cheap insurance against leaked sandboxes. |
+| `registry_secret` | Modal secret name for a private registry (Direct mode with a prebuilt `docker_image` only). |
+| `secrets` / `volumes` | Modal secrets / volumes to mount into the sandbox. |
+
+### Modal-path gotchas
+
+- **Task images build on Modal, not here.** The first run of a task pays a real
+  `docker build` on Modal's builder; Modal caches by Dockerfile + context hash,
+  so repeat runs are fast. Budget extra time for the first pass over a dataset,
+  especially SWE-bench Verified's 500 distinct images.
+- **`Image.from_dockerfile` has no registry-auth parameter.** A task whose
+  `FROM` is a *private* image cannot authenticate in Direct mode. All our
+  current tasks pull public bases, so this is a constraint to remember, not a
+  present blocker.
+- **Cost is per sandbox-second.** `--n-concurrent` raises throughput and spend
+  together; watch the Modal dashboard on the first full-dataset run.
+- **Errored trials still lie about scores.** Unchanged from the podman path:
+  check `stats.n_errored_trials` in `jobs/<job>/result.json` before believing a
+  pass@1.
 
 ---
 
@@ -615,6 +761,7 @@ Highlights:
 | Path | Needs |
 |---|---|
 | Beaker | Beaker access + workspace; `HF_TOKEN` secret; `DOCKER_PAT` secret (recommended); weka mount; a **pushed** git SHA. |
-| Local | A Daytona account/key (for `--env daytona`) **or** a local Docker/podman daemon + the `docker compose` v2 CLI plugin (for `--env docker` / `run_eval_local.sh`); the relevant model `*_API_KEY` (or `OPENAI_API_KEY=dummy` for self-hosted vLLM). |
+| Local | A Daytona account/key (`--env daytona`) or a Modal account/token pair (`--harbor-env modal`) **or** a local Docker/podman daemon + the `docker compose` v2 CLI plugin (for `--env docker` / `run_eval_local.sh`); the relevant model `*_API_KEY` (or `OPENAI_API_KEY=dummy` for self-hosted vLLM). |
+| Modal | `uv sync --extra modal`; `MODAL_TOKEN_ID` + `MODAL_TOKEN_SECRET` (env vars locally, beaker secrets on Beaker); outbound HTTPS to `api.modal.com`. No Docker daemon and no `DOCKER_PAT`. |
 
 All paths run through `uv` (`uv sync` / `uv run`), Python ≥ 3.12.
