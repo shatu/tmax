@@ -48,6 +48,7 @@ DATASET="terminal-bench@2.0"
 DATASET_PATH=""
 HARBOR_ENV="docker"
 HARBOR_ENV_KWARGS=""
+MIN_RUNTIME=""
 AGENT_IMPORT_PATH="Vanillux2Agent:Vanillux2Agent"
 N_CONCURRENT=8
 N_ATTEMPTS=1
@@ -110,6 +111,12 @@ Options:
   --max-model-len LEN    pass --max-model-len to vllm
   --dataset DS           harbor dataset (default: terminal-bench@2.0; also
                          valid: openthoughts-tblite@2.0)
+  --min-runtime DUR      gantry --min-runtime (e.g. 8h): guaranteed runtime before
+                         preemption. IGNORED with a printed note on ai2/saturn --
+                         saturn is role:dev and guaranteed-runtime requests are not
+                         what it is for. Batch clusters (jupiter, ceres) are fine,
+                         but the request is only legal if the WORKSPACE has an
+                         allocation on that cluster.
   --harbor-env ENV       harbor environment backend (default: docker).
                          'modal' runs each task container as a Modal cloud
                          sandbox instead of podman-in-job; requires the
@@ -190,6 +197,7 @@ while [ $# -gt 0 ]; do
         --dataset)         DATASET="$2"; shift 2 ;;
         --dataset-path)    DATASET_PATH="$2"; shift 2 ;;
         --harbor-env)      HARBOR_ENV="$2"; shift 2 ;;
+        --min-runtime)     MIN_RUNTIME="$2"; shift 2 ;;
         --env-kwarg)       HARBOR_ENV_KWARGS+="${HARBOR_ENV_KWARGS:+$'\n'}$2"; shift 2 ;;
         --modal-token-id-secret)     MODAL_TOKEN_ID_SECRET="$2"; shift 2 ;;
         --modal-token-secret-secret) MODAL_TOKEN_SECRET_SECRET="$2"; shift 2 ;;
@@ -255,6 +263,7 @@ cat <<EOF
   Dataset:      ${DATASET}
   Harbor env:   ${HARBOR_ENV}
   Env kwargs:   ${HARBOR_ENV_KWARGS:-<none>}
+  Min runtime:  ${MIN_RUNTIME:-<none>}
   Agent:        ${AGENT_IMPORT_PATH}
   Agent kwargs: ${EXTRA_AGENT_KWARGS:-<none>}
   Agent envs:   ${EXTRA_AGENT_ENVS:-<none>}
@@ -334,6 +343,24 @@ GANTRY_CMD=(
     --propagate-failure
     --no-python
 )
+
+# Guaranteed-runtime requests are inappropriate on ai2/saturn: it is tagged
+# role:dev, unlike the role:batch clusters. Drop it rather than failing, and say
+# so, since the run is still perfectly valid unprotected. Note allocations are
+# per-cluster AND per-workspace, so even on a batch cluster Beaker rejects the
+# request outright if the workspace has no allocation there.
+if [ -n "$MIN_RUNTIME" ]; then
+    case "${CLUSTER},${HOSTNAME_CONSTRAINT:-}" in
+        *saturn*)
+            echo "note: dropping --min-runtime ${MIN_RUNTIME} (ai2/saturn is role:dev;" >&2
+            echo "      guaranteed-runtime requests there are not what the cluster is for)" >&2
+            MIN_RUNTIME=""
+            ;;
+    esac
+fi
+if [ -n "$MIN_RUNTIME" ]; then
+    GANTRY_CMD+=(--min-runtime "$MIN_RUNTIME")
+fi
 
 # Gantry accepts repeated --cluster flags; CLUSTER may be comma-separated.
 for cluster in ${CLUSTER//,/ }; do
