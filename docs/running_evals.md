@@ -424,7 +424,12 @@ ConflictError: The legacy Sandbox filesystem API is no longer supported.
 ```
 
 [`scripts/patch_harbor_modal.py`](../scripts/patch_harbor_modal.py) ports the
-three call sites onto `Sandbox.filesystem.*`. Both launch scripts run it
+three call sites onto `Sandbox.filesystem.*`. The same script also makes command
+output decoding lenient: harbor reads Modal's process streams in text mode and
+Modal decodes them as strict UTF-8, so one stray byte from a task that cats a
+binary raises `UnicodeDecodeError` inside `_sdk_exec` and kills the whole
+**trial**. That errored 5 of 89 trials on a full terminal-bench@2.0 run before
+it was fixed, silently depressing pass@1. Both launch scripts run it
 automatically when `--harbor-env modal`; it is idempotent, and it hard-fails
 rather than silently leaving legacy calls behind if harbor's `modal.py` changes
 shape.
