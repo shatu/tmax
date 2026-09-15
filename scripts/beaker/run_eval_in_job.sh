@@ -761,10 +761,26 @@ fi
 # would hold N GPUs until the task timeout.
 if [ "$ROLE" = "vllm" ]; then
     EVAL_START_GRACE_SEC="${EVAL_START_GRACE_SEC:-7200}"
+    # Heartbeat interval for OUR OWN log. Without it this loop prints nothing for
+    # the entire eval (potentially many hours -- TB2.1 has tasks with a 12000s
+    # timeout), so a wedged server looks exactly like a healthy one in the Beaker
+    # log. The agent-side watchdog still catches a dead server functionally; this
+    # is so a human reading the log can tell.
+    VLLM_HEARTBEAT_LOG_SEC="${VLLM_HEARTBEAT_LOG_SEC:-600}"
     log "serving; waiting for the agent replica (done file: $RDV_DONE_FILE)"
     seen_heartbeat=0
     waited=0
+    since_log=0
     while true; do
+        if [ "$since_log" -ge "$VLLM_HEARTBEAT_LOG_SEC" ]; then
+            if curl -sf -m 10 "http://localhost:$API_PORT/v1/models" >/dev/null 2>&1; then
+                hb="ok"
+            else
+                hb="NOT ANSWERING /v1/models"
+            fi
+            log "still serving after $((waited / 60))m (self-check: $hb)"
+            since_log=0
+        fi
         if [ -f "$RDV_DONE_FILE" ]; then
             log "agent replica finished: $(cat "$RDV_DONE_FILE" 2>/dev/null || echo '<unreadable>')"
             log "shutting down vllm"
@@ -791,6 +807,7 @@ if [ "$ROLE" = "vllm" ]; then
         fi
         sleep 15
         waited=$((waited + 15))
+        since_log=$((since_log + 15))
     done
 fi
 
