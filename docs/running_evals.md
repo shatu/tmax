@@ -392,6 +392,43 @@ this path.
 | `registry_secret` | Modal secret name for a private registry (Direct mode with a prebuilt `docker_image` only). |
 | `secrets` / `volumes` | Modal secrets / volumes to mount into the sandbox. |
 
+### Two prerequisites the scripts handle for you
+
+**Image builder version.** Modal injects its own client runtime into every
+sandbox image, and *how* depends on the workspace's image builder version. The
+default on a fresh workspace is `2023.12`, which runs
+`pip install -r /modal_requirements.txt` **with transitive deps** and supports
+only Python 3.10-3.12. Terminal-Bench task images are `python:3.13-slim`, so
+they fail it twice over — unsupported interpreter, and `aiohttp` compiled from
+source in an image with no compiler:
+
+```
+error: [Errno 2] No such file or directory: 'gcc'
+Terminating task due to error: failed to run builder command
+  "python -m pip install -r /modal_requirements.txt"
+```
+
+which surfaces to you only as a bare `ImageBuildError` per trial. Builders
+`2024.10+` switched to `uv pip install --system --no-deps`, which builds
+nothing. Both scripts pin `MODAL_IMAGE_BUILDER_VERSION=2025.06`; override the
+env var if you need a different one. `modal image logs <im-...>` prints the real
+build failure behind an `ImageBuildError`.
+
+**Harbor's Modal env needs a patch.** harbor 0.6.6 predates Modal's removal of
+the legacy Sandbox filesystem API (`Sandbox.mkdir` / `Sandbox.ls`). Modal
+dropped those **server**-side, so pinning an older SDK does not help — every
+trial dies in `_setup_environment` with:
+
+```
+ConflictError: The legacy Sandbox filesystem API is no longer supported.
+```
+
+[`scripts/patch_harbor_modal.py`](../scripts/patch_harbor_modal.py) ports the
+three call sites onto `Sandbox.filesystem.*`. Both launch scripts run it
+automatically when `--harbor-env modal`; it is idempotent, and it hard-fails
+rather than silently leaving legacy calls behind if harbor's `modal.py` changes
+shape.
+
 ### Modal-path gotchas
 
 - **Task images build on Modal, not here.** The first run of a task pays a real
@@ -407,6 +444,13 @@ this path.
 - **Errored trials still lie about scores.** Unchanged from the podman path:
   check `stats.n_errored_trials` in `jobs/<job>/result.json` before believing a
   pass@1.
+- **On a weka dev box, put the uv cache on local disk.** `~/.cache/uv` is often
+  a symlink to weka. `uvx vllm` then loads its whole torch/CUDA stack over
+  wekafs at ~2 MB/s, and vLLM never finishes starting — `run_eval_local.sh`
+  gives up after 30 min having never touched the GPU, with nothing in the log
+  after the `huggingface_hub` import. Not a Modal problem, but it is what you
+  hit first. Prefix the run with `UV_CACHE_DIR=/var/tmp/uv-cache-$USER` (local
+  overlay): vLLM then serves in ~3 min on a warm cache.
 
 ---
 
