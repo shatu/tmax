@@ -205,11 +205,44 @@ if [ "$HARBOR_ENV" = "modal" ]; then
     # harbor itself and would upgrade it off the version uv.lock pins.
     log "installing modal SDK"
     uv pip install 'modal>=1.4.0'
+    # Credentials, in precedence order: the ambient env, then the beaker secrets
+    # (same fallback the DOCKER_PAT block above uses), then ~/.modal.toml. The
+    # beaker path means a dev box needs no `modal token new` of its own, and it
+    # keeps the token pair in exactly one place for both the local and the
+    # Beaker leg.
+    MODAL_WORKSPACE="${BEAKER_WORKSPACE:-ai2/oe-agents}"
+    MODAL_TOKEN_ID_SECRET="${MODAL_TOKEN_ID_SECRET:-shashankg_MODAL_TOKEN_ID}"
+    MODAL_TOKEN_SECRET_SECRET="${MODAL_TOKEN_SECRET_SECRET:-shashankg_MODAL_TOKEN_SECRET}"
+    if [ -z "${MODAL_TOKEN_ID:-}" ] && command -v beaker >/dev/null 2>&1; then
+        log "reading modal token from beaker secret '$MODAL_TOKEN_ID_SECRET' ($MODAL_WORKSPACE)"
+        MODAL_TOKEN_ID="$(beaker secret read "$MODAL_TOKEN_ID_SECRET" --workspace "$MODAL_WORKSPACE" 2>/dev/null || true)"
+        export MODAL_TOKEN_ID
+    fi
+    if [ -z "${MODAL_TOKEN_SECRET:-}" ] && command -v beaker >/dev/null 2>&1; then
+        MODAL_TOKEN_SECRET="$(beaker secret read "$MODAL_TOKEN_SECRET_SECRET" --workspace "$MODAL_WORKSPACE" 2>/dev/null || true)"
+        export MODAL_TOKEN_SECRET
+    fi
     if [ ! -f "$HOME/.modal.toml" ] && { [ -z "${MODAL_TOKEN_ID:-}" ] || [ -z "${MODAL_TOKEN_SECRET:-}" ]; }; then
-        echo "FATAL: --harbor-env modal needs credentials. Run 'modal token new',"
-        echo "       or export MODAL_TOKEN_ID and MODAL_TOKEN_SECRET."; exit 1
+        echo "FATAL: --harbor-env modal needs credentials. Export MODAL_TOKEN_ID and"
+        echo "       MODAL_TOKEN_SECRET, or grant beaker access to secrets"
+        echo "       '$MODAL_TOKEN_ID_SECRET' / '$MODAL_TOKEN_SECRET_SECRET' in '$MODAL_WORKSPACE',"
+        echo "       or run 'modal token new'."; exit 1
     fi
     log "modal credentials OK"
+    # Modal injects its own client runtime into every sandbox image, and HOW it
+    # does that depends on the workspace's image builder version. The oldest
+    # (2023.12, still the default on a fresh workspace) runs
+    # `pip install -r /modal_requirements.txt` WITH transitive deps and supports
+    # only Python 3.10-3.12. Terminal-Bench task images are python:3.13-slim, so
+    # they fail it twice over: unsupported interpreter, and aiohttp compiled from
+    # source in an image with no gcc ("error: [Errno 2] ... 'gcc'"), surfacing as
+    # a bare ImageBuildError per trial. 2024.10+ switched to
+    # `uv pip install --system --no-deps`, which builds nothing. Pin it here so a
+    # run does not depend on a dashboard setting at modal.com/settings/image-config.
+    export MODAL_IMAGE_BUILDER_VERSION="${MODAL_IMAGE_BUILDER_VERSION:-2025.06}"
+    log "modal image builder version: $MODAL_IMAGE_BUILDER_VERSION"
+    log "patching harbor modal env onto Modal's current filesystem API"
+    uv run python scripts/patch_harbor_modal.py
 fi
 
 if [ "$HARBOR_ENV" = "docker" ]; then

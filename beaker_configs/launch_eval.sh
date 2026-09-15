@@ -120,9 +120,9 @@ Options:
                          app_name, secrets, registry_secret, volumes,
                          sandbox_timeout_secs, sandbox_idle_timeout_secs.
   --modal-token-id-secret NAME
-                         beaker secret holding MODAL_TOKEN_ID (default: MODAL_TOKEN_ID)
+                         beaker secret holding MODAL_TOKEN_ID (default: shashankg_MODAL_TOKEN_ID)
   --modal-token-secret-secret NAME
-                         beaker secret holding MODAL_TOKEN_SECRET (default: MODAL_TOKEN_SECRET)
+                         beaker secret holding MODAL_TOKEN_SECRET (default: shashankg_MODAL_TOKEN_SECRET)
   --agent AGENT          harbor agent import path or named agent (default: Vanillux2Agent:Vanillux2Agent)
   --n-concurrent N       harbor --n-concurrent (default: 8)
   --n-attempts N         harbor -k (default: 1)
@@ -309,6 +309,7 @@ GANTRY_CMD=(
     --env "DATASET_PATH=${DATASET_PATH}"
     --env "HARBOR_ENV=${HARBOR_ENV}"
     --env "HARBOR_ENV_KWARGS=${HARBOR_ENV_KWARGS}"
+    --env "MODAL_IMAGE_BUILDER_VERSION=${MODAL_IMAGE_BUILDER_VERSION:-}"
     --env "AGENT_IMPORT_PATH=${AGENT_IMPORT_PATH}"
     --env "EXTRA_AGENT_KWARGS=${EXTRA_AGENT_KWARGS}"
     --env "EXTRA_AGENT_ENVS=${EXTRA_AGENT_ENVS}"
@@ -349,8 +350,8 @@ fi
 # Same for modal: the sandboxes live in Modal's cloud, so the job needs a Modal
 # API token pair rather than anything container-runtime related.
 if [ "$HARBOR_ENV" = "modal" ]; then
-    GANTRY_CMD+=(--env-secret "MODAL_TOKEN_ID=${MODAL_TOKEN_ID_SECRET:-MODAL_TOKEN_ID}")
-    GANTRY_CMD+=(--env-secret "MODAL_TOKEN_SECRET=${MODAL_TOKEN_SECRET_SECRET:-MODAL_TOKEN_SECRET}")
+    GANTRY_CMD+=(--env-secret "MODAL_TOKEN_ID=${MODAL_TOKEN_ID_SECRET:-shashankg_MODAL_TOKEN_ID}")
+    GANTRY_CMD+=(--env-secret "MODAL_TOKEN_SECRET=${MODAL_TOKEN_SECRET_SECRET:-shashankg_MODAL_TOKEN_SECRET}")
 fi
 
 if [ -n "$BEAKER_IMAGE" ]; then
