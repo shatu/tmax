@@ -290,7 +290,6 @@ GANTRY_CMD=(
     --priority "$PRIORITY"
     --weka "oe-adapt-default:/weka/oe-adapt-default"
     --env-secret HF_TOKEN
-    --env-secret "DOCKER_PAT=${DOCKER_PAT_SECRET:-shashankg_DOCKER_PAT}"
     --env "MODEL_PATH=${MODEL_PATH}"
     --env "MODEL_REVISION=${REVISION}"
     --env "SERVED_MODEL_NAME=${SERVED_MODEL_NAME}"
@@ -349,6 +348,13 @@ fi
 
 # Same for modal: the sandboxes live in Modal's cloud, so the job needs a Modal
 # API token pair rather than anything container-runtime related.
+# Task-image pulls only happen on this node under the docker/podman backend; a
+# remote-sandbox backend pulls on its own side, so don't demand a Docker Hub PAT
+# secret the run will never read.
+if [ "$HARBOR_ENV" = "docker" ]; then
+    GANTRY_CMD+=(--env-secret "DOCKER_PAT=${DOCKER_PAT_SECRET:-shashankg_DOCKER_PAT}")
+fi
+
 if [ "$HARBOR_ENV" = "modal" ]; then
     GANTRY_CMD+=(--env-secret "MODAL_TOKEN_ID=${MODAL_TOKEN_ID_SECRET:-shashankg_MODAL_TOKEN_ID}")
     GANTRY_CMD+=(--env-secret "MODAL_TOKEN_SECRET=${MODAL_TOKEN_SECRET_SECRET:-shashankg_MODAL_TOKEN_SECRET}")
