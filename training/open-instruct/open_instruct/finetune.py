@@ -46,7 +46,7 @@ from tqdm.auto import tqdm
 from transformers import AutoConfig, AutoModelForCausalLM, BitsAndBytesConfig, DataCollatorForSeq2Seq, get_scheduler
 from transformers.training_args import _convert_str_dict
 
-from open_instruct import logger_utils, model_utils, utils
+from open_instruct import logger_utils, model_utils
 from open_instruct.dataset_transformation import (
     INPUT_IDS_KEY,
     TOKENIZED_SFT_DATASET_KEYS,
@@ -75,14 +75,13 @@ from open_instruct.utils import (
 logger = get_logger(__name__)
 
 
-_MAX_SEQ_LENGTH_TRANSFORM_FNS = {
-    "sft_tulu_tokenize_and_truncate_v1",
-    "last_turn_tulu_tokenize_and_truncate_v1",
-}
+_MAX_SEQ_LENGTH_TRANSFORM_FNS = {"sft_tulu_tokenize_and_truncate_v1", "last_turn_tulu_tokenize_and_truncate_v1"}
 _MAX_TOKEN_LENGTH_FILTER_FNS = {"sft_length_and_label_filter_v1"}
 
 
-def build_transform_fn_args(dataset_transform_fn: list[str], max_seq_length: int | None) -> list[dict[str, int | None]]:
+def build_transform_fn_args(
+    dataset_transform_fn: list[str], max_seq_length: int | None
+) -> list[dict[str, int | None]]:
     transform_fn_args = []
     for fn_name in dataset_transform_fn:
         if fn_name in _MAX_SEQ_LENGTH_TRANSFORM_FNS:
@@ -346,6 +345,30 @@ class FlatArguments:
             "help": "Degree of Ulysses sequence parallelism. 1 means disabled. Requires DeepSpeed ZeRO-3 and flash attention."
         },
     )
+    tailsft_filter_fraction: float = field(
+        default=0.0,
+        metadata={
+            "help": "TailSFT (arXiv:2608.25756): fraction of each selection batch (the examples in one "
+            "forward pass across data-parallel ranks) to drop, choosing the examples whose "
+            "length-normalized loss has decreased the most relative to the initial policy. "
+            "0 disables TailSFT entirely. Requires per_device_train_batch_size=1, packing=False, "
+            "sequence_parallel_size=1."
+        },
+    )
+    tailsft_filter_schedule: Literal["static", "ramp"] = field(
+        default="static",
+        metadata={
+            "help": "TailSFT filter-fraction schedule: 'static' holds tailsft_filter_fraction fixed; "
+            "'ramp' raises it linearly from 0 at the first step to the full value at the last step."
+        },
+    )
+    tailsft_renormalize: bool = field(
+        default=True,
+        metadata={
+            "help": "Rescale retained TailSFT losses by world_size/num_retained so the gradient "
+            "magnitude matches no-filter training (otherwise filtering scales the effective LR by 1-f)."
+        },
+    )
 
     def __post_init__(self):
         if self.dataset_name is None and self.dataset_mixer is None and self.dataset_mixer_list is None:
@@ -361,6 +384,17 @@ class FlatArguments:
                 raise NotImplementedError("final_lr_ratio only currently implemented for linear schedulers")
             if not (1.0 >= self.final_lr_ratio >= 0.0):
                 raise ValueError(f"final_lr_ratio must be between 0 and 1, not {self.final_lr_ratio=}")
+        if self.tailsft_filter_fraction:
+            if not (0.0 < self.tailsft_filter_fraction < 1.0):
+                raise ValueError(f"tailsft_filter_fraction must be in (0, 1), not {self.tailsft_filter_fraction=}")
+            if self.per_device_train_batch_size != 1:
+                # outputs.loss is a scalar over the whole microbatch (the liger fused CE never
+                # materializes logits), so per-example losses exist only at microbatch size 1.
+                raise ValueError("TailSFT requires per_device_train_batch_size=1 for per-example losses.")
+            if self.packing:
+                raise ValueError("TailSFT is not compatible with packing (no per-example loss).")
+            if self.sequence_parallel_size != 1:
+                raise ValueError("TailSFT currently requires sequence_parallel_size=1.")
 
         # Parse in args that could be `dict` sent in from the CLI as a string
         for dict_feld in self._VALID_DICT_FIELDS:
@@ -384,6 +418,57 @@ def _create_scheduler(args: FlatArguments, optimizer, num_training_steps: int):
         num_training_steps=num_training_steps,
         num_warmup_steps=num_warmup_steps,
     )
+
+
+def tailsft_ref_losses(args: FlatArguments, accelerator, model, train_dataset, collate_fn) -> torch.Tensor:
+    """Score every training example once with the initial policy (TailSFT's l_0).
+
+    Must run after accelerator.prepare and BEFORE any checkpoint is loaded: the model is
+    then exactly the initial policy, even on a preemption resume. The result is cached in
+    output_dir keyed by (model, dataset size), so resumes skip the pass.
+
+    Returns a [len(train_dataset)] float32 CPU tensor of length-normalized losses, indexed
+    by the dataset's post-shuffle "index" column.
+    """
+    cache_path = os.path.join(args.output_dir, "tailsft_ref_losses.pt")
+    meta = {"model": args.model_name_or_path, "revision": args.model_revision, "rows": len(train_dataset)}
+    if os.path.exists(cache_path):
+        cached = torch.load(cache_path, map_location="cpu", weights_only=True)
+        if cached.get("meta") == meta:
+            logger.info(f"TailSFT: loaded cached reference losses from {cache_path}")
+            return cached["losses"]
+        logger.warning(f"TailSFT: cache at {cache_path} has stale metadata ({cached.get('meta')}); recomputing")
+
+    world = accelerator.num_processes
+    rank = accelerator.process_index
+    n = len(train_dataset)
+    losses = torch.zeros(n, dtype=torch.float32, device=accelerator.device)
+    steps = math.ceil(n / world)
+    logger.info(f"TailSFT: scoring {n} examples with the initial policy ({steps} per rank)")
+    model.eval()
+    start = time.perf_counter()
+    with torch.no_grad():
+        for step in range(steps):
+            i = step * world + rank
+            # ZeRO-3 forwards are collective (per-layer param all-gathers), so every rank
+            # must forward every step; ranks past the end score example 0 and discard it.
+            real = i < n
+            feats = train_dataset[i if real else 0]
+            batch = collate_fn([{k: v for k, v in feats.items() if k != "index"}])
+            batch = {k: v.to(accelerator.device) for k, v in batch.items()}
+            out = model(**batch, use_cache=False)
+            if real:
+                losses[i] = out.loss.float()
+            if rank == 0 and step % 100 == 0:
+                logger.info(f"TailSFT: reference scoring step {step}/{steps} ({time.perf_counter() - start:.0f}s)")
+    model.train()
+    losses = accelerator.reduce(losses, reduction="sum").cpu()
+    if accelerator.is_main_process:
+        os.makedirs(args.output_dir, exist_ok=True)
+        torch.save({"losses": losses, "meta": meta}, cache_path)
+        logger.info(f"TailSFT: saved reference losses to {cache_path}")
+    accelerator.wait_for_everyone()
+    return losses
 
 
 def main(args: FlatArguments, tc: TokenizerConfig):
@@ -539,6 +624,10 @@ def main(args: FlatArguments, tc: TokenizerConfig):
             dataset_mixer_list_config_names=dataset_mixer_list_config_names,
         )
         train_dataset = train_dataset.shuffle(seed=args.seed)
+        if args.tailsft_filter_fraction > 0:
+            # Stable per-example id (position after the seed-fixed shuffle) so the training
+            # loop can look up each example's initial-policy reference loss.
+            train_dataset = train_dataset.add_column("index", list(range(len(train_dataset))))
         train_dataset.set_format(type="pt")
     if accelerator.is_main_process:
         visualize_token(train_dataset[0][INPUT_IDS_KEY], tokenizer)
@@ -798,6 +887,13 @@ def main(args: FlatArguments, tc: TokenizerConfig):
     completed_steps = 0
     starting_epoch = 0
 
+    # TailSFT: score every example with the initial policy before any checkpoint is
+    # loaded (the model here is always the fresh initial policy, even on resume).
+    tailsft_enabled = args.tailsft_filter_fraction > 0
+    tailsft_ref = None
+    if tailsft_enabled:
+        tailsft_ref = tailsft_ref_losses(args, accelerator, model, train_dataset, collate_fn)
+
     # Potentially load in the weights and states from a previous save
     last_checkpoint_path = get_last_checkpoint_path(args)
     if last_checkpoint_path:
@@ -833,6 +929,10 @@ def main(args: FlatArguments, tc: TokenizerConfig):
     total_token_including_padding = torch.tensor(0, dtype=torch.int64, device=accelerator.device)
     start_time = time.perf_counter()
     skipped_batches = False
+    tailsft_selection_batches = 0
+    tailsft_dropped = 0
+    tailsft_margin_sum = 0.0
+    tailsft_f_now = args.tailsft_filter_fraction
     for epoch in range(starting_epoch, args.num_train_epochs):
         model.train()
         # UlyssesSPDataLoaderAdapter wraps the real dataloader but doesn't proxy set_epoch
@@ -848,6 +948,7 @@ def main(args: FlatArguments, tc: TokenizerConfig):
             active_dataloader = train_dataloader
         for batch in active_dataloader:
             batch = {k: v.to(accelerator.device) if hasattr(v, "to") else v for k, v in batch.items()}
+            tailsft_index = batch.pop("index", None)
             if args.sequence_parallel_size > 1 and "shift_labels" not in batch:
                 raise ValueError(
                     "`shift_labels` not found in batch with sequence parallelism enabled. "
@@ -919,6 +1020,29 @@ def main(args: FlatArguments, tc: TokenizerConfig):
                     total_good_tokens = sum(good_tokens_per_rank)
                     loss = total_loss_sp / torch.clamp(total_good_tokens, min=1)
 
+                if tailsft_enabled:
+                    # Selection batch = the world_size examples in this micro-step (b=1 per
+                    # rank). Drop the round(world*f) with the most-negative margin
+                    # loss - l_0 (already fit far below their initial-policy loss) and train
+                    # the rest; every rank computes the same mask from the gathered margins.
+                    margin = loss.detach().float().reshape(1) - tailsft_ref[tailsft_index.reshape(-1).cpu()].to(
+                        accelerator.device
+                    )
+                    margins_all = accelerator.gather(margin)
+                    tailsft_f_now = args.tailsft_filter_fraction
+                    if args.tailsft_filter_schedule == "ramp":
+                        tailsft_f_now *= min(1.0, completed_steps / max(args.max_train_steps, 1))
+                    world = accelerator.num_processes
+                    n_drop = min(int(round(world * tailsft_f_now)), world - 1)
+                    if n_drop > 0:
+                        keep_mask = torch.ones(world, device=loss.device)
+                        keep_mask[torch.argsort(margins_all, stable=True)[:n_drop]] = 0.0
+                        scale = world / (world - n_drop) if args.tailsft_renormalize else 1.0
+                        loss = loss * keep_mask[accelerator.process_index] * scale
+                    tailsft_selection_batches += 1
+                    tailsft_dropped += n_drop
+                    tailsft_margin_sum += margins_all.mean().item()
+
                 # We keep track of the loss at each logged step
                 total_loss += loss.detach().float()
                 accelerator.backward(loss)
@@ -983,6 +1107,15 @@ def main(args: FlatArguments, tc: TokenizerConfig):
                         "allocated_mem_GiB": torch.cuda.max_memory_allocated(device=torch.cuda.current_device())
                         / 2**30,
                     }
+                    if tailsft_enabled and tailsft_selection_batches > 0:
+                        metrics_to_log["tailsft/f_current"] = tailsft_f_now
+                        metrics_to_log["tailsft/dropped_frac"] = tailsft_dropped / (
+                            tailsft_selection_batches * accelerator.num_processes
+                        )
+                        metrics_to_log["tailsft/mean_margin"] = tailsft_margin_sum / tailsft_selection_batches
+                        tailsft_selection_batches = 0
+                        tailsft_dropped = 0
+                        tailsft_margin_sum = 0.0
 
                     # [Loss Reporting]
                     #
