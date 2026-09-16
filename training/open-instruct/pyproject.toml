@@ -58,10 +58,16 @@ py-modules = ["open_instruct"]
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
 flash-attn-3 = [{ requirement = "torch", match-runtime = true }]
+# causal-conv1d's isolated build env otherwise installs the newest pypi torch
+# (cu13.0), which fails its CUDA-version check against this image's nvcc 12.8.
+causal-conv1d = [{ requirement = "torch", match-runtime = true }]
 
 [tool.uv.extra-build-variables]
 flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
 flash-attn-3 = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
+# No prebuilt causal-conv1d wheel exists for torch 2.10+cu128, so it compiles
+# from source; cap the parallelism so the build survives low-memory hosts.
+causal-conv1d = { MAX_JOBS = "2" }
 
 # pytorch related setups
 [tool.uv.sources]

@@ -21,9 +21,11 @@ DATASET="allenai/tmax-sft-glm-52"
 DATASET_CONFIG="all"
 FRACTION_TAG="${FILTER_FRACTION//./}"
 
+# Jupiter (H100, sm_90): matches this repo's Dockerfile (CUDA 12.8 + FA3 cu128
+# wheels). The B300s on ai2/holmes need the separate cuda13 image lineage.
 uv run python mason.py \
-    --cluster ai2/holmes \
-    --workspace ai2/oe-agents-holmes \
+    --cluster ai2/jupiter \
+    --workspace ai2/oe-agents \
     --priority high \
     --image "$BEAKER_IMAGE" \
     --description "TMax TailSFT (${FILTER_SCHEDULE} f=${FILTER_FRACTION}) on hamishivi/Qwen3.5-9B with GLM 5.2 ${DATASET_CONFIG} rollouts" \
