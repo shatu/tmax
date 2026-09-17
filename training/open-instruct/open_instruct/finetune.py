@@ -445,11 +445,13 @@ def tailsft_ref_losses(args: FlatArguments, accelerator, model, train_dataset, c
     losses = torch.zeros(n, dtype=torch.float32, device=accelerator.device)
     steps = math.ceil(n / world)
     logger.info(f"TailSFT: scoring {n} examples with the initial policy ({steps} per rank)")
-    # Deliberately NOT model.eval(): the liger fused linear CE only engages when
-    # self.training is True — in eval mode the forward materializes the full
+    # Must be train mode: liger's fused linear CE gates on self.training, and
+    # from_pretrained leaves the model in eval mode until the epoch loop calls
+    # model.train() — in eval mode the forward materializes the full
     # seq_len x vocab logits (~28 GiB at 65k) and OOMs. Train mode + no_grad is
     # safe (no dropout in this model family) and matches the code path that
     # produces the training-time losses these are compared against.
+    model.train()
     start = time.perf_counter()
     with torch.no_grad():
         for step in range(steps):
