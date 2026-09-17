@@ -57,6 +57,12 @@ else
   beaker image create "$image_name" -n "$image_name" -w "ai2/$beaker_user" --description "Git commit: $git_hash"
 fi
 
+# With no script argument, stop after building and uploading the beaker image.
+if [[ $# -eq 0 ]]; then
+  echo "No launch script given — image built and uploaded as: $beaker_user/$image_name"
+  exit 0
+fi
+
 # Ensure uv is installed and sync dependencies before running the script
 if ! command -v uv &> /dev/null; then
     echo "Installing uv..."
