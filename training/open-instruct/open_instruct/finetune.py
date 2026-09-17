@@ -454,11 +454,12 @@ def tailsft_ref_losses(args: FlatArguments, accelerator, model, train_dataset, c
             # must forward every step; ranks past the end score example 0 and discard it.
             real = i < n
             feats = train_dataset[i if real else 0]
+            key = int(feats["index"])
             batch = collate_fn([{k: v for k, v in feats.items() if k != "index"}])
             batch = {k: v.to(accelerator.device) for k, v in batch.items()}
             out = model(**batch, use_cache=False)
             if real:
-                losses[i] = out.loss.float()
+                losses[key] = out.loss.float()
             if rank == 0 and step % 100 == 0:
                 logger.info(f"TailSFT: reference scoring step {step}/{steps} ({time.perf_counter() - start:.0f}s)")
     model.train()
@@ -624,9 +625,10 @@ def main(args: FlatArguments, tc: TokenizerConfig):
             dataset_mixer_list_config_names=dataset_mixer_list_config_names,
         )
         train_dataset = train_dataset.shuffle(seed=args.seed)
-        if args.tailsft_filter_fraction > 0:
-            # Stable per-example id (position after the seed-fixed shuffle) so the training
-            # loop can look up each example's initial-policy reference loss.
+        # TailSFT keys reference losses by the dataset's "index" column, which
+        # get_cached_dataset_tulu adds as range(N) before this shuffle — a stable
+        # unique id per example that rides through shuffling and collation.
+        if args.tailsft_filter_fraction > 0 and "index" not in train_dataset.column_names:
             train_dataset = train_dataset.add_column("index", list(range(len(train_dataset))))
         train_dataset.set_format(type="pt")
     if accelerator.is_main_process:
