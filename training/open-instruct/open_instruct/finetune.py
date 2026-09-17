@@ -445,7 +445,11 @@ def tailsft_ref_losses(args: FlatArguments, accelerator, model, train_dataset, c
     losses = torch.zeros(n, dtype=torch.float32, device=accelerator.device)
     steps = math.ceil(n / world)
     logger.info(f"TailSFT: scoring {n} examples with the initial policy ({steps} per rank)")
-    model.eval()
+    # Deliberately NOT model.eval(): the liger fused linear CE only engages when
+    # self.training is True — in eval mode the forward materializes the full
+    # seq_len x vocab logits (~28 GiB at 65k) and OOMs. Train mode + no_grad is
+    # safe (no dropout in this model family) and matches the code path that
+    # produces the training-time losses these are compared against.
     start = time.perf_counter()
     with torch.no_grad():
         for step in range(steps):
@@ -462,7 +466,6 @@ def tailsft_ref_losses(args: FlatArguments, accelerator, model, train_dataset, c
                 losses[key] = out.loss.float()
             if rank == 0 and step % 100 == 0:
                 logger.info(f"TailSFT: reference scoring step {step}/{steps} ({time.perf_counter() - start:.0f}s)")
-    model.train()
     losses = accelerator.reduce(losses, reduction="sum").cpu()
     if accelerator.is_main_process:
         os.makedirs(args.output_dir, exist_ok=True)
