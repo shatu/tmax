@@ -277,6 +277,61 @@ class _SlowHealthyEnv:
         return {}
 
 
+class _RecordingCompletions:
+    def __init__(self):
+        self.requests = []
+
+    async def create(self, **kwargs):
+        self.requests.append(kwargs)
+        return _ApiResponse()
+
+
+class _HealthyEnv:
+    def __init__(self):
+        self.step = _Remote(self._step)
+        self.get_metrics = _Remote(self._get_metrics)
+
+    async def _step(self, _call: EnvCall) -> StepResult:
+        return StepResult(result="ok", reward=0.0)
+
+    async def _get_metrics(self):
+        return {}
+
+
+class TestPerTurnSampling(unittest.TestCase):
+    def test_generation_turns_do_not_reset_the_rollout_seed(self):
+        pool, env = _Pool(), _HealthyEnv()
+        actor = _Actor(pool)
+        completions = _RecordingCompletions()
+        actor.client = type("Client", (), {"completions": completions})()
+        actor.request_metadata["train_0"]["env_config"].max_steps = 2
+        setup = PoolSetup(
+            acquired={TOOL: (pool, env)},
+            actor_map={TOOL: env},
+            allowed_tools={TOOL},
+            tool_response_roles={TOOL: "tool"},
+            tool_call_format_error_messages={},
+            active_env_names=[TOOL],
+            text_env_names=[],
+        )
+
+        async def _no_health(_port):
+            return None
+
+        async def _pools(*_a, **_kw):
+            return setup
+
+        with (
+            patch("open_instruct.vllm_utils._check_health", _no_health),
+            patch("open_instruct.vllm_utils._acquire_and_reset_pools", _pools),
+            patch("open_instruct.vllm_utils.process_tool_tokens", lambda *a, **kw: ([9], [0.0], [0], 0)),
+        ):
+            asyncio.run(process_request(actor, "train_0_1", SamplingConfig(max_tokens=64, seed=123)))
+
+        self.assertEqual(len(completions.requests), 2)
+        self.assertTrue(all("seed" not in request for request in completions.requests))
+
+
 class TestWallClockDeadline(unittest.TestCase):
     """Assertion E — the independent backstop brake.
 

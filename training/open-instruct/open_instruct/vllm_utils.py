@@ -1259,9 +1259,15 @@ async def process_request(actor: LLMRayActor, sub_request_id: str, sampling_para
             if remaining_budget <= 0 or remaining_room <= 0:
                 break
 
+            # A rollout may make several completion requests when it interacts
+            # with tools. Reusing a request seed resets vLLM's RNG at each turn,
+            # which can repeat the same completion after similar observations.
+            # The engine seed is set once at startup, so let its RNG advance
+            # naturally between turns.
             current_sampling_params = dataclasses.replace(sampling_params, max_tokens=current_max_tokens)
             params_dict = dataclasses.asdict(current_sampling_params)
             min_tokens = params_dict.pop("min_tokens", 0)
+            params_dict.pop("seed", None)
             counts["generation_calls"] += 1
             phase_start_time = time.perf_counter()
             completion_coro = actor.client.completions.create(
