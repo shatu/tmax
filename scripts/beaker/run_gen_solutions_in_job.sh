@@ -438,6 +438,25 @@ if [ "$SAMPLE_SIZE" != "0" ]; then
     EXTRA_ARGS+=( --sample-size "$SAMPLE_SIZE" --sample-seed "$SAMPLE_SEED" )
 fi
 
+# vLLM liveness watchdog: if the server process dies mid-run (e.g. OOM-killed
+# under container-storm memory pressure), every remaining rollout fails through
+# 5 retries and the job spends hours writing all-zero summaries into the shared
+# cache. Kill the solver instead and exit non-zero so the failure is visible.
+VLLM_DIED_FLAG=/tmp/vllm_died
+rm -f "$VLLM_DIED_FLAG"
+(
+    while sleep 60; do
+        if ! kill -0 "$VLLM_PID" 2>/dev/null; then
+            touch "$VLLM_DIED_FLAG"
+            log "FATAL: vLLM server (pid $VLLM_PID) is gone — killing generate_solutions"
+            tail -n "$VLLM_LOG_TAIL_LINES" "$VLLM_LOG" || true
+            pkill -f "rl_data.generate_solutions" || true
+            break
+        fi
+    done
+) &
+WATCHDOG_PID=$!
+
 log "running generate_solutions: MODEL=$MODEL WORKERS=$WORKERS NUM_SOLUTIONS=$NUM_SOLUTIONS (containers: $(( WORKERS * NUM_SOLUTIONS )), runtime: podman)"
 uv run python -m rl_data.generate_solutions \
     --tasks-dir "$TASKS_DIR" \
@@ -455,6 +474,12 @@ uv run python -m rl_data.generate_solutions \
     --shell-init-attempts "$SHELL_INIT_ATTEMPTS" \
     --verbose \
     "${EXTRA_ARGS[@]}"
+
+kill "$WATCHDOG_PID" 2>/dev/null || true
+if [ -e "$VLLM_DIED_FLAG" ]; then
+    log "solver aborted because the vLLM server died — NOT syncing partial garbage; failing job"
+    exit 1
+fi
 
 log "solver finished — final sync"
 sync_results
