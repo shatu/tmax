@@ -47,6 +47,7 @@ import asyncio
 import atexit
 import contextlib
 import io
+import logging
 import os
 import shlex
 import tarfile
@@ -160,6 +161,11 @@ def _reap_live_sandboxes() -> None:  # pragma: no cover - process teardown
 
 atexit.register(_reap_live_sandboxes)
 
+# The SDK logs a full traceback at ERROR when a file read 404s. Exec output
+# files can legitimately be gone (a command that wipes /tmp); _collect_output
+# handles that and logs it at DEBUG, so silence the adapter's duplicate.
+logging.getLogger("opensandbox.adapters.filesystem_adapter").setLevel(logging.CRITICAL)
+
 
 class OpenSandboxEnvironment(BaseEnvironment):
     # Extra time the server-side command kill and the SSE read get beyond the
@@ -173,9 +179,11 @@ class OpenSandboxEnvironment(BaseEnvironment):
     _ADOPT_POLL_INTERVAL_S = 5.0
     _MAX_OUTPUT_CHARS = 1_000_000
     # Where exec stdout/stderr are spooled inside the sandbox (see _exec_raw).
-    # /tmp is world-writable in every image we run, so non-root exec users
-    # can write there too.
-    _EXEC_OUTPUT_DIR = "/tmp"
+    # A dot-directory under /tmp: /tmp is world-writable in every image we run
+    # (so non-root exec users can create it), and an agent's `rm -rf /tmp/*`
+    # skips dotfiles. It is (re)created by every exec, so it also survives an
+    # agent that deletes it outright.
+    _EXEC_OUTPUT_DIR = "/tmp/.tmax-exec"
 
     _start_semaphore: asyncio.Semaphore | None = None
     _start_semaphore_size: int | None = None
@@ -544,7 +552,11 @@ class OpenSandboxEnvironment(BaseEnvironment):
         token = uuid.uuid4().hex
         out_path = f"{self._EXEC_OUTPUT_DIR}/{token}.out"
         err_path = f"{self._EXEC_OUTPUT_DIR}/{token}.err"
-        outer = f"{shlex.join(shell)} >{shlex.quote(out_path)} 2>{shlex.quote(err_path)}"
+        outer = (
+            f"mkdir -p {shlex.quote(self._EXEC_OUTPUT_DIR)} 2>/dev/null; "
+            f"chmod 1777 {shlex.quote(self._EXEC_OUTPUT_DIR)} 2>/dev/null; "
+            f"{shlex.join(shell)} >{shlex.quote(out_path)} 2>{shlex.quote(err_path)}"
+        )
         opts = RunCommandOpts(
             working_directory=cwd,
             envs=env or None,

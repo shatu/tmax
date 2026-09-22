@@ -198,7 +198,10 @@ class _FakeCommands:
     async def run(self, command, *, opts=None, handlers=None):
         self.calls.append((command, opts))
         # The backend redirects "... >/tmp/<tok>.out 2>/tmp/<tok>.err"; emulate the files.
-        out_path = command.split(">")[1].split()[0].strip("'\"") if ">" in command else None
+        # the redirect is the first ">" that is not part of "2>/dev/null"
+        out_path = None
+        for part in command.replace("2>/dev/null", "").split(">")[1:2]:
+            out_path = part.split()[0].strip("'\"")
         if "getent passwd" in command:
             name = command.split("getent passwd ")[1].split("'")[0].split('"')[0].split()[0]
             self._files.contents[out_path] = f"{name}:x:1001:1002::/home/{name}:/bin/bash\n".encode()
@@ -244,7 +247,8 @@ def test_exec_resolves_named_user_and_applies_workdir_and_timeout(tmp_path):
     # outer `bash -c` wraps the timeout'd command and redirects both streams to files
     assert cmd.startswith("bash -c ")
     assert "timeout --signal=TERM --kill-after=10 20 bash -c " in cmd
-    assert ">/tmp/" in cmd and ".out 2>/tmp/" in cmd
+    assert ">/tmp/.tmax-exec/" in cmd and ".out 2>/tmp/.tmax-exec/" in cmd
+    assert cmd.index("mkdir -p /tmp/.tmax-exec") < cmd.index("timeout ")
     assert len(env._sandbox.files.deleted) == 4  # both files for both execs so far
     assert opts.uid == 1001 and opts.gid == 1002
     assert opts.working_directory == "/app"
