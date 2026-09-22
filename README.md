@@ -40,7 +40,7 @@ The repo is organised around four stages of building a terminal agent:
 | **Data generation** | `rl_data/` | A simple, scalable, diverse, difficulty-aware pipeline for synthesising terminal-agent tasks, solving them at pass@k, analysing the corpus, and publishing it to the Hugging Face Hub. Tasks are sampled as an *independent product of structured axes* and packaged as self-contained Apptainer/Docker environments with programmatic verifiers. |
 | **Agent** | `Vanillux2Agent/` | The Harbor agent used for solving and evaluation: a direct LiteLLM agent built on the vanillux prompt harness (mini-SWE-agent-derived prompts, bash tool schema, submit marker, format-error recovery, and output truncation), executing commands through Harbor's active environment. |
 | **Training** | `training/open-instruct/` | A fork of [open-instruct](https://github.com/allenai/open-instruct) with fixes for Qwen 3.5 and terminal-agent training. SFT and DPPO RL launch scripts for the tmax models live under `training/open-instruct/scripts/tmax/`. |
-| **Evaluation** | `scripts/` + `beaker_configs/` | Shell/Slurm launchers and a Beaker pipeline that serves a model with vLLM and runs Harbor datasets (Terminal-Bench, TB-Lite, SWE-bench) against it. |
+| **Evaluation** | `scripts/` + `beaker_configs/` + `tmax_envs/` | Shell/Slurm launchers and a Beaker pipeline that serves a model with vLLM and runs Harbor datasets (Terminal-Bench, TB-Lite, SWE-bench) against it; `tmax_envs/` adds an OpenSandbox sandbox backend for harbor (remote pods instead of in-job podman). |
 
 ## Quickstart
 

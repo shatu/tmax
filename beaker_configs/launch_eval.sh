@@ -2,9 +2,10 @@
 #
 # Launch a single beaker task that:
 #   1. spins up a vLLM server on the local GPUs (8 by default)
-#   2. configures podman + harbor (incl. the patches discovered while bringing
-#      up harbor on the podman socket — see scripts/setup_podman_harbor.sh and
-#      scripts/beaker/run_eval_in_job.sh)
+#   2. configures the sandbox backend: podman + harbor patches for --harbor-env
+#      docker (see scripts/setup_podman_harbor.sh, scripts/beaker/run_eval_in_job.sh),
+#      or nothing local for --harbor-env opensandbox (remote pods on the AI2
+#      OpenSandbox service; see docs/running_evals.md "OpenSandbox")
 #   3. runs `harbor run` on the chosen dataset against the local vLLM
 #   4. copies the resulting jobs/<name>/ tree to a /weka path you can fetch.
 #
@@ -47,6 +48,11 @@ MAX_MODEL_LEN=""
 DATASET="terminal-bench@2.0"
 DATASET_PATH=""
 HARBOR_ENV="docker"
+OPEN_SANDBOX_API_KEY_SECRET="${OPEN_SANDBOX_API_KEY_SECRET:-pradeepd_OPEN_SANDBOX_API_KEY}"
+TMAX_TASK_IMAGE_REPO="${TMAX_TASK_IMAGE_REPO:-}"
+TMAX_OPENSANDBOX_DOMAIN="${TMAX_OPENSANDBOX_DOMAIN:-}"
+TMAX_OPENSANDBOX_IMAGE_PREFIX="${TMAX_OPENSANDBOX_IMAGE_PREFIX:-}"
+TMAX_OPENSANDBOX_START_CONCURRENCY="${TMAX_OPENSANDBOX_START_CONCURRENCY:-}"
 AGENT_IMPORT_PATH="Vanillux2Agent:Vanillux2Agent"
 N_CONCURRENT=8
 N_ATTEMPTS=1
@@ -109,7 +115,17 @@ Options:
   --max-model-len LEN    pass --max-model-len to vllm
   --dataset DS           harbor dataset (default: terminal-bench@2.0; also
                          valid: openthoughts-tblite@2.0)
-  --harbor-env ENV       harbor environment backend (default: docker)
+  --harbor-env ENV       sandbox backend: docker (podman in-job, default),
+                         daytona, or opensandbox (remote pods on the AI2
+                         OpenSandbox service — no podman, no subcontainer perms)
+  --task-image-repo REPO (opensandbox) registry repo holding prebuilt images for
+                         Dockerfile-only tasks such as openthoughts-tblite, built
+                         by scripts/opensandbox/build_task_images.py. Not needed
+                         for terminal-bench (tasks declare docker_image).
+  --opensandbox-domain H (opensandbox) service host (default: sandbox-standard)
+  --opensandbox-api-key-secret S
+                         (opensandbox) Beaker secret holding OPEN_SANDBOX_API_KEY
+                         (default: ${OPEN_SANDBOX_API_KEY_SECRET})
   --agent AGENT          harbor agent import path or named agent (default: Vanillux2Agent:Vanillux2Agent)
   --n-concurrent N       harbor --n-concurrent (default: 8)
   --n-attempts N         harbor -k (default: 1)
@@ -177,6 +193,9 @@ while [ $# -gt 0 ]; do
         --dataset)         DATASET="$2"; shift 2 ;;
         --dataset-path)    DATASET_PATH="$2"; shift 2 ;;
         --harbor-env)      HARBOR_ENV="$2"; shift 2 ;;
+        --task-image-repo) TMAX_TASK_IMAGE_REPO="$2"; shift 2 ;;
+        --opensandbox-domain) TMAX_OPENSANDBOX_DOMAIN="$2"; shift 2 ;;
+        --opensandbox-api-key-secret) OPEN_SANDBOX_API_KEY_SECRET="$2"; shift 2 ;;
         --agent)           AGENT_IMPORT_PATH="$2"; shift 2 ;;
         --n-concurrent)    N_CONCURRENT="$2"; shift 2 ;;
         --n-attempts)      N_ATTEMPTS="$2"; shift 2 ;;
@@ -237,7 +256,7 @@ cat <<EOF
   LM only:      ${VLLM_LANGUAGE_MODEL_ONLY}
   GPUs:         ${GPU_COUNT} (TP=${TP_SIZE}, DP=${DP_SIZE})
   Dataset:      ${DATASET}
-  Harbor env:   ${HARBOR_ENV}
+  Harbor env:   ${HARBOR_ENV}${TMAX_TASK_IMAGE_REPO:+  task_image_repo=${TMAX_TASK_IMAGE_REPO}}${TMAX_OPENSANDBOX_DOMAIN:+  domain=${TMAX_OPENSANDBOX_DOMAIN}}
   Agent:        ${AGENT_IMPORT_PATH}
   Agent kwargs: ${EXTRA_AGENT_KWARGS:-<none>}
   Agent envs:   ${EXTRA_AGENT_ENVS:-<none>}
@@ -310,8 +329,6 @@ GANTRY_CMD=(
     --env "HARBOR_ENVIRONMENT_BUILD_TIMEOUT_MULTIPLIER=${HARBOR_ENVIRONMENT_BUILD_TIMEOUT_MULTIPLIER}"
     --env "HARBOR_AGENT_TIMEOUT_SEC=${HARBOR_AGENT_TIMEOUT_SEC}"
     --env "JOB_NAME=${JOB_NAME}"
-    --env BEAKER_ALLOW_SUBCONTAINERS=1
-    --env BEAKER_SKIP_DOCKER_SOCKET=1
     --host-networking
     --propagate-failure
     --no-python
@@ -322,11 +339,28 @@ for cluster in ${CLUSTER//,/ }; do
     GANTRY_CMD+=(--cluster "$cluster")
 done
 
-# The daytona backend needs an API key; only register the secret then, so the
-# default docker path doesn't require a DAYTONA_API_KEY secret in the workspace.
-if [ "$HARBOR_ENV" = "daytona" ]; then
-    GANTRY_CMD+=(--env-secret "DAYTONA_API_KEY=${DAYTONA_API_KEY_SECRET:-hamishivi_DAYTONA_API_KEY}")
-fi
+# Backend-specific wiring. Only the in-job podman backend needs nested-container
+# permissions; remote backends need their API key secret instead.
+case "$HARBOR_ENV" in
+    docker)
+        GANTRY_CMD+=(--env BEAKER_ALLOW_SUBCONTAINERS=1 --env BEAKER_SKIP_DOCKER_SOCKET=1)
+        ;;
+    daytona)
+        GANTRY_CMD+=(--env-secret "DAYTONA_API_KEY=${DAYTONA_API_KEY_SECRET:-hamishivi_DAYTONA_API_KEY}")
+        ;;
+    opensandbox)
+        GANTRY_CMD+=(--env-secret "OPEN_SANDBOX_API_KEY=${OPEN_SANDBOX_API_KEY_SECRET}"
+                     --env "TMAX_TASK_IMAGE_REPO=${TMAX_TASK_IMAGE_REPO}"
+                     --env "TMAX_OPENSANDBOX_DOMAIN=${TMAX_OPENSANDBOX_DOMAIN}"
+                     --env "TMAX_OPENSANDBOX_IMAGE_PREFIX=${TMAX_OPENSANDBOX_IMAGE_PREFIX}"
+                     --env "TMAX_OPENSANDBOX_START_CONCURRENCY=${TMAX_OPENSANDBOX_START_CONCURRENCY}"
+                     --env "TMAX_OPENSANDBOX_APP_NAME=${JOB_NAME}")
+        if [[ "$DATASET" == openthoughts-tblite* || -n "$DATASET_PATH" ]] && [ -z "$TMAX_TASK_IMAGE_REPO" ]; then
+            echo "warning: --harbor-env opensandbox with a dataset whose tasks may lack docker_image" >&2
+            echo "         (tblite / local path) but no --task-image-repo: such trials will fail at start." >&2
+        fi
+        ;;
+esac
 
 if [ -n "$BEAKER_IMAGE" ]; then
     GANTRY_CMD+=(--beaker-image "$BEAKER_IMAGE")

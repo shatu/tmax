@@ -18,7 +18,11 @@
 #     localhost:$VLLM_PORT, which only resolves to the host vLLM when the
 #     container shares the host network namespace.
 #   * Defaults to a tiny run: TP=1 on one GPU, 2 tasks, 2 concurrent.
-#   * NOT the Daytona route — uses harbor `--env docker`.
+#   * NOT the Daytona route — uses harbor `--env docker` by default.
+#   * `--harbor-env opensandbox` skips Docker entirely and runs the task
+#     sandboxes as remote pods on the AI2 OpenSandbox service (needs
+#     OPEN_SANDBOX_API_KEY, or beaker access to the pradeepd_OPEN_SANDBOX_API_KEY
+#     secret; host-side agents only — see docs/running_evals.md "OpenSandbox").
 #
 # Usage:
 #   ./beaker_configs/run_eval_local.sh [model_path] [options]
@@ -61,6 +65,8 @@ DATASET_PATH=""            # local dataset/task dir (harbor --path); overrides -
 # harbor, so `--agent VanilluxAgent:VanilluxAgent` fails to import here. Pass
 # it explicitly only once the harbor pin is fixed.
 AGENT_IMPORT_PATH="mini-swe-agent"
+HARBOR_ENV="docker"        # docker | opensandbox
+OPEN_SANDBOX_API_KEY_SECRET="${OPEN_SANDBOX_API_KEY_SECRET:-pradeepd_OPEN_SANDBOX_API_KEY}"
 N_CONCURRENT=2
 N_ATTEMPTS=1
 N_TASKS=2                  # harbor -l / --n-tasks (small for a smoke test)
@@ -89,6 +95,8 @@ while [ $# -gt 0 ]; do
         --dataset)          DATASET="$2"; shift 2 ;;
         --dataset-path)     DATASET_PATH="$2"; shift 2 ;;
         --agent)            AGENT_IMPORT_PATH="$2"; shift 2 ;;
+        --harbor-env)       HARBOR_ENV="$2"; shift 2 ;;
+        --task-image-repo)  export TMAX_TASK_IMAGE_REPO="$2"; shift 2 ;;
         --n-concurrent)     N_CONCURRENT="$2"; shift 2 ;;
         --n-attempts)       N_ATTEMPTS="$2"; shift 2 ;;
         --n-tasks)          N_TASKS="$2"; shift 2 ;;
@@ -114,10 +122,28 @@ cat <<EOF
   Dataset:      ${DATASET}
   Tasks:        ${SINGLE_TASK:-first ${N_TASKS}}  (n_concurrent=${N_CONCURRENT}, k=${N_ATTEMPTS})
   Agent:        ${AGENT_IMPORT_PATH}
+  Harbor env:   ${HARBOR_ENV}${TMAX_TASK_IMAGE_REPO:+  task_image_repo=${TMAX_TASK_IMAGE_REPO}}
   Job name:     ${JOB_NAME}
   DOCKER_HOST:  ${DOCKER_HOST:-(default: local docker daemon)}
 EOF
 
+if [ "$HARBOR_ENV" = "opensandbox" ]; then
+# --- 0 (opensandbox). Preconditions: API key + preflight; no Docker needed ---
+if [ -z "${OPEN_SANDBOX_API_KEY:-}" ] && command -v beaker >/dev/null 2>&1; then
+    OPEN_SANDBOX_API_KEY="$(beaker secret read "$OPEN_SANDBOX_API_KEY_SECRET" --workspace "${BEAKER_WORKSPACE:-ai2/oe-agents}" 2>/dev/null || true)"
+    export OPEN_SANDBOX_API_KEY
+fi
+[ -n "${OPEN_SANDBOX_API_KEY:-}" ] || {
+    echo "FATAL: OPEN_SANDBOX_API_KEY not set and beaker secret '$OPEN_SANDBOX_API_KEY_SECRET' not readable."; exit 1; }
+[[ "$AGENT_IMPORT_PATH" == *:* || "$AGENT_IMPORT_PATH" == oracle || "$AGENT_IMPORT_PATH" == terminus* ]] || {
+    echo "FATAL: --harbor-env opensandbox only supports host-side agents (Vanillux2Agent, terminus-2, oracle);"
+    echo "       '$AGENT_IMPORT_PATH' runs inside the sandbox and cannot reach this machine's vLLM."; exit 1; }
+export TMAX_OPENSANDBOX_APP_NAME="${TMAX_OPENSANDBOX_APP_NAME:-$JOB_NAME}"
+log "uv sync"
+uv sync
+log "OpenSandbox preflight"
+uv run python scripts/opensandbox/check_opensandbox.py || { echo "FATAL: OpenSandbox preflight failed"; exit 1; }
+else
 # --- 0. Preconditions -------------------------------------------------------
 command -v docker >/dev/null 2>&1 || { echo "docker CLI not found"; exit 1; }
 docker info >/dev/null 2>&1 || { echo "docker daemon not reachable"; exit 1; }
@@ -181,6 +207,7 @@ if "network_mode: host" not in text:
 else:
     print("already patched")
 PY
+fi  # HARBOR_ENV
 
 # --- 2. Start vLLM in the background ----------------------------------------
 # Pin fastapi < 0.137: fastapi 0.137 changed the router internals and breaks
@@ -249,10 +276,16 @@ done
 #   host's netns — NOT this container's — so localhost does NOT reach our vLLM.
 #   They CAN reach this container by its docker-bridge IP, so we point the
 #   agent at that IP instead of localhost.
+if [ "$HARBOR_ENV" = "opensandbox" ]; then
+    # Host-side agents call vLLM from this process; nothing runs in-container.
+    AGENT_API_BASE="http://localhost:$VLLM_PORT/v1"
+    log "agent will reach vLLM at $AGENT_API_BASE (host-side agent; sandboxes are remote)"
+else
 HOST_IP="${HOST_IP:-$(hostname -i 2>/dev/null | awk '{print $1}')}"
 [ -n "$HOST_IP" ] || { echo "could not determine container IP (set HOST_IP)"; exit 1; }
 AGENT_API_BASE="http://$HOST_IP:$VLLM_PORT/v1"
 log "agent will reach vLLM at $AGENT_API_BASE (this container's bridge IP)"
+fi
 
 export OPENAI_API_KEY="${OPENAI_API_KEY:-dummy}"
 export OPENAI_API_BASE="$AGENT_API_BASE"
@@ -264,11 +297,15 @@ unset MSWEA_API_KEY
 export OPENAI_BASE_URL="$AGENT_API_BASE"
 
 HARBOR_CMD=( uv run harbor run
-             --env docker
              --n-concurrent "$N_CONCURRENT"
              --job-name "$JOB_NAME"
              --yes
              -k "$N_ATTEMPTS" )
+if [ "$HARBOR_ENV" = "opensandbox" ]; then
+    HARBOR_CMD+=( --environment-import-path tmax_envs.opensandbox:OpenSandboxEnvironment )
+else
+    HARBOR_CMD+=( --env "$HARBOR_ENV" )
+fi
 # Local dataset dir (harbor --path) overrides the registry --dataset ref.
 if [ -n "$DATASET_PATH" ]; then
     HARBOR_CMD+=( --path "$DATASET_PATH" )

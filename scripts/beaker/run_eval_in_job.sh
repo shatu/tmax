@@ -16,7 +16,16 @@
 #   DP_SIZE                  --data-parallel-size (default: 1)
 #   MAX_MODEL_LEN            optional --max-model-len
 #   DATASET                  harbor dataset, e.g. terminal-bench@2.0
-#   HARBOR_ENV               harbor environment backend (default: docker)
+#   HARBOR_ENV               harbor environment backend: docker (podman in-job,
+#                            default), daytona, or opensandbox (remote pods on the
+#                            AI2 OpenSandbox service; no podman/patches needed —
+#                            see docs/running_evals.md "OpenSandbox")
+#   OPEN_SANDBOX_API_KEY     (opensandbox) service API key, from a Beaker secret
+#   TMAX_TASK_IMAGE_REPO     (opensandbox) registry repo with prebuilt images for
+#                            Dockerfile-only tasks (TBLite); see
+#                            scripts/opensandbox/build_task_images.py
+#   TMAX_OPENSANDBOX_*       (opensandbox) optional tuning, read by
+#                            tmax_envs/opensandbox.py (DOMAIN, IMAGE_PREFIX, ...)
 #   AGENT_IMPORT_PATH        e.g. Vanillux2Agent:Vanillux2Agent
 #   EXTRA_UV_PIP_INSTALLS    optional space-separated packages to uv pip install
 #   EXTRA_AGENT_KWARGS       optional newline-separated harbor --agent-kwarg values
@@ -58,8 +67,20 @@ if [ -n "${REPO_GIT_URL:-}" ]; then
     cd "$WORKDIR"
 fi
 
+# The docker backend runs task containers on this node via podman and needs
+# everything in steps 1, 2, the podman-compat patches in 3, and 4/4a. Remote
+# backends (opensandbox, daytona) run the sandboxes elsewhere and skip them.
+HARBOR_ENV="${HARBOR_ENV:-docker}"
+if [ "$HARBOR_ENV" = "docker" ]; then
+    NEEDS_LOCAL_CONTAINERS=1
+else
+    NEEDS_LOCAL_CONTAINERS=0
+    log "HARBOR_ENV=$HARBOR_ENV: skipping podman install/config/patches"
+fi
+export NEEDS_LOCAL_CONTAINERS
+
 # --- 1. Install podman + deps -----------------------------------------------
-if ! command -v podman >/dev/null 2>&1; then
+if [ "$NEEDS_LOCAL_CONTAINERS" = 1 ] && ! command -v podman >/dev/null 2>&1; then
     log "installing podman + helpers"
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
@@ -73,7 +94,7 @@ fi
 # (Docker CLI rejects `compose` as a subcommand and then mis-parses `-p`).
 # Drop in the official compose v2 static binary as a user-level CLI plugin —
 # it talks the Docker API, which podman serves on /tmp/podman.sock.
-if ! docker compose version >/dev/null 2>&1; then
+if [ "$NEEDS_LOCAL_CONTAINERS" = 1 ] && ! docker compose version >/dev/null 2>&1; then
     log "installing docker compose v2 plugin"
     DOCKER_COMPOSE_VERSION="${DOCKER_COMPOSE_VERSION:-v2.39.4}"
     DOCKER_COMPOSE_ARCH="$(uname -m)"
@@ -85,6 +106,7 @@ if ! docker compose version >/dev/null 2>&1; then
 fi
 
 # --- 2. Write containers.conf -----------------------------------------------
+if [ "$NEEDS_LOCAL_CONTAINERS" = 1 ]; then
 log "writing /etc/containers/containers.conf"
 mkdir -p /etc/containers
 cat > /etc/containers/containers.conf <<'CONF'
@@ -111,6 +133,7 @@ CONF
 # Ensure root has a subuid/subgid range big enough for the userns size above.
 grep -q '^root:' /etc/subuid 2>/dev/null || echo 'root:10000:65536' >> /etc/subuid
 grep -q '^root:' /etc/subgid 2>/dev/null || echo 'root:10000:65536' >> /etc/subgid
+fi  # NEEDS_LOCAL_CONTAINERS
 
 log "running uv sync"
 if ! command -v uv >/dev/null 2>&1; then
@@ -128,14 +151,18 @@ if [ -n "${EXTRA_UV_PIP_INSTALLS:-}" ]; then
     uv pip install ${EXTRA_UV_PIP_INSTALLS}
 fi
 
-log "patching harbor for podman compat"
+log "patching harbor (podman compat + CLI extensions)"
 uv run python - <<'PY'
 import os, pathlib, harbor
 hdir = pathlib.Path(harbor.__file__).parent
 
+# Podman-compat patches (bind-mount ownership, host networking, image
+# retention) only matter when the sandboxes run on this node.
+PODMAN_COMPAT = os.environ.get("NEEDS_LOCAL_CONTAINERS", "1") == "1"
+
 compose = hdir / "environments/docker/docker-compose-base.yaml"
 text = compose.read_text()
-if "network_mode: host" not in text:
+if PODMAN_COMPAT and "network_mode: host" not in text:
     text = text.replace(
         "  main:\n    volumes:",
         "  main:\n    network_mode: host\n    volumes:",
@@ -154,7 +181,7 @@ if "network_mode: host" not in text:
 
 oracle = hdir / "agents/oracle.py"
 text = oracle.read_text()
-if "host_oracle_path.chmod(0o666)" not in text:
+if PODMAN_COMPAT and "host_oracle_path.chmod(0o666)" not in text:
     text = text.replace(
         "if environment.is_mounted:\n            host_oracle_path.touch()",
         "if environment.is_mounted:\n"
@@ -167,7 +194,7 @@ if "host_oracle_path.chmod(0o666)" not in text:
 
 verifier = hdir / "verifier/verifier.py"
 text = verifier.read_text()
-if "test_stdout_path.chmod(0o666)" not in text:
+if PODMAN_COMPAT and "test_stdout_path.chmod(0o666)" not in text:
     text = text.replace(
         "self._trial_paths.test_stdout_path.touch()",
         "self._trial_paths.test_stdout_path.touch()\n"
@@ -183,7 +210,7 @@ if "test_stdout_path.chmod(0o666)" not in text:
 # silently fail with permission-denied on the bind mount.
 paths_py = hdir / "models/trial/paths.py"
 text = paths_py.read_text()
-if "agent_dir.chmod(0o777)" not in text:
+if PODMAN_COMPAT and "agent_dir.chmod(0o777)" not in text:
     text = text.replace(
         "self.agent_dir.mkdir(parents=True, exist_ok=True)\n"
         "        self.verifier_dir.mkdir(parents=True, exist_ok=True)\n"
@@ -212,7 +239,7 @@ if "agent_dir.chmod(0o777)" not in text:
 #   storage. This was the old unconditional behaviour, added when there was no
 #   mirror and per-trial re-pulls blew past Docker Hub's unauthenticated cap.
 #   Only sensible for SMALL image sets (tb2 = 89 images / ~9 GB total).
-if os.environ.get("HARBOR_KEEP_TASK_IMAGES", "0") == "1":
+if PODMAN_COMPAT and os.environ.get("HARBOR_KEEP_TASK_IMAGES", "0") == "1":
     docker_py = hdir / "environments/docker/docker.py"
     text = docker_py.read_text()
     if '["down", "--rmi", "all", "--volumes", "--remove-orphans"]' in text:
@@ -222,7 +249,7 @@ if os.environ.get("HARBOR_KEEP_TASK_IMAGES", "0") == "1":
         )
         docker_py.write_text(text)
         print("patched docker.py: dropped --rmi all (HARBOR_KEEP_TASK_IMAGES=1)")
-else:
+elif PODMAN_COMPAT:
     print("docker.py: keeping harbor stock --rmi all (images deleted per trial)")
 
 # Harbor's CLI exposes timeout multipliers but not the exact
@@ -359,10 +386,12 @@ if '"--override-with-envs",' not in text:
 PY
 
 # --- 4. Bring podman service up (uses scripts/setup_podman_harbor.sh) -------
+if [ "$NEEDS_LOCAL_CONTAINERS" = 1 ]; then
 log "starting podman service"
 # shellcheck disable=SC1091
 source scripts/setup_podman_harbor.sh
 export DOCKER_HOST="${DOCKER_HOST:-unix:///tmp/podman.sock}"
+fi
 
 # --- 4a. Docker Hub auth + mirror -------------------------------------------
 # tb2 task images live on Docker Hub; on a 267-trial run, harbor's
@@ -377,10 +406,18 @@ export DOCKER_HOST="${DOCKER_HOST:-unix:///tmp/podman.sock}"
 #   - image retention is controlled in step 3 by HARBOR_KEEP_TASK_IMAGES
 #     (default 0 = keep harbor's stock --rmi all; set 1 to persist images,
 #     only sane for small image sets like tb2's 89)
-if [ -x /usr/local/bin/setup_dockerio_mirror ]; then
+if [ "$NEEDS_LOCAL_CONTAINERS" = 0 ]; then
+    # Remote sandboxes pull images on their own cluster. DOCKER_PAT (if set) is
+    # forwarded to the backend as registry auth for direct Docker Hub pulls;
+    # nothing to log in to here.
+    export DOCKERHUB_USERNAME="${DOCKERHUB_USERNAME:-shashankg209}"
+    log "remote sandbox backend: skipping local docker/podman login (DOCKER_PAT $([ -n "${DOCKER_PAT:-}" ] && echo set || echo unset))"
+elif [ -x /usr/local/bin/setup_dockerio_mirror ]; then
     /usr/local/bin/setup_dockerio_mirror || log "setup_dockerio_mirror failed (continuing)"
 fi
-if [ -n "${DOCKER_PAT:-}" ]; then
+if [ "$NEEDS_LOCAL_CONTAINERS" = 0 ]; then
+    :
+elif [ -n "${DOCKER_PAT:-}" ]; then
     # Authenticate to Docker Hub so task-image pulls don't hit the
     # unauthenticated rate cap. We `docker login` to VERIFY the credentials and
     # HARD-ABORT on failure — no anonymous fallback — so a wrong username/PAT
@@ -411,6 +448,18 @@ if [ -n "${DOCKER_PAT:-}" ]; then
 else
     log "FATAL: DOCKER_PAT not set; refusing to fall back to anonymous pulls. Provide the DOCKER_PAT secret. Aborting."
     exit 1
+fi
+
+# --- 4b. OpenSandbox preflight ----------------------------------------------
+# Fail fast (before loading the model) if the job cannot reach the service or
+# the API key is missing/invalid. Creates and kills one small sandbox.
+if [ "$HARBOR_ENV" = "opensandbox" ]; then
+    export TMAX_OPENSANDBOX_APP_NAME="${TMAX_OPENSANDBOX_APP_NAME:-${JOB_NAME:-tmax-harbor-eval}}"
+    log "OpenSandbox preflight (domain=${TMAX_OPENSANDBOX_DOMAIN:-<default>}, task_image_repo=${TMAX_TASK_IMAGE_REPO:-<unset>}, app=${TMAX_OPENSANDBOX_APP_NAME})"
+    uv run python scripts/opensandbox/check_opensandbox.py || {
+        log "FATAL: OpenSandbox preflight failed; see output above. Aborting before vLLM starts."
+        exit 1
+    }
 fi
 
 # --- 5. Start vLLM in the background ----------------------------------------
@@ -562,10 +611,17 @@ fi
 
 HARBOR_CMD=( uv run harbor run
              --model "$HARBOR_MODEL_NAME"
-             --env "${HARBOR_ENV:-docker}"
              --n-concurrent "$N_CONCURRENT"
              --job-name "$JOB_NAME"
              -k "$N_ATTEMPTS" )
+# Sandbox backend: built-in harbor env types by name; opensandbox is this
+# repo's custom BaseEnvironment (tmax_envs/opensandbox.py), configured via the
+# TMAX_OPENSANDBOX_* / TMAX_TASK_IMAGE_REPO / OPEN_SANDBOX_API_KEY env vars.
+if [ "$HARBOR_ENV" = "opensandbox" ]; then
+    HARBOR_CMD+=( --environment-import-path tmax_envs.opensandbox:OpenSandboxEnvironment )
+else
+    HARBOR_CMD+=( --env "$HARBOR_ENV" )
+fi
 # DATASET_PATH (a local dir on a mounted weka fs, harbor --path) overrides the
 # registry --dataset ref. Used for datasets not in harbor 0.6.6's registry
 # (e.g. terminal-bench-2-1, downloaded via a newer harbor). The dir must be
@@ -674,6 +730,12 @@ set -e
 
 kill "$PROGRESS_PID" 2>/dev/null || true
 wait "$PROGRESS_PID" 2>/dev/null || true
+
+# Reap any sandbox this job's harbor process left behind (crashes, ^C).
+if [ "$HARBOR_ENV" = "opensandbox" ]; then
+    log "OpenSandbox janitor: killing leftover sandboxes tagged app=${TMAX_OPENSANDBOX_APP_NAME}"
+    uv run python scripts/opensandbox/cleanup_sandboxes.py --app "$TMAX_OPENSANDBOX_APP_NAME" --kill || true
+fi
 
 # --- 7. Compute aggregate stats ---------------------------------------------
 JOB_DIR="jobs/$JOB_NAME"

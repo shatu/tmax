@@ -45,7 +45,7 @@ git — instead we patch its installed package at runtime where needed (see
 | **trial** | One `(task, attempt)` pair. Lives at `jobs/<job>/<trial_name>/`. |
 | **attempt / `-k`** | How many independent trials to run per task (for pass@k). |
 | **agent** | The scaffold that turns a model into a tool-using loop (e.g. `Vanillux2Agent`). |
-| **environment / sandbox** | Where the agent's shell commands actually execute (`--env docker` or `--env daytona`). |
+| **environment / sandbox** | Where the agent's shell commands actually execute (`--env docker`, `--env daytona`, or the repo's `opensandbox` backend). |
 | **model** | The LLM being graded. Served either by a self-hosted vLLM or a hosted API. |
 | **verifier** | Task-supplied tests that produce a `reward` (typically 0.0 / 1.0). |
 | **job** | One full run over a dataset, named with `--job-name`, written to `jobs/<job-name>/`. |
@@ -62,6 +62,12 @@ about these scripts comes from conflating them.
    - `--env daytona`: each task runs in a fresh, fully-managed **cloud
      sandbox** from [Daytona](https://www.daytona.io/). Requires
      `DAYTONA_API_KEY`. No local container runtime needed.
+   - `--harbor-env opensandbox` (launch scripts) /
+     `--environment-import-path tmax_envs.opensandbox:OpenSandboxEnvironment`
+     (raw harbor): each task runs as a pod on AI2's self-hosted
+     [OpenSandbox](https://github.com/opensandbox-group/OpenSandbox) service.
+     No podman, no nested-container permissions, no harbor patches. Requires
+     `OPEN_SANDBOX_API_KEY`. See [§3b](#3b-path-a-beaker-with-opensandbox-sandboxes).
 
 2. **Model serving** — chosen by the `--model` string (a
    [litellm](https://docs.litellm.ai/) identifier):
@@ -85,6 +91,7 @@ you're evaluating**.
 | Path | Script(s) | Sandbox | Typical model | Use when |
 |---|---|---|---|---|
 | **Beaker** | [`beaker_configs/launch_eval.sh`](../beaker_configs/launch_eval.sh) | podman (in-job) | self-hosted vLLM (your checkpoint) | Iterating on a checkpoint at AI2; you want model + sandboxes in one GPU job. |
+| **Beaker + OpenSandbox** | [`beaker_configs/launch_eval.sh`](../beaker_configs/launch_eval.sh) `--harbor-env opensandbox` | remote pods on AI2's OpenSandbox service | self-hosted vLLM (your checkpoint) | Same GPU job for the model, but sandboxes run off-node: no podman patch stack, no subcontainer perms, works on clusters that block nested containers. Host-side agents only ([§3b](#3b-path-a-beaker-with-opensandbox-sandboxes)). |
 | **Local / direct** | [`beaker_configs/run_eval_local.sh`](../beaker_configs/run_eval_local.sh) or `uv run harbor run ...` | local Docker (default) **or** Daytona | API or vLLM | Quick smoke tests on a dev VM with a real Docker daemon, or any direct harbor run. |
 
 A useful rule of thumb that mirrors how this repo is actually used day to day:
@@ -97,6 +104,10 @@ A useful rule of thumb that mirrors how this repo is actually used day to day:
   before committing to a full Beaker job.
 - **Daytona** → clean, isolated cloud sandboxes (harbor `--env daytona`), useful
   when you have no local container runtime; requires a `DAYTONA_API_KEY`.
+- **OpenSandbox** → the same "no local containers" property as Daytona, but on
+  infrastructure we operate (GKE Autopilot, ~$0.07/sandbox-hour) with images
+  pulled as-is. Preferred over the podman path for Vanillux2Agent evals once
+  the dataset's images are in a registry ([§3b](#3b-path-a-beaker-with-opensandbox-sandboxes)).
 
 ---
 
@@ -261,6 +272,117 @@ It also neutralizes a broken `credsStore` (e.g. the VS Code dev-containers
 helper, which otherwise makes `docker login` fail to persist and turns every
 pull into `unauthorized`). To use a different account, set `DOCKERHUB_USERNAME`
 + `DOCKER_PAT` (or `DOCKER_PAT_SECRET`).
+
+---
+
+## 3b. Path A' — Beaker with OpenSandbox sandboxes
+
+`--harbor-env opensandbox` keeps everything from Path A (in-job vLLM, same
+agents, same flags, same outputs) but runs each trial's sandbox as a pod on
+AI2's self-hosted [OpenSandbox](https://github.com/opensandbox-group/OpenSandbox)
+deployment instead of in podman on the GPU node. The backend is this repo's
+[`tmax_envs/opensandbox.py`](../tmax_envs/opensandbox.py), a harbor
+`BaseEnvironment` loaded via `--environment-import-path`, so **no harbor
+source is patched** for it.
+
+```bash
+# Terminal-Bench 2.0: tasks ship prebuilt images, nothing else to set up
+./beaker_configs/launch_eval.sh allenai/tmax-4b \
+  --harbor-env opensandbox \
+  --agent Vanillux2Agent:Vanillux2Agent --model-provider openai \
+  --tool-call-parser qwen3_xml --language-model-only \
+  --gpus 1 --n-attempts 5 --cluster ai2/jupiter --workspace ai2/oe-agents
+
+# OpenThoughts TBLite: tasks have only a Dockerfile -> point at the prebuilt repo
+./beaker_configs/launch_eval.sh allenai/tmax-4b \
+  --harbor-env opensandbox --dataset openthoughts-tblite@2.0 \
+  --task-image-repo docker.io/<user>/tmax-harbor-tasks \
+  --agent Vanillux2Agent:Vanillux2Agent --model-provider openai \
+  --tool-call-parser qwen3_xml --language-model-only --gpus 1 --n-attempts 5
+```
+
+**What changes vs. the podman path**
+
+| | podman (`--harbor-env docker`) | OpenSandbox (`--harbor-env opensandbox`) |
+|---|---|---|
+| Where sandboxes run | on the GPU node, nested in the Beaker container | pods on the `sandbox-standard` GKE cluster |
+| Job needs | `BEAKER_ALLOW_SUBCONTAINERS`, `CAP_MKNOD`, podman install, 5 harbor file patches, Docker Hub mirror | outbound HTTPS + the `OPEN_SANDBOX_API_KEY` secret |
+| Images | pulled/built per trial on the node | pulled by the cluster; **never built** |
+| Agents | any | **host-side only**: `Vanillux2Agent`, `terminus-2`, `oracle`. In-sandbox agents (`mini-swe-agent`, `swe-agent`, `openhands`) would call vLLM from a GKE pod and cannot reach the Beaker node. |
+| Per-command latency | ms | ~1 s (network RPC) |
+| Marginal cost | ~$0 | ~$0.07 per sandbox-hour (TB2 k=5 ≈ $15; TBLite k=5 ≈ $20) |
+
+**Images.** OpenSandbox can only pull. Terminal-Bench 2.0/2.1 tasks declare
+`[environment].docker_image` (`alexgshaw/*`) and work out of the box. TBLite
+tasks ship only a Dockerfile (apt installs, COPY, USER…), so they must be built
+once and pushed to a registry the cluster can pull from; the environment then
+derives the reference deterministically as
+`<task_image_repo>:<task-name>-<12-hex hash of environment/>` (see
+[`tmax_envs/task_images.py`](../tmax_envs/task_images.py)) — no manifest to keep
+in sync, and any edit to a task's `environment/` yields a new tag.
+
+```bash
+# one-time, per dataset revision; needs a registry credential with WRITE scope
+./scripts/opensandbox/launch_build_task_images.sh openthoughts-tblite@2.0 \
+  --repo docker.io/<user>/tmax-harbor-tasks \
+  --docker-username <user> --docker-pat-secret <user>_DOCKER_PAT_RW
+
+# or locally (docker buildx, linux/amd64; slow under emulation on a Mac):
+uv run harbor datasets download openthoughts-tblite@2.0 -o /tmp/tasks --export
+uv run python scripts/opensandbox/build_task_images.py /tmp/tasks/openthoughts-tblite \
+  --repo docker.io/<user>/tmax-harbor-tasks --check        # what is missing?
+uv run python scripts/opensandbox/build_task_images.py /tmp/tasks/openthoughts-tblite \
+  --repo docker.io/<user>/tmax-harbor-tasks --push
+```
+
+A trial for a Dockerfile-only task whose image is missing fails at environment
+start with a message naming the expected reference.
+
+**How the backend maps harbor onto OpenSandbox** (relevant when debugging):
+
+- Sandbox created from the image with `cpu`/`memory` from `task.toml`, a hard
+  lifetime (`TMAX_OPENSANDBOX_LIFETIME_S`, default 2 h) so leaks self-expire,
+  and metadata tags (`tmax_app`=job name, `tmax_task`, `tmax_trial`) the janitor
+  keys on. `allow_internet = false` becomes a deny-all egress policy.
+- Exec goes through the control plane's server proxy (`use_server_proxy`,
+  default on — the deployment's direct ingress hostname resolves to the
+  training cluster, so direct execd access never becomes healthy). Commands are
+  wrapped in `timeout … bash -c`, so a timeout raises the same
+  `Command timed out after N seconds` as the docker backend. Harbor's
+  username-based `user` is resolved to uid/gid via `getent`; when harbor passes
+  no user the Dockerfile's last `USER` (if any) is used, and `WORKDIR` from
+  the Dockerfile or `task.toml` becomes the cwd, matching `docker compose exec`.
+- Uploads/downloads are tarballs over the filesystem API (binary-safe); the
+  `/logs/{agent,verifier,artifacts}` dirs are created and chmod 777 at start.
+- `run_eval_in_job.sh` runs
+  [`scripts/opensandbox/check_opensandbox.py`](../scripts/opensandbox/check_opensandbox.py)
+  before loading the model (fails fast on egress/key problems) and
+  [`scripts/opensandbox/cleanup_sandboxes.py`](../scripts/opensandbox/cleanup_sandboxes.py)
+  after harbor exits. A **killed** Beaker job never reaches the janitor: its
+  sandboxes live until the lifetime cap unless you run
+  `cleanup_sandboxes.py --app <job-name> --kill` yourself.
+
+**Knobs** (`--environment-kwarg k=v` on raw harbor, or env vars):
+`domain`/`TMAX_OPENSANDBOX_DOMAIN` (default `sandbox-standard.oe-rl-sandbox.apps.allenai.org`),
+`task_image_repo`/`TMAX_TASK_IMAGE_REPO`, `image_prefix`/`TMAX_OPENSANDBOX_IMAGE_PREFIX`
+(pull-through mirror for bare Docker Hub refs), `sandbox_lifetime_sec`,
+`ready_timeout_sec`, `start_concurrency` (creates in flight per harbor
+process, default 16), `use_server_proxy`, `enforce_network_policy`.
+`DOCKERHUB_USERNAME`/`DOCKER_PAT` are attached as pull credentials for direct
+Docker Hub references.
+
+**Local / laptop.** The same backend works from anywhere with the API key:
+
+```bash
+export OPEN_SANDBOX_API_KEY="$(beaker secret read pradeepd_OPEN_SANDBOX_API_KEY --workspace ai2/oe-agents)"
+uv run python scripts/opensandbox/check_opensandbox.py          # preflight
+uv run harbor run --dataset terminal-bench@2.0 --agent oracle -l 2 \
+  --environment-import-path tmax_envs.opensandbox:OpenSandboxEnvironment
+./beaker_configs/run_eval_local.sh Qwen/Qwen3.5-4B --harbor-env opensandbox \
+  --agent Vanillux2Agent:Vanillux2Agent --model-provider openai --tool-call-parser qwen3_xml
+```
+
+Unit tests: `uv run pytest tests/test_opensandbox_env.py`.
 
 ---
 
@@ -615,6 +737,6 @@ Highlights:
 | Path | Needs |
 |---|---|
 | Beaker | Beaker access + workspace; `HF_TOKEN` secret; `DOCKER_PAT` secret (recommended); weka mount; a **pushed** git SHA. |
-| Local | A Daytona account/key (for `--env daytona`) **or** a local Docker/podman daemon + the `docker compose` v2 CLI plugin (for `--env docker` / `run_eval_local.sh`); the relevant model `*_API_KEY` (or `OPENAI_API_KEY=dummy` for self-hosted vLLM). |
+| Local | A Daytona account/key (for `--env daytona`) **or** `OPEN_SANDBOX_API_KEY` (for the `opensandbox` backend, [§3b](#3b-path-a-beaker-with-opensandbox-sandboxes)) **or** a local Docker/podman daemon + the `docker compose` v2 CLI plugin (for `--env docker` / `run_eval_local.sh`); the relevant model `*_API_KEY` (or `OPENAI_API_KEY=dummy` for self-hosted vLLM). |
 
 All paths run through `uv` (`uv sync` / `uv run`), Python ≥ 3.12.
