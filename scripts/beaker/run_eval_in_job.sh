@@ -462,6 +462,23 @@ if [ "$HARBOR_ENV" = "opensandbox" ]; then
     }
 fi
 
+# --- 4c. Dataset path sanity check ------------------------------------------
+# A local dataset dir normally lives on weka. A stalled weka client hangs every
+# filesystem call in D state, which shows up as harbor silently doing nothing
+# forever at Job.create (its first weka access). Fail fast instead.
+if [ -n "${DATASET_PATH:-}" ]; then
+    log "checking dataset path ${DATASET_PATH}"
+    if ! N_TASK_DIRS="$(timeout 120 find "$DATASET_PATH" -mindepth 2 -maxdepth 2 -name task.toml 2>/dev/null | wc -l | tr -d ' ')"; then
+        log "FATAL: listing ${DATASET_PATH} timed out after 120s (stalled mount?). Aborting."
+        exit 1
+    fi
+    if [ "${N_TASK_DIRS:-0}" -eq 0 ]; then
+        log "FATAL: no <task>/task.toml found under ${DATASET_PATH}. Aborting."
+        exit 1
+    fi
+    log "dataset path OK: ${N_TASK_DIRS} task dirs"
+fi
+
 # --- 5. Start vLLM in the background ----------------------------------------
 : "${VLLM_VERSION:=0.19.1}"
 : "${VLLM_TOOL_CALL_PARSER:=hermes}"
@@ -686,6 +703,9 @@ else
     HARBOR_CMD+=( --agent "$AGENT_IMPORT_PATH" )
 fi
 log "running harbor: ${HARBOR_CMD[*]}"
+# Beaker captures a pipe, not a TTY, so Python block-buffers stdout and harbor's
+# per-trial log lines (sandbox creation, errors) would only appear at exit.
+export PYTHONUNBUFFERED=1
 
 # Background progress reporter — harbor's built-in progress bar uses ANSI
 # escapes that gantry logs flatten into noise, so we tail result.json
@@ -695,7 +715,12 @@ RESULT_JSON="jobs/$JOB_NAME/result.json"
 (
     while true; do
         sleep "$PROGRESS_INTERVAL"
-        [ -f "$RESULT_JSON" ] || continue
+        if [ ! -f "$RESULT_JSON" ]; then
+            # Heartbeat before the first trial finishes, so a hang is visible.
+            n_trials=$(find "jobs/$JOB_NAME" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+            echo "=== [$(date -u +%H:%M:%S)] progress: no completed trials yet (${n_trials} trial dirs started) ===" 
+            continue
+        fi
         python3 - "$RESULT_JSON" <<'PY' || true
 import json, sys, datetime
 try:

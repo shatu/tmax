@@ -255,7 +255,7 @@ cat <<EOF
   Reason parser: ${VLLM_REASONING_PARSER:-<none>}
   LM only:      ${VLLM_LANGUAGE_MODEL_ONLY}
   GPUs:         ${GPU_COUNT} (TP=${TP_SIZE}, DP=${DP_SIZE})
-  Dataset:      ${DATASET}
+  Dataset:      ${DATASET_PATH:-${DATASET}}${DATASET_PATH:+ (local path via --dataset-path)}
   Harbor env:   ${HARBOR_ENV}${TMAX_TASK_IMAGE_REPO:+  task_image_repo=${TMAX_TASK_IMAGE_REPO}}${TMAX_OPENSANDBOX_DOMAIN:+  domain=${TMAX_OPENSANDBOX_DOMAIN}}
   Agent:        ${AGENT_IMPORT_PATH}
   Agent kwargs: ${EXTRA_AGENT_KWARGS:-<none>}
