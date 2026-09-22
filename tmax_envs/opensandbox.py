@@ -167,13 +167,15 @@ class OpenSandboxEnvironment(BaseEnvironment):
     _EXEC_TIMEOUT_MARGIN_S = 30
     # Per-request HTTP timeout for control-plane calls (create/kill/list).
     _CONTROL_REQUEST_TIMEOUT_S = 300
-    # Exec streams must outlive the longest command harbor will run (verifier
-    # timeouts are ~15 min on Terminal-Bench; agent command timeouts are
-    # shorter). Streams are read incrementally, so this only matters for
-    # commands that stay silent the whole time.
+    # The exec HTTP stream must outlive the longest command harbor will run
+    # (verifier timeouts are ~15 min on Terminal-Bench).
     _EXEC_REQUEST_TIMEOUT_S = 4 * 3600
     _ADOPT_POLL_INTERVAL_S = 5.0
     _MAX_OUTPUT_CHARS = 1_000_000
+    # Where exec stdout/stderr are spooled inside the sandbox (see _exec_raw).
+    # /tmp is world-writable in every image we run, so non-root exec users
+    # can write there too.
+    _EXEC_OUTPUT_DIR = "/tmp"
 
     _start_semaphore: asyncio.Semaphore | None = None
     _start_semaphore_size: int | None = None
@@ -533,6 +535,16 @@ class OpenSandboxEnvironment(BaseEnvironment):
             # timeout_sec. GNU timeout returns 124, which we surface as the
             # same RuntimeError the docker backend raises.
             shell = ["timeout", "--signal=TERM", "--kill-after=10", str(int(timeout_sec))] + shell
+        # Output goes to files inside the sandbox and comes back over the
+        # filesystem API, NOT over execd's stdout stream. execd emits one SSE
+        # event per output line and the proxied stream drains at ~5k lines/s:
+        # a 150k-line `seq` took 36s to arrive, and a chatty compile or pip
+        # install blocks on the full pipe until GNU timeout kills it at
+        # timeout_sec. Redirected, the same output is a single ~0.1s read.
+        token = uuid.uuid4().hex
+        out_path = f"{self._EXEC_OUTPUT_DIR}/{token}.out"
+        err_path = f"{self._EXEC_OUTPUT_DIR}/{token}.err"
+        outer = f"{shlex.join(shell)} >{shlex.quote(out_path)} 2>{shlex.quote(err_path)}"
         opts = RunCommandOpts(
             working_directory=cwd,
             envs=env or None,
@@ -541,21 +553,42 @@ class OpenSandboxEnvironment(BaseEnvironment):
             timeout=timedelta(seconds=timeout_sec + self._EXEC_TIMEOUT_MARGIN_S) if timeout_sec else None,
         )
         try:
-            execution = await sandbox.commands.run(shlex.join(shell), opts=opts)
+            execution = await sandbox.commands.run(shlex.join(["bash", "-c", outer]), opts=opts)
         except SandboxException as e:
             if not await self._sandbox_is_alive():
                 raise RuntimeError(
                     f"Sandbox {sandbox.id} died during exec (expired, evicted, or crashed): {e}"
                 ) from e
             raise
-        stdout = "".join(m.text for m in execution.logs.stdout)[: self._MAX_OUTPUT_CHARS]
-        stderr = "".join(m.text for m in execution.logs.stderr)[: self._MAX_OUTPUT_CHARS]
+        stdout, stderr = await self._collect_output(sandbox, out_path, err_path)
+        # Anything execd itself streamed (e.g. a shell that failed before the
+        # redirect took effect) is still worth surfacing.
+        streamed_err = "".join(m.text for m in execution.logs.stderr)
+        if streamed_err and not stderr:
+            stderr = streamed_err[: self._MAX_OUTPUT_CHARS]
         return_code = execution.exit_code
         if return_code is None:
             if execution.error is not None:
                 stderr = f"{stderr}\n[{execution.error.name}] {execution.error.value}".strip()
             return_code = -1
         return ExecResult(stdout=stdout or None, stderr=stderr or None, return_code=return_code)
+
+    async def _collect_output(self, sandbox: "Sandbox", out_path: str, err_path: str) -> tuple[str, str]:
+        """Read and remove the redirected stdout/stderr files (capped at _MAX_OUTPUT_CHARS)."""
+        byte_range = f"bytes=0-{self._MAX_OUTPUT_CHARS - 1}"
+
+        async def read(path: str) -> str:
+            try:
+                data = await sandbox.files.read_bytes(path, range_header=byte_range)
+            except Exception as e:  # noqa: BLE001 - missing file if the redirect itself failed
+                self.logger.debug(f"could not read exec output {path}: {e}")
+                return ""
+            return data.decode("utf-8", errors="replace")
+
+        stdout, stderr = await asyncio.gather(read(out_path), read(err_path))
+        with contextlib.suppress(Exception):
+            await sandbox.files.delete_files([out_path, err_path])
+        return stdout, stderr
 
     async def _sandbox_is_alive(self) -> bool:
         if self._sandbox is None:

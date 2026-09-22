@@ -189,24 +189,46 @@ class _FakeExecution:
 
 
 class _FakeCommands:
-    def __init__(self):
+    """Records exec calls; stdout is delivered through _FakeFiles like the real backend."""
+
+    def __init__(self, files):
         self.calls: list[tuple[str, object]] = []
+        self._files = files
 
     async def run(self, command, *, opts=None, handlers=None):
         self.calls.append((command, opts))
+        # The backend redirects "... >/tmp/<tok>.out 2>/tmp/<tok>.err"; emulate the files.
+        out_path = command.split(">")[1].split()[0].strip("'\"") if ">" in command else None
         if "getent passwd" in command:
             name = command.split("getent passwd ")[1].split("'")[0].split('"')[0].split()[0]
-            return _FakeExecution(f"{name}:x:1001:1002::/home/{name}:/bin/bash\n", 0)
+            self._files.contents[out_path] = f"{name}:x:1001:1002::/home/{name}:/bin/bash\n".encode()
+            return _FakeExecution("", 0)
         if "exit 124" in command:
             return _FakeExecution("", 124)
-        return _FakeExecution("ok\n", 0)
+        self._files.contents[out_path] = b"ok\n"
+        return _FakeExecution("", 0)
+
+
+class _FakeFiles:
+    def __init__(self):
+        self.contents: dict[str, bytes] = {}
+        self.deleted: list[str] = []
+
+    async def read_bytes(self, path, *, range_header=None):
+        if path not in self.contents:
+            raise FileNotFoundError(path)
+        return self.contents[path]
+
+    async def delete_files(self, paths):
+        self.deleted.extend(paths)
 
 
 class _FakeSandbox:
     id = "sb-1"
 
     def __init__(self):
-        self.commands = _FakeCommands()
+        self.files = _FakeFiles()
+        self.commands = _FakeCommands(self.files)
 
 
 def test_exec_resolves_named_user_and_applies_workdir_and_timeout(tmp_path):
@@ -219,7 +241,11 @@ def test_exec_resolves_named_user_and_applies_workdir_and_timeout(tmp_path):
     # first call resolves alice -> uid/gid/home as root, second runs the command
     assert "getent passwd alice" in calls[0][0] and calls[0][1].uid is None
     cmd, opts = calls[1]
-    assert cmd.startswith("timeout --signal=TERM --kill-after=10 20 bash -c ")
+    # outer `bash -c` wraps the timeout'd command and redirects both streams to files
+    assert cmd.startswith("bash -c ")
+    assert "timeout --signal=TERM --kill-after=10 20 bash -c " in cmd
+    assert ">/tmp/" in cmd and ".out 2>/tmp/" in cmd
+    assert len(env._sandbox.files.deleted) == 4  # both files for both execs so far
     assert opts.uid == 1001 and opts.gid == 1002
     assert opts.working_directory == "/app"
     assert opts.envs == {"HOME": "/home/alice", "USER": "alice", "LOGNAME": "alice", "A": "1"}
