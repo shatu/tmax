@@ -310,6 +310,7 @@ source is patched** for it.
 | Images | pulled/built per trial on the node | pulled by the cluster; **never built** |
 | Agents | any | **host-side only**: `Vanillux2Agent`, `terminus-2`, `oracle`. In-sandbox agents (`mini-swe-agent`, `swe-agent`, `openhands`) would call vLLM from a GKE pod and cannot reach the Beaker node. |
 | Per-command latency | ms | ~1 s (network RPC) |
+| Compute per sandbox | unthrottled: `containers.conf` disables cgroups, so `cpus`/`memory` in task.toml are **not enforced** and a task can use the GPU node's 188 cores | sandbox-standard nodes are small 4-vCPU (2 physical core) machines shared by several pods; probes show ~1–2 effective cores per sandbox regardless of the `cpu` request (a 4-vCPU request never schedules). Compute-heavy commands run slower, so Vanillux2's 120 s command timeout trips more often: ~33% vs ~20% trial errors at the same point of a Qwen3.5-9B TB 2.1 run. Use `pass1_adj` when comparing to podman numbers, or accept the gap. |
 | Marginal cost | ~$0 | ~$0.07 per sandbox-hour (TB2 k=5 ≈ $15; TBLite k=5 ≈ $20) |
 
 **Images.** OpenSandbox can only pull. Terminal-Bench 2.0/2.1 tasks declare
