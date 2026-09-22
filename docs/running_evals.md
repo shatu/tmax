@@ -371,7 +371,8 @@ start with a message naming the expected reference.
 **Knobs** (`--environment-kwarg k=v` on raw harbor, or env vars):
 `domain`/`TMAX_OPENSANDBOX_DOMAIN` (default `sandbox-standard.oe-rl-sandbox.apps.allenai.org`),
 `task_image_repo`/`TMAX_TASK_IMAGE_REPO`, `image_prefix`/`TMAX_OPENSANDBOX_IMAGE_PREFIX`
-(pull-through mirror for bare Docker Hub refs), `sandbox_lifetime_sec`,
+(pull-through mirror for bare Docker Hub refs; `launch_eval.sh` defaults it to
+the in-region Artifact Registry mirror `us-docker.pkg.dev/ai2-skiff2-oe-rl-sandbox/docker-hub-remote-repository`), `sandbox_lifetime_sec`,
 `ready_timeout_sec`, `start_concurrency` (creates in flight per harbor
 process, default 16), `use_server_proxy`, `enforce_network_policy`.
 `DOCKERHUB_USERNAME`/`DOCKER_PAT` are attached as pull credentials for direct

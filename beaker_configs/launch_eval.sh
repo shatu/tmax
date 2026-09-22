@@ -51,7 +51,12 @@ HARBOR_ENV="docker"
 OPEN_SANDBOX_API_KEY_SECRET="${OPEN_SANDBOX_API_KEY_SECRET:-pradeepd_OPEN_SANDBOX_API_KEY}"
 TMAX_TASK_IMAGE_REPO="${TMAX_TASK_IMAGE_REPO:-}"
 TMAX_OPENSANDBOX_DOMAIN="${TMAX_OPENSANDBOX_DOMAIN:-}"
-TMAX_OPENSANDBOX_IMAGE_PREFIX="${TMAX_OPENSANDBOX_IMAGE_PREFIX:-}"
+# Pull-through mirror for task images on the sandbox cluster (Artifact Registry
+# remote repo caching Docker Hub, in-region with the cluster). Verified working
+# from sandbox-standard; avoids Docker Hub rate limits and slow cold pulls (a
+# direct pull of alexgshaw/caffe-cifar-10 blew harbor's 600s start timeout).
+# Set to "" to pull straight from Docker Hub.
+TMAX_OPENSANDBOX_IMAGE_PREFIX="${TMAX_OPENSANDBOX_IMAGE_PREFIX-us-docker.pkg.dev/ai2-skiff2-oe-rl-sandbox/docker-hub-remote-repository}"
 TMAX_OPENSANDBOX_START_CONCURRENCY="${TMAX_OPENSANDBOX_START_CONCURRENCY:-}"
 AGENT_IMPORT_PATH="Vanillux2Agent:Vanillux2Agent"
 N_CONCURRENT=8
@@ -123,6 +128,10 @@ Options:
                          by scripts/opensandbox/build_task_images.py. Not needed
                          for terminal-bench (tasks declare docker_image).
   --opensandbox-domain H (opensandbox) service host (default: sandbox-standard)
+  --opensandbox-image-prefix P
+                         (opensandbox) registry mirror prefix for task images
+                         (default: the AI2 Artifact Registry Docker Hub mirror;
+                         pass "" to pull directly from Docker Hub)
   --opensandbox-api-key-secret S
                          (opensandbox) Beaker secret holding OPEN_SANDBOX_API_KEY
                          (default: ${OPEN_SANDBOX_API_KEY_SECRET})
@@ -195,6 +204,7 @@ while [ $# -gt 0 ]; do
         --harbor-env)      HARBOR_ENV="$2"; shift 2 ;;
         --task-image-repo) TMAX_TASK_IMAGE_REPO="$2"; shift 2 ;;
         --opensandbox-domain) TMAX_OPENSANDBOX_DOMAIN="$2"; shift 2 ;;
+        --opensandbox-image-prefix) TMAX_OPENSANDBOX_IMAGE_PREFIX="$2"; shift 2 ;;
         --opensandbox-api-key-secret) OPEN_SANDBOX_API_KEY_SECRET="$2"; shift 2 ;;
         --agent)           AGENT_IMPORT_PATH="$2"; shift 2 ;;
         --n-concurrent)    N_CONCURRENT="$2"; shift 2 ;;
