@@ -477,6 +477,20 @@ if [ -n "${DATASET_PATH:-}" ]; then
         exit 1
     fi
     log "dataset path OK: ${N_TASK_DIRS} task dirs"
+    # Harbor hashes every task directory once PER TRIAL when it builds the job
+    # lock (445 walks of ~950 small files for TB 2.1 at k=5). On weka that is
+    # tens of minutes to hours of metadata round trips before the first trial
+    # starts; on local disk it is ~1s. Work from a local copy.
+    LOCAL_DATASET_DIR="/tmp/tmax-dataset/$(basename "$DATASET_PATH")"
+    log "copying dataset to local disk: ${LOCAL_DATASET_DIR}"
+    rm -rf "$LOCAL_DATASET_DIR" && mkdir -p "$(dirname "$LOCAL_DATASET_DIR")"
+    if timeout 900 cp -r "$DATASET_PATH" "$LOCAL_DATASET_DIR"; then
+        DATASET_PATH="$LOCAL_DATASET_DIR"
+        log "dataset copied ($(du -sh "$LOCAL_DATASET_DIR" | cut -f1))"
+    else
+        log "WARNING: local copy of the dataset failed; harbor will read it from ${DATASET_PATH} directly (slow start)"
+        rm -rf "$LOCAL_DATASET_DIR"
+    fi
 fi
 
 # --- 5. Start vLLM in the background ----------------------------------------
