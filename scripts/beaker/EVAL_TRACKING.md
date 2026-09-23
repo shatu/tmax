@@ -69,3 +69,36 @@ From each experiment's scoring-job log: `pass@1`, `pass@5`, the exception-count 
 - The old per-benchmark sheets + builders (`track_evals.py`, `build_tblite_sheet.py`,
   `build_combined.py`, `dppo9b_4n64k_tb21_evals.csv`, `sft_evals.csv`, `tblite_evals.csv`) were
   **retired** — this sheet + tool supersede them. Don't recreate them.
+
+
+## Backend reliability / reproducibility study (2026-09-22)
+
+Question: does the OpenSandbox backend (`--harbor-env opensandbox`) give more reliable evals than
+in-job podman? Protocol: same model, dataset, agent and flags, two runs per backend, launched the same
+night on ai2/jupiter; compare error rate by cause, `pass1_adj`, and run-to-run per-task agreement with
+`scripts/analysis/compare_backend_runs.py` (takes job dirs or experiment IDs and fetches results).
+
+Model `hamishivi/Qwen3.5-9B`, TB 2.1 (`--dataset-path .../terminal-bench-2-1`), Vanillux2Agent,
+`openai` provider, `qwen3_xml`, 64k context, k=5, n-concurrent 8, 1 GPU.
+
+| backend | run | experiment | notes |
+|---|---|---|---|
+| opensandbox | 1 | https://beaker.org/ex/01M35MBSCBGB0P2EZ37XNPFBD7 | commit cfe46a65 (before the exec-output-dir hardening and mirror default) |
+| opensandbox | 2 | https://beaker.org/ex/01M35V7TMRB9V7FNKRZEPB6CX9 | commit 46595e3a |
+| podman | 1 | https://beaker.org/ex/01M35VAB8NA18B2P8F22RKRNQJ | `--keep-task-images`, no Docker Hub mirror (registry-mirror workload was down) |
+| podman | 2 | https://beaker.org/ex/01M35VAF0ZZ53531S1QDW8DQQ0 | same |
+
+```bash
+uv run python scripts/analysis/compare_backend_runs.py \
+  --run opensandbox=01M35MBSCBGB0P2EZ37XNPFBD7 --run opensandbox=01M35V7TMRB9V7FNKRZEPB6CX9 \
+  --run podman=01M35VAB8NA18B2P8F22RKRNQJ --run podman=01M35VAF0ZZ53531S1QDW8DQQ0 \
+  --json backend_repro.json
+```
+
+Reading the output: `infra` errors (env start, sandbox died, verifier, connection) are the backend's
+fault; `timeout` (the agent's 120 s command limit) is mostly the model's, **but on OpenSandbox part of
+it is infra-induced** — sandbox nodes give ~1–2 effective cores vs the unthrottled GPU node under
+podman, so compute-heavy commands trip the limit more often (see docs/running_evals.md §3b). Compare
+`pass1_adj` and the per-task pass-count agreement across the two runs of each backend; lower spread
+and a higher error-task Jaccard (errors repeating on the same tasks rather than random ones) mean a
+more reliable backend.
