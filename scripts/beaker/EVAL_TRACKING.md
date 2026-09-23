@@ -95,6 +95,33 @@ uv run python scripts/analysis/compare_backend_runs.py \
   --json backend_repro.json
 ```
 
+### Results (all four runs complete, 2026-09-23; full JSON in `backend_repro_2026-09-23.json`)
+
+| backend | run | errors | infra | cmd timeout | pass@1 | pass@1 adj | pass@5 | env start med/p90 | job |
+|---|---|---|---|---|---|---|---|---|---|
+| opensandbox | 1 | 27.4% | 4.7% | 22.7% | 18.7% | 19.6% | 28.1% | 12 s / 45 s | 6.4 h |
+| opensandbox | 2 | 29.4% | 5.4% | 23.8% | 16.2% | 17.1% | 25.8% | 10 s / 41 s | 6.2 h |
+| podman | 1 | 15.1% | 0.4% | 14.6% | 18.2% | 18.3% | 29.2% | 2 s / 5 s | 6.5 h |
+| podman | 2 | 18.0% | 0.4% | 17.5% | 20.0% | 20.1% | 34.8% | 2 s / 8 s | 6.0 h |
+| podman (July, Qwen/Qwen3.5-9B) | — | 16.2% | 0.4% | 15.7% | 19.1% | 19.2% | 36.0% | 1 s / 5 s | 6.6 h |
+
+Run-to-run (2 runs each): pass@1 sd 1.2 pts (opensandbox) vs 0.9 pts (podman); tasks with identical
+pass count out of 5: 78.7% vs 76.4%; solved-set Jaccard 0.71 vs 0.73; error-task Jaccard **0.81 vs
+0.45** — OpenSandbox's errors repeat on the same tasks (systematic: compute-heavy tasks + three images
+that never pull within 600 s), podman's land on different tasks (flaky timeouts).
+
+OpenSandbox infra errors (~5%/run): 15 env-start timeouts per run on `caffe-cifar-10`,
+`mcmc-sampling-stan`, `rstan-to-pystan` images (pull > 600 s, also via the mirror), 4–7 proxy/connection
+drops, 1 sandbox death, 1 verifier download. Podman: 2 verifier "no reward file" per run, nothing else.
+
+**Verdict:** for this workload OpenSandbox is *not* more reliable than in-job podman: ~5% infra errors
+vs 0.4%, and ~1.6× the command-timeout rate because sandbox nodes give ~1–2 effective cores where
+podman containers were unthrottled — which depresses pass@5 by 6–9 pts while pass@1 stays within
+noise. Repeatability of the score itself is comparable. What OpenSandbox does buy: no nested-container
+privileges or podman patch stack, clean teardown (0 leaked sandboxes across 4 jobs), and running on
+clusters that block nested containers. Closing the gap is a deployment change (bigger nodes / enforced
+CPU limits, longer image-pull budget), not a client fix.
+
 Reading the output: `infra` errors (env start, sandbox died, verifier, connection) are the backend's
 fault; `timeout` (the agent's 120 s command limit) is mostly the model's, **but on OpenSandbox part of
 it is infra-induced** — sandbox nodes give ~1–2 effective cores vs the unthrottled GPU node under
