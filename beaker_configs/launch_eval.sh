@@ -87,6 +87,7 @@ HARBOR_VERIFIER_TIMEOUT_MULTIPLIER=""
 HARBOR_AGENT_SETUP_TIMEOUT_MULTIPLIER=""
 HARBOR_ENVIRONMENT_BUILD_TIMEOUT_MULTIPLIER=""
 HARBOR_AGENT_TIMEOUT_SEC=""
+HARBOR_KEEP_TASK_IMAGES="${HARBOR_KEEP_TASK_IMAGES:-0}"
 
 usage() {
     cat <<EOF
@@ -113,6 +114,10 @@ Options:
   --mirror-url HOST:PORT docker.io pull-through mirror(s) for podman task-image
                          pulls (comma-sep; e.g. jupiter-cs-aus-137.reviz.ai2.in:5000).
                          Avoids Docker Hub rate limits under co-located jobs.
+  --keep-task-images     (docker/podman) keep task images on the node between
+                         trials instead of harbor's per-trial `--rmi all`; sane
+                         for small image sets (terminal-bench: 89 images) and
+                         essential when no mirror is up. Not for SWE-bench.
   --model-provider PROV  litellm provider prefix for --model (default: hosted_vllm
                          for import-path agents, openai otherwise). Use openai for
                          Vanillux2Agent.
@@ -196,6 +201,7 @@ while [ $# -gt 0 ]; do
         --tool-call-parser) VLLM_TOOL_CALL_PARSER="$2"; shift 2 ;;
         --reasoning-parser) VLLM_REASONING_PARSER="$2"; shift 2 ;;
         --mirror-url)      MIRROR_URL="$2"; shift 2 ;;
+        --keep-task-images) HARBOR_KEEP_TASK_IMAGES=1; shift ;;
         --model-provider)  MODEL_PROVIDER="$2"; shift 2 ;;
         --language-model-only|--language_model_only) VLLM_LANGUAGE_MODEL_ONLY=1; shift ;;
         --max-model-len)   MAX_MODEL_LEN="$2"; shift 2 ;;
@@ -266,7 +272,7 @@ cat <<EOF
   LM only:      ${VLLM_LANGUAGE_MODEL_ONLY}
   GPUs:         ${GPU_COUNT} (TP=${TP_SIZE}, DP=${DP_SIZE})
   Dataset:      ${DATASET_PATH:-${DATASET}}${DATASET_PATH:+ (local path via --dataset-path)}
-  Harbor env:   ${HARBOR_ENV}${TMAX_TASK_IMAGE_REPO:+  task_image_repo=${TMAX_TASK_IMAGE_REPO}}${TMAX_OPENSANDBOX_DOMAIN:+  domain=${TMAX_OPENSANDBOX_DOMAIN}}
+  Harbor env:   ${HARBOR_ENV}${HARBOR_KEEP_TASK_IMAGES:+  keep_task_images=${HARBOR_KEEP_TASK_IMAGES}}${TMAX_TASK_IMAGE_REPO:+  task_image_repo=${TMAX_TASK_IMAGE_REPO}}${TMAX_OPENSANDBOX_DOMAIN:+  domain=${TMAX_OPENSANDBOX_DOMAIN}}
   Agent:        ${AGENT_IMPORT_PATH}
   Agent kwargs: ${EXTRA_AGENT_KWARGS:-<none>}
   Agent envs:   ${EXTRA_AGENT_ENVS:-<none>}
@@ -311,6 +317,7 @@ GANTRY_CMD=(
     --env "VLLM_TOOL_CALL_PARSER=${VLLM_TOOL_CALL_PARSER}"
     --env "VLLM_REASONING_PARSER=${VLLM_REASONING_PARSER}"
     --env "MIRROR_URL=${MIRROR_URL}"
+    --env "HARBOR_KEEP_TASK_IMAGES=${HARBOR_KEEP_TASK_IMAGES}"
     --env "MODEL_PROVIDER=${MODEL_PROVIDER}"
     --env "VLLM_LANGUAGE_MODEL_ONLY=${VLLM_LANGUAGE_MODEL_ONLY}"
     --env "VLLM_PORT=${VLLM_PORT}"
