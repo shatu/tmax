@@ -30,6 +30,13 @@ Configuration (constructor kwargs via ``--environment-kwarg``; env var fallback)
     registry_username / registry_password
                         DOCKERHUB_USERNAME / DOCKER_PAT  registry auth for
                         direct (non-mirrored) pulls
+    max_cpus            TMAX_OPENSANDBOX_MAX_CPUS   cap on the pod CPU request
+                        (default 2). sandbox-standard's node pool is 4-vCPU
+                        machines, so a task.toml asking for cpus = 4 (TB 2.1:
+                        caffe-cifar-10, mcmc-sampling-stan, rstan-to-pystan)
+                        never schedules and the control plane fails the create
+                        after 180 s. CPU requests are not enforced as limits
+                        there anyway, so capping costs nothing.
     use_server_proxy    TMAX_OPENSANDBOX_USE_SERVER_PROXY  route exec/file
                         traffic through the control plane instead of the
                         ingress gateway (default true: the sandbox-standard
@@ -222,6 +229,7 @@ class OpenSandboxEnvironment(BaseEnvironment):
         registry_password: str | None = None,
         enforce_network_policy=None,
         use_server_proxy=None,
+        max_cpus=None,
         **kwargs,
     ):
         if not _HAS_OPENSANDBOX:
@@ -258,6 +266,7 @@ class OpenSandboxEnvironment(BaseEnvironment):
         self._use_server_proxy = _as_bool(
             use_server_proxy, os.getenv("TMAX_OPENSANDBOX_USE_SERVER_PROXY", "1") == "1"
         )
+        self._max_cpus = _as_int(max_cpus, _env_int("TMAX_OPENSANDBOX_MAX_CPUS", 2))
 
         self._dockerfile: DockerfileFacts = (
             parse_dockerfile(self._dockerfile_path) if self._dockerfile_path.is_file() else DockerfileFacts()
@@ -329,8 +338,15 @@ class OpenSandboxEnvironment(BaseEnvironment):
         )
 
     def _resource(self) -> dict[str, str]:
+        cpus = int(self.task_env_config.cpus)
+        if self._max_cpus and cpus > self._max_cpus:
+            self.logger.info(
+                f"Capping task cpus={cpus} to {self._max_cpus} (pods requesting more never schedule "
+                "on this cluster; set max_cpus=0 to disable)"
+            )
+            cpus = self._max_cpus
         return {
-            "cpu": str(self.task_env_config.cpus),
+            "cpu": str(cpus),
             "memory": f"{int(self.task_env_config.memory_mb)}Mi",
         }
 

@@ -115,6 +115,10 @@ def test_prebuilt_image_wins_and_resources_map(tmp_path):
     env = _make_env(tmp_path, "FROM ubuntu:24.04\nWORKDIR /app\nUSER alice\n", docker_image="alexgshaw/x:1")
     assert env.resolve_image() == "alexgshaw/x:1"
     assert env._resource() == {"cpu": "2", "memory": "4096Mi"}
+    env.task_env_config.cpus = 4
+    assert env._resource()["cpu"] == "2"  # capped: 4-vCPU requests never schedule on sandbox-standard
+    env._max_cpus = 0
+    assert env._resource()["cpu"] == "4"
     assert env._workdir == "/app"
     assert env._image_user == "alice"
     assert env.type() == "opensandbox"
