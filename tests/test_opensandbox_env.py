@@ -202,18 +202,18 @@ class _FakeCommands:
     async def run(self, command, *, opts=None, handlers=None):
         self.calls.append((command, opts))
         # The backend redirects "... >/tmp/<tok>.out 2>/tmp/<tok>.err"; emulate the files.
-        # the redirect is the first ">" that is not part of "2>/dev/null"
-        out_path = None
-        for part in command.replace("2>/dev/null", "").split(">")[1:2]:
-            out_path = part.split()[0].strip("'\"")
+        # the launcher redirects "... >/tmp/.tmax-exec/<tok>.out 2>...err; echo $? >...ec"
+        import re
+        m = re.search(r">(/tmp/\.tmax-exec/[0-9a-f]+)\.out", command)
+        out_path = m.group(1) + ".out" if m else None
         if "getent passwd" in command:
             name = command.split("getent passwd ")[1].split("'")[0].split('"')[0].split()[0]
             self._files.contents[out_path] = f"{name}:x:1001:1002::/home/{name}:/bin/bash\n".encode()
-            return _FakeExecution("", 0)
+            return _FakeExecution("EC:0\n", 0)
         if "exit 124" in command:
-            return _FakeExecution("", 124)
+            return _FakeExecution("EC:124\n", 0)
         self._files.contents[out_path] = b"ok\n"
-        return _FakeExecution("", 0)
+        return _FakeExecution("EC:0\n", 0)
 
 
 class _FakeFiles:
@@ -252,12 +252,14 @@ def test_exec_resolves_named_user_and_applies_workdir_and_timeout(tmp_path):
     assert cmd.startswith("bash -c ")
     assert "timeout --signal=TERM --kill-after=10 20 bash -c " in cmd
     assert ">/tmp/.tmax-exec/" in cmd and ".out 2>/tmp/.tmax-exec/" in cmd
+    assert "setsid bash -c" in cmd and "echo EC:" in cmd and "echo PID:" in cmd
     assert cmd.index("mkdir -p /tmp/.tmax-exec") < cmd.index("timeout ")
-    assert len(env._sandbox.files.deleted) == 4  # both files for both execs so far
+    assert len(env._sandbox.files.deleted) == 6  # out/err/ec for both execs so far
     assert opts.uid == 1001 and opts.gid == 1002
     assert opts.working_directory == "/app"
     assert opts.envs == {"HOME": "/home/alice", "USER": "alice", "LOGNAME": "alice", "A": "1"}
-    assert opts.timeout.total_seconds() == 20 + env._EXEC_TIMEOUT_MARGIN_S
+    # the launcher's stream is bounded by the foreground wait, not the command timeout
+    assert opts.timeout.total_seconds() == env._EXEC_FOREGROUND_WAIT_S + env._EXEC_TIMEOUT_MARGIN_S
 
     # cached: no second id lookup, explicit root user bypasses the image USER
     asyncio.run(env.exec("true", user="root"))

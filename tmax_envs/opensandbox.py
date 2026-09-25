@@ -178,6 +178,13 @@ class OpenSandboxEnvironment(BaseEnvironment):
     # Extra time the server-side command kill and the SSE read get beyond the
     # in-sandbox `timeout` wrapper, so exit 124 (our timeout) always fires first.
     _EXEC_TIMEOUT_MARGIN_S = 30
+    # The server proxy severs any exec stream at 300 s (measured), so the
+    # launching exec waits at most this long for the detached command before
+    # handing over to polling.
+    _EXEC_FOREGROUND_WAIT_S = 200
+    _EXEC_POLL_INTERVAL_S = 5.0
+    # Polling budget for exec calls harbor makes with no timeout at all.
+    _EXEC_NO_TIMEOUT_POLL_S = 6 * 3600
     # Per-request HTTP timeout for control-plane calls (create/kill/list).
     _CONTROL_REQUEST_TIMEOUT_S = 300
     # The exec HTTP stream must outlive the longest command harbor will run
@@ -428,6 +435,11 @@ class OpenSandboxEnvironment(BaseEnvironment):
         """
         paths = self.env_paths
         dirs = [paths.agent_dir, paths.verifier_dir, paths.artifacts_dir, paths.tests_dir, paths.solution_dir]
+        if self._workdir:
+            # execd rejects a working_directory that does not exist (HTTP 400),
+            # unlike `docker compose exec` which creates it. Docker images
+            # normally contain their WORKDIR, but a task.toml `workdir` may not.
+            dirs.append(PurePosixPath(self._workdir))
         quoted = " ".join(shlex.quote(str(p)) for p in dirs)
         log_dirs = " ".join(
             shlex.quote(str(p)) for p in (paths.agent_dir, paths.verifier_dir, paths.artifacts_dir)
@@ -552,6 +564,23 @@ class OpenSandboxEnvironment(BaseEnvironment):
         cwd: str | None,
         env: dict[str, str] | None = None,
     ) -> ExecResult:
+        """Run *command* in the sandbox and return its exit code and output.
+
+        Two facts about the proxied execd stream shape this:
+
+        * it emits one SSE event per output LINE and drains at ~5k lines/s, so
+          a chatty compile or pip install would block on the pipe; and
+        * the server proxy cuts every exec stream at 300 s regardless of
+          activity (verified with silent and heartbeat commands alike), which
+          killed every verifier longer than five minutes.
+
+        So the command runs DETACHED (setsid) with stdout/stderr redirected to
+        files and its exit code written to a third file; the launching exec
+        waits up to ``_EXEC_FOREGROUND_WAIT_S`` for it (one round trip for the
+        common fast case) and otherwise returns, after which we poll for the
+        exit-code file with short execs. Output comes back over the filesystem
+        API (~0.1 s, size-independent, capped at ``_MAX_OUTPUT_CHARS``).
+        """
         sandbox = self._require_sandbox()
         shell = ["bash", "-c", command]
         if timeout_sec:
@@ -559,49 +588,92 @@ class OpenSandboxEnvironment(BaseEnvironment):
             # timeout_sec. GNU timeout returns 124, which we surface as the
             # same RuntimeError the docker backend raises.
             shell = ["timeout", "--signal=TERM", "--kill-after=10", str(int(timeout_sec))] + shell
-        # Output goes to files inside the sandbox and comes back over the
-        # filesystem API, NOT over execd's stdout stream. execd emits one SSE
-        # event per output line and the proxied stream drains at ~5k lines/s:
-        # a 150k-line `seq` took 36s to arrive, and a chatty compile or pip
-        # install blocks on the full pipe until GNU timeout kills it at
-        # timeout_sec. Redirected, the same output is a single ~0.1s read.
         token = uuid.uuid4().hex
-        out_path = f"{self._EXEC_OUTPUT_DIR}/{token}.out"
-        err_path = f"{self._EXEC_OUTPUT_DIR}/{token}.err"
-        outer = (
-            f"mkdir -p {shlex.quote(self._EXEC_OUTPUT_DIR)} 2>/dev/null; "
-            f"chmod 1777 {shlex.quote(self._EXEC_OUTPUT_DIR)} 2>/dev/null; "
-            f"{shlex.join(shell)} >{shlex.quote(out_path)} 2>{shlex.quote(err_path)}"
+        d = self._EXEC_OUTPUT_DIR
+        out_path, err_path, ec_path = f"{d}/{token}.out", f"{d}/{token}.err", f"{d}/{token}.ec"
+        q = shlex.quote
+        inner = f"{shlex.join(shell)} >{q(out_path)} 2>{q(err_path)}; echo $? >{q(ec_path)}"
+        launcher = (
+            f"mkdir -p {q(d)} 2>/dev/null; chmod 1777 {q(d)} 2>/dev/null; "
+            f"setsid bash -c {q(inner)} >/dev/null 2>&1 </dev/null & "
+            "pid=$!; end=$((SECONDS+" + str(self._EXEC_FOREGROUND_WAIT_S) + ")); "
+            f"while [ ! -f {q(ec_path)} ] && [ $SECONDS -lt $end ]; do sleep 0.2; done; "
+            f"if [ -f {q(ec_path)} ]; then echo EC:$(cat {q(ec_path)}); else echo PID:$pid; fi"
         )
         opts = RunCommandOpts(
             working_directory=cwd,
             envs=env or None,
             uid=uid,
             gid=gid if uid is not None else None,
-            timeout=timedelta(seconds=timeout_sec + self._EXEC_TIMEOUT_MARGIN_S) if timeout_sec else None,
+            timeout=timedelta(seconds=self._EXEC_FOREGROUND_WAIT_S + self._EXEC_TIMEOUT_MARGIN_S),
         )
-        try:
-            execution = await sandbox.commands.run(shlex.join(["bash", "-c", outer]), opts=opts)
-        except SandboxException as e:
-            if not await self._sandbox_is_alive():
-                raise RuntimeError(
-                    f"Sandbox {sandbox.id} died during exec (expired, evicted, or crashed): {e}"
-                ) from e
-            raise
-        stdout, stderr = await self._collect_output(sandbox, out_path, err_path)
-        # Anything execd itself streamed (e.g. a shell that failed before the
-        # redirect took effect) is still worth surfacing.
+        execution = await self._run_stream(sandbox, shlex.join(["bash", "-c", launcher]), opts)
+        streamed_out = "".join(m.text for m in execution.logs.stdout).strip()
         streamed_err = "".join(m.text for m in execution.logs.stderr)
+        return_code: int | None = None
+        if streamed_out.startswith("EC:"):
+            return_code = int(streamed_out.split("EC:", 1)[1].split()[0])
+        elif streamed_out.startswith("PID:"):
+            pid = int(streamed_out.split("PID:", 1)[1].split()[0])
+            return_code = await self._wait_detached(sandbox, ec_path, pid, timeout_sec)
+        elif execution.exit_code not in (0, None):
+            # The launcher itself failed (e.g. no writable output dir).
+            return ExecResult(
+                stdout=None,
+                stderr=(streamed_err or streamed_out or "exec launcher failed")[: self._MAX_OUTPUT_CHARS],
+                return_code=execution.exit_code,
+            )
+        stdout, stderr = await self._collect_output(sandbox, out_path, err_path, ec_path)
         if streamed_err and not stderr:
             stderr = streamed_err[: self._MAX_OUTPUT_CHARS]
-        return_code = execution.exit_code
         if return_code is None:
             if execution.error is not None:
                 stderr = f"{stderr}\n[{execution.error.name}] {execution.error.value}".strip()
             return_code = -1
         return ExecResult(stdout=stdout or None, stderr=stderr or None, return_code=return_code)
 
-    async def _collect_output(self, sandbox: "Sandbox", out_path: str, err_path: str) -> tuple[str, str]:
+    async def _run_stream(self, sandbox: "Sandbox", command: str, opts: "RunCommandOpts"):
+        try:
+            return await sandbox.commands.run(command, opts=opts)
+        except SandboxException as e:
+            if not await self._sandbox_is_alive():
+                raise RuntimeError(
+                    f"Sandbox {sandbox.id} died during exec (expired, evicted, or crashed): {e}"
+                ) from e
+            raise
+
+    async def _wait_detached(self, sandbox: "Sandbox", ec_path: str, pid: int, timeout_sec: int | None) -> int:
+        """Poll for the detached command's exit-code file.
+
+        GNU timeout inside the command enforces timeout_sec; this only bounds
+        how long we keep polling (timeout + kill grace + margin) before giving
+        up and killing the process group ourselves.
+        """
+        q = shlex.quote
+        budget = (timeout_sec or self._EXEC_NO_TIMEOUT_POLL_S) + 10 + self._EXEC_TIMEOUT_MARGIN_S
+        deadline = time.monotonic() + budget
+        probe = f"if [ -f {q(ec_path)} ]; then echo EC:$(cat {q(ec_path)}); else echo RUN; fi"
+        opts = RunCommandOpts(timeout=timedelta(seconds=60))
+        interval = self._EXEC_POLL_INTERVAL_S
+        while True:
+            execution = await self._run_stream(sandbox, shlex.join(["bash", "-c", probe]), opts)
+            out = "".join(m.text for m in execution.logs.stdout).strip()
+            if out.startswith("EC:"):
+                return int(out.split("EC:", 1)[1].split()[0])
+            if time.monotonic() > deadline:
+                self.logger.warning(
+                    f"Detached command (pid {pid}) did not finish within {budget:.0f}s; killing its session"
+                )
+                with contextlib.suppress(Exception):
+                    await self._run_stream(
+                        sandbox, shlex.join(["bash", "-c", f"kill -TERM -- -{pid} 2>/dev/null; sleep 1; kill -KILL -- -{pid} 2>/dev/null; true"]), opts
+                    )
+                return 124
+            await asyncio.sleep(interval)
+
+    async def _collect_output(
+        self, sandbox: "Sandbox", out_path: str, err_path: str, ec_path: str | None = None
+    ) -> tuple[str, str]:
         """Read and remove the redirected stdout/stderr files (capped at _MAX_OUTPUT_CHARS)."""
         byte_range = f"bytes=0-{self._MAX_OUTPUT_CHARS - 1}"
 
@@ -615,7 +687,7 @@ class OpenSandboxEnvironment(BaseEnvironment):
 
         stdout, stderr = await asyncio.gather(read(out_path), read(err_path))
         with contextlib.suppress(Exception):
-            await sandbox.files.delete_files([out_path, err_path])
+            await sandbox.files.delete_files([p for p in (out_path, err_path, ec_path) if p])
         return stdout, stderr
 
     async def _sandbox_is_alive(self) -> bool:

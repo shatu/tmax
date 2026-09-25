@@ -349,13 +349,17 @@ start with a message naming the expected reference.
   default on — the deployment's direct ingress hostname resolves to the
   training cluster, so direct execd access never becomes healthy). Commands are
   wrapped in `timeout … bash -c`, so a timeout raises the same
-  `Command timed out after N seconds` as the docker backend. **stdout/stderr
-  are redirected to files in the sandbox and read back over the filesystem
-  API**, not streamed: execd emits one SSE event per output line and the
-  proxied stream drains at ~5k lines/s, so a chatty compile or `pip install`
-  would block on the pipe and be killed at the 120 s agent command timeout
-  (the first TB 2.1 run lost ~40% of trials this way). Output is capped at
-  1 MB per stream. Harbor's
+  `Command timed out after N seconds` as the docker backend. **Commands run
+  detached with stdout/stderr redirected to files** that are read back over
+  the filesystem API; the launching exec waits up to 200 s and then polls for
+  the exit-code file every 5 s. Two proxy properties force this: execd emits
+  one SSE event per output line and the proxied stream drains at ~5k lines/s
+  (a chatty compile blocks on the pipe and dies at the 120 s agent timeout —
+  the first TB 2.1 run lost ~40% of trials this way), and **the proxy severs
+  every exec stream at 300 s** regardless of activity (every verifier longer
+  than five minutes failed with "peer closed connection" in the
+  reproducibility study). Fast commands still cost one round trip (~1.4 s);
+  output is capped at 1 MB per stream. Harbor's
   username-based `user` is resolved to uid/gid via `getent`; when harbor passes
   no user the Dockerfile's last `USER` (if any) is used, and `WORKDIR` from
   the Dockerfile or `task.toml` becomes the cwd, matching `docker compose exec`.

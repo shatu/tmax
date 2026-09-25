@@ -110,9 +110,18 @@ pass count out of 5: 78.7% vs 76.4%; solved-set Jaccard 0.71 vs 0.73; error-task
 0.45** — OpenSandbox's errors repeat on the same tasks (systematic: compute-heavy tasks + three images
 that never pull within 600 s), podman's land on different tasks (flaky timeouts).
 
-OpenSandbox infra errors (~5%/run): 15 env-start timeouts per run on `caffe-cifar-10`,
-`mcmc-sampling-stan`, `rstan-to-pystan` images (pull > 600 s, also via the mirror), 4–7 proxy/connection
-drops, 1 sandbox death, 1 verifier download. Podman: 2 verifier "no reward file" per run, nothing else.
+OpenSandbox infra errors (~5%/run), root-caused afterwards (2026-09-25):
+- 15/run env-start timeouts on `caffe-cifar-10`, `mcmc-sampling-stan`, `rstan-to-pystan`: **not** image
+  pulls (images are 50–240 MB) — those tasks declare `cpus = 4`, and a 4-vCPU pod never schedules on
+  sandbox-standard's 4-vCPU node pool (control plane `POD_READY_TIMEOUT` after 180 s, HTTP 504).
+  Fixed: the env caps the CPU request at 2 (`max_cpus`); requests aren't enforced as limits there anyway.
+- 4–7/run "peer closed connection" + 1 proxy parse error: the server proxy cuts every exec stream at
+  **300 s** (measured: silent and heartbeat commands alike die at 300 s). All three traced cases were
+  verifiers 304 s in. Fixed: commands now run detached and are polled (see docs/running_evals.md §3b).
+- 1/run sandbox died + 1/run verifier download failed, three of four on `bn-fit-modify` (memory-hungry,
+  declares 2 GB): consistent with node memory-pressure eviction on the shared 16 GB nodes; pods were gone
+  before Kubernetes events could be read. Not fixed; would need a bigger memory request or dedicated nodes.
+Podman: 2 verifier "no reward file" per run, nothing else.
 
 **Verdict:** for this workload OpenSandbox is *not* more reliable than in-job podman: ~5% infra errors
 vs 0.4%, and ~1.6× the command-timeout rate because sandbox nodes give ~1–2 effective cores where
