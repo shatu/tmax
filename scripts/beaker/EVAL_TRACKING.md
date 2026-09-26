@@ -138,3 +138,31 @@ podman, so compute-heavy commands trip the limit more often (see docs/running_ev
 `pass1_adj` and the per-task pass-count agreement across the two runs of each backend; lower spread
 and a higher error-task Jaccard (errors repeating on the same tasks rather than random ones) mean a
 more reliable backend.
+
+
+## OpenSandbox-trained 9B DPPO checkpoints — 5-run pass@1 (2026-09-26)
+
+Four checkpoints from the 9B DPPO runs that used the OpenSandbox backend *for training*
+(evaluated here on the standard in-job podman backend so the numbers are comparable to the
+`swerl-qwen35-9b-dppo-4n64k` sweep above). All were DeepSpeed *state* saves only
+(`global_stepN/`), converted with `convert_ds_state_to_cg.py` (see `README.md`) into
+`/weka/oe-adapt-default/pradeepd/checkpoints/<exp>_step<N>_cg`:
+
+| row in the sheet | checkpoint state | init model |
+|---|---|---|
+| `swerl-qwen35-9b-dppo-osb-nomask-4n64k` / 232 | `..._opensandbox_no_mask_infra/global_step232` | hamishivi/Qwen3.5-9B |
+| `swerl-qwen35-9b-dppo-osb-mask-4n64k` / 233 | `..._opensandbox_mask_infra_backup/global_step233` | hamishivi/Qwen3.5-9B |
+| `swerl-qwen35-9b-dppo-osb-mask-4n64k` / 504 | `..._opensandbox_mask_infra/global_step504` | hamishivi/Qwen3.5-9B |
+| `swerl-qwen35-9b-glm52sft-dppo-osb-mask-4n64k` / 502 | `..._glm52_sft_dppo_4node_64k_opensandbox_mask_infra/global_step502` | `pradeepd/checkpoints/hamish_qwen35_9b_tmax_glm52_all_sft_composite` |
+
+Eval config (one job per checkpoint × dataset, launched from commit `90a79420` of `eval_opensandbox`):
+Vanillux2Agent, `openai` provider, `qwen3_xml`, 64k context, 1 GPU, `--n-concurrent 8`,
+`--n-attempts 5`, podman backend with `--keep-task-images` (no mirror), ai2/jupiter+saturn.
+TB2.1 via `--dataset-path /weka/oe-adapt-default/shashankg/datasets/terminal-bench-2-1`,
+TBLite via `--dataset openthoughts-tblite@2.0`. Experiment IDs are in the sheet rows.
+
+**pass@1 ± std over 5 runs**: `-k 5` gives 5 trials per task; `scripts/compute_stats.py`
+(run by the job, output in the result dataset's `metrics.json`) treats the i-th trial of every
+task as run i and reports `mean`/`std` over the 5 runs. Fetch with
+`beaker dataset fetch <result-dataset> --prefix metrics.json -o <dir>` or read the scoring
+lines in the job log; `combined_evals.py refresh` fills the sheet's pass@1/pass@5.

@@ -158,6 +158,39 @@ output has `architectures = ["Qwen3_5ForConditionalGeneration"]` and a
 (The canonical `Qwen/Qwen3.5-*` / `hamishivi/Qwen3.5-*` base repos already ship the
 CG arch + processor, so they need neither conversion nor the flag.)
 
+## Converting a DeepSpeed checkpoint *state* (`global_stepN/`) — `convert_ds_state_to_cg.py`
+
+When the step you want exists only as a `--checkpoint_state_dir` save (ZeRO-3 optimizer
+partitions under `.../deletable_checkpoint_states/<exp>/global_stepN/`, e.g. because the
+run was preempted between `--save_freq` HF saves), there is no `Qwen3_5ForCausalLM`
+checkpoint to feed the script above. `convert_ds_state_to_cg.py` goes straight from the
+ZeRO state to the CG layout in one 0-GPU job: it drives the run's own `zero_to_fp32.py`
+(DeepSpeed drops it next to the `global_step*` dirs), casts to bf16, renames the
+in-memory names (`model.layers.*`) to the on-disk CG names (`model.language_model.*`),
+and grafts them onto the donor exactly like the HF-save converter, taking the tokenizer +
+chat template from the run's `--model_name_or_path`.
+
+```bash
+uvx --from beaker-gantry gantry run --yes --workspace ai2/oe-agents --name convert-<x> \
+  --ref "$(git rev-parse HEAD)" --gpus 0 --cpus 16 --memory 400GiB \
+  --cluster ai2/jupiter --cluster ai2/saturn --priority high --no-python \
+  --beaker-image <the run's training image> \
+  --weka oe-adapt-default:/weka/oe-adapt-default --env-secret HF_TOKEN \
+  --env HF_HOME=/weka/oe-adapt-default/$USER/hf_cache \
+  -- python scripts/beaker/convert_ds_state_to_cg.py \
+       --state-dir /weka/oe-adapt-default/allennlp/deletable_checkpoint_states/<exp> \
+       --tag global_step504 --init-model hamishivi/Qwen3.5-9B --donor hamishivi/Qwen3.5-9B \
+       --out /weka/oe-adapt-default/$USER/checkpoints/<exp>_step504_cg --force
+```
+
+- Use the **training run's Beaker image**: `zero_to_fp32.py` imports constants from the
+  DeepSpeed version that wrote the checkpoint (0.19.6 here); an older DeepSpeed fails the
+  import (the script stubs the missing MoE-only names, but matching versions is safer).
+- A 9B / 16-learner state (101 GB) reassembles in 20 s–8 min depending on weka load; the
+  whole job is < 10 min. Output is ~18.9 GB, all bf16, 775 tensors (427 text + donor vision/mtp).
+- The output has `CONVERSION_COMPLETE` + `conversion_info.json` (state dir, tag, init, donor).
+  Serve it like any `_cg` checkpoint: no `--language-model-only`, no "ada" in `--name`.
+
 ## Where to look when something goes wrong
 
 Inside the beaker task, in order of when things fail:
