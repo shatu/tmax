@@ -166,3 +166,41 @@ TBLite via `--dataset openthoughts-tblite@2.0`. Experiment IDs are in the sheet 
 task as run i and reports `mean`/`std` over the 5 runs. Fetch with
 `beaker dataset fetch <result-dataset> --prefix metrics.json -o <dir>` or read the scoring
 lines in the job log; `combined_evals.py refresh` fills the sheet's pass@1/pass@5.
+
+### Results (all 8 jobs finished 2026-09-27; sheet rows refreshed)
+
+pass@1 in %, ± the std of one run's mean score (partition-free estimate from
+`scripts/analysis/adjusted_run_stats.py`, run on the downloaded job dirs). *raw* = errored trials
+count as 0 (what the sheet's `pass@1` is); *adjusted* = trials that died on image pulls removed
+from the denominator. Reference: the original podman-trained sweep `swerl-qwen35-9b-dppo-4n64k`
+step 500 is 22.9 / 51.6 (adj 25.1 / 54.2) and `Qwen/Qwen3.5-9B` is 19.3 / 43.2 (adj 21.9 / 45.6).
+
+| checkpoint | TB2.1 raw | TB2.1 adj | TBLite raw | TBLite adj |
+|---|---|---|---|---|
+| no-mask, step 232 | 18.4 ± 2.5 | 19.6 ± 2.5 | 40.6 ± 3.4 | 40.8 ± 3.3 |
+| mask, step 233 | 17.1 ± 2.8 | 19.9 ± 2.6 | 43.7 ± 3.5 | 43.9 ± 3.5 |
+| mask, step 504 | 20.0 ± 3.1 | 22.5 ± 2.9 | 43.4 ± 3.4 | 43.6 ± 3.4 |
+| GLM5.2-SFT init, mask, step 502 | 9.4 ± 2.4 | 10.9 ± 2.5 | 21.7 ± 2.9 | 21.7 ± 2.9 |
+
+The three base-init checkpoints are within noise of each other and of the Qwen3.5-9B base on
+TB2.1; on TBLite the masked runs are ~3 pts above no-mask, which is about one std. All are well
+below the podman-trained step-500 model on TBLite (43–44 vs 51.6). The GLM5.2-SFT-init run is far
+worse on both (its SFT init `hamish_qwen35_9b_tmax_glm52_all_sft_composite` was 16-attempt-evaluated
+on 2026-09-18, see `01M2SD0M91TMFEK4RBSKARJCSR`); ~15% of its TBLite trials hit the 120 s command
+timeout vs ~10% for the others.
+
+**Infra failure in this batch — Docker Hub pull rate limit on TB2.1.** 39–65 of 445 trials per
+TB2.1 job (9–15%; 2–3 of 500 on TBLite) errored with `toomanyrequests: You have reached your
+unauthenticated pull rate limit` during `docker compose up`, spread over 24–34 tasks per job (never
+all 5 attempts of a task). Two causes: (1) five of the eight jobs were scheduled onto the same
+jupiter node, and with `--host-networking` they share one IP for the anonymous cap; (2) the pulls
+were *anonymous* despite `docker login` + `podman login` both reporting OK in the job log, so the
+podman service is not reading the credentials the script writes (the 2026-09-22 study got away with
+it: 2 jobs, 0 rate-limit errors). The 34-task subset with no pull failure in any job ranks the
+checkpoints the same way (no-mask 25.9, mask-504 23.5, mask-233 22.9, GLM-SFT 12.4). To fill the
+holes without a full re-run: `harbor job resume -p jobs/<job> --filter-error-type RuntimeError`
+re-runs only the errored trials (needs the job dir from the result dataset restored into a new
+eval job, and a fix for the anonymous pulls or one job per node). Command-timeout `RuntimeError`s
+("Command timed out after 120 seconds", 47–77 per job) are the model's own failures, not infra —
+newer harbor reports them as `RuntimeError` rather than `AgentTimeoutError`, so the sheet's
+`pass1_adj` (which treats every `RuntimeError` as infra) over-corrects for these rows.
