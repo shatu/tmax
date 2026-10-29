@@ -400,6 +400,13 @@ export DOCKER_HOST="${DOCKER_HOST:-unix:///tmp/podman.sock}"
 if [ -x /usr/local/bin/setup_dockerio_mirror ]; then
     /usr/local/bin/setup_dockerio_mirror || log "setup_dockerio_mirror failed (continuing)"
 elif [ -f "$SCRIPT_DIR/setup_dockerio_mirror" ]; then
+    # It patches only the driver into storage.conf, and apt's podman 4.9 rejects
+    # a storage.conf without runroot/graphroot (every podman CLI call then fails),
+    # so seed the defaults first, as Miles's tmax_beaker_entry.sh does.
+    if ! grep -qs '^graphroot' /etc/containers/storage.conf; then
+        printf '[storage]\ndriver = "overlay"\nrunroot = "/run/containers/storage"\ngraphroot = "/var/lib/containers/storage"\n' \
+            > /etc/containers/storage.conf
+    fi
     python3 "$SCRIPT_DIR/setup_dockerio_mirror" || log "setup_dockerio_mirror failed (continuing)"
 fi
 if [ -n "${DOCKER_PAT:-}" ]; then
@@ -423,10 +430,10 @@ if [ -n "${DOCKER_PAT:-}" ]; then
     # then hits the shared-IP unauthenticated rate cap under --host-networking, even
     # with a paid account). Authenticate podman's own store too.
     if command -v podman >/dev/null 2>&1; then
-        if printf '%s' "$DOCKER_PAT" | podman login -u "$DOCKERHUB_USERNAME" --password-stdin docker.io >/dev/null 2>&1; then
+        if PODMAN_LOGIN_ERR=$(printf '%s' "$DOCKER_PAT" | podman login -u "$DOCKERHUB_USERNAME" --password-stdin docker.io 2>&1 >/dev/null); then
             log "podman Docker Hub login OK ($DOCKERHUB_USERNAME)"
         else
-            log "FATAL: podman Docker Hub login failed for '$DOCKERHUB_USERNAME'. Aborting."
+            log "FATAL: podman Docker Hub login failed for '$DOCKERHUB_USERNAME': ${PODMAN_LOGIN_ERR}. Aborting."
             exit 1
         fi
     fi
