@@ -130,6 +130,13 @@ grep -q '^root:' /etc/subgid 2>/dev/null || echo 'root:10000:65536' >> /etc/subg
 if [ -x /usr/local/bin/setup_dockerio_mirror ]; then
     /usr/local/bin/setup_dockerio_mirror || log "setup_dockerio_mirror failed (continuing)"
 elif [ -f "$SCRIPT_DIR/setup_dockerio_mirror" ]; then
+    # It patches only the driver into storage.conf, and apt's podman 4.9 rejects
+    # a storage.conf without runroot/graphroot (every podman CLI call then fails),
+    # so seed the defaults first, as Miles's tmax_beaker_entry.sh does.
+    if ! grep -qs '^graphroot' /etc/containers/storage.conf; then
+        printf '[storage]\ndriver = "overlay"\nrunroot = "/run/containers/storage"\ngraphroot = "/var/lib/containers/storage"\n' \
+            > /etc/containers/storage.conf
+    fi
     python3 "$SCRIPT_DIR/setup_dockerio_mirror" || log "setup_dockerio_mirror failed (continuing)"
 fi
 
