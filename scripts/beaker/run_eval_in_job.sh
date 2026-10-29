@@ -1,16 +1,23 @@
 #!/usr/bin/env bash
 #
 # Inner script invoked inside a beaker task. Sets up podman + harbor, spins up
-# a vLLM server on the local GPUs, then runs harbor against it.
+# a vLLM or SGLang server on the local GPUs, then runs harbor against it.
 #
 # Driven entirely by env vars (set by beaker_configs/launch_eval.sh):
 #   MODEL_PATH               HF model path or weka path (required)
 #   MODEL_REVISION           HF revision/branch (default: main)
 #   SERVED_MODEL_NAME        --served-model-name for vLLM (required)
 #   HARBOR_MODEL_NAME        optional model name passed to harbor
+#   ENGINE                   vllm (default) or sglang
 #   VLLM_VERSION             vLLM package version for uvx (default: 0.19.1)
 #   VLLM_TOOL_CALL_PARSER    vLLM tool parser (default: hermes)
-#   VLLM_LANGUAGE_MODEL_ONLY pass --language_model_only to vLLM when set to 1
+#   VLLM_REASONING_PARSER    optional vLLM reasoning parser
+#   SGLANG_VERSION           SGLang release to install when the image has none
+#                            (default: 0.5.21)
+#   SGLANG_TOOL_CALL_PARSER  SGLang tool parser (default: qwen3_coder)
+#   SGLANG_REASONING_PARSER  SGLang reasoning parser (default: qwen3)
+#   VLLM_LANGUAGE_MODEL_ONLY load the language model only when set to 1 (vLLM
+#                            --language_model_only, SGLang --language-only)
 #   VLLM_PORT                port for vLLM (default: 8008)
 #   TP_SIZE                  --tensor-parallel-size (required)
 #   DP_SIZE                  --data-parallel-size (default: 1)
@@ -42,6 +49,8 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 log() { printf '\n=== [%s] %s ===\n' "$(date -u +%H:%M:%S)" "$*"; }
 
 # --- 0. Workdir: clone repo if URL given, else use cwd ----------------------
@@ -65,6 +74,15 @@ if ! command -v podman >/dev/null 2>&1; then
     apt-get update -qq
     apt-get install -y -qq podman crun uidmap fuse-overlayfs slirp4netns \
         curl git ca-certificates
+fi
+
+# Harbor and the Docker Hub login below shell out to `docker`; images without a
+# Docker CLI (e.g. the Miles image --engine sglang runs in) get the static one.
+if ! command -v docker >/dev/null 2>&1; then
+    log "installing the docker CLI"
+    DOCKER_CLI_VERSION="${DOCKER_CLI_VERSION:-27.5.1}"
+    curl -fsSL "https://download.docker.com/linux/static/stable/$(uname -m)/docker-${DOCKER_CLI_VERSION}.tgz" \
+        | tar -xz -C /usr/local/bin --strip-components=1 docker/docker
 fi
 
 # Some images (e.g. AI2's cuda gantry images) ship a real Docker CLI without
@@ -377,8 +395,12 @@ export DOCKER_HOST="${DOCKER_HOST:-unix:///tmp/podman.sock}"
 #   - image retention is controlled in step 3 by HARBOR_KEEP_TASK_IMAGES
 #     (default 0 = keep harbor's stock --rmi all; set 1 to persist images,
 #     only sane for small image sets like tb2's 89)
+# Images without it (e.g. the Miles image) use the copy vendored next to this
+# script (open-instruct's docker/podman/setup_dockerio_mirror).
 if [ -x /usr/local/bin/setup_dockerio_mirror ]; then
     /usr/local/bin/setup_dockerio_mirror || log "setup_dockerio_mirror failed (continuing)"
+elif [ -f "$SCRIPT_DIR/setup_dockerio_mirror" ]; then
+    python3 "$SCRIPT_DIR/setup_dockerio_mirror" || log "setup_dockerio_mirror failed (continuing)"
 fi
 if [ -n "${DOCKER_PAT:-}" ]; then
     # Authenticate to Docker Hub so task-image pulls don't hit the
@@ -413,12 +435,14 @@ else
     exit 1
 fi
 
-# --- 5. Start vLLM in the background ----------------------------------------
+# --- 5. Start the inference server (vLLM or SGLang) in the background -------
+: "${ENGINE:=vllm}"
 : "${VLLM_VERSION:=0.19.1}"
 : "${VLLM_TOOL_CALL_PARSER:=hermes}"
 : "${VLLM_REASONING_PARSER:=}"
 : "${VLLM_PORT:=8008}"
 : "${DP_SIZE:=1}"
+: "${MODEL_REVISION:=main}"
 # Under gantry --host-networking, co-located jobs share the host netns, so any
 # FIXED port collides across jobs. Two consequences, both fixed by randomizing:
 #   1. vLLM derives its INTERNAL TP-rendezvous ports from the VLLM_PORT env var
@@ -430,46 +454,107 @@ fi
 #      "model does not exist". Bind the API server to a per-job free high port.
 unset VLLM_PORT
 API_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); p=s.getsockname()[1]; s.close(); print(p)')"
-VLLM_LOG=/tmp/vllm.log
+SERVER_LOG="/tmp/${ENGINE}.log"
 VLLM_LOG_TAIL_LINES="${VLLM_LOG_TAIL_LINES:-300}"
-# Pin fastapi < 0.137: fastapi 0.137 changed the router internals and breaks
-# prometheus-fastapi-instrumentator (which vLLM mounts on every route), so the
-# API server 500s on every request including /v1/models — the readiness probe
-# below then never passes and the job is killed after 30 min.
-# See vllm-project/vllm#45596 and #45597.
-VLLM_CMD=( uvx --with "fastapi<0.137"
-           "vllm==${VLLM_VERSION}" serve "$MODEL_PATH"
-           --revision "$MODEL_REVISION"
-           --tokenizer-revision "$MODEL_REVISION"
-           --served-model-name "$SERVED_MODEL_NAME"
-           --enable-auto-tool-choice
-           --enable-prefix-caching
-           --tool-call-parser "$VLLM_TOOL_CALL_PARSER"
-           --port "$API_PORT"
-           --gpu-memory-utilization 0.85
-           --tensor-parallel-size "$TP_SIZE"
-           --data-parallel-size "$DP_SIZE" )
-if [ -n "${MAX_MODEL_LEN:-}" ]; then
-    VLLM_CMD+=( --max-model-len "$MAX_MODEL_LEN" )
-fi
-# Reasoning models (e.g. Qwen3) emit <think>...</think>; --reasoning-parser
-# splits that into reasoning_content so tool-calls/content parse cleanly. Leave
-# empty for non-reasoning models (e.g. Qwen3.5).
-if [ -n "${VLLM_REASONING_PARSER:-}" ]; then
-    VLLM_CMD+=( --reasoning-parser "$VLLM_REASONING_PARSER" )
-fi
-if [ "${VLLM_LANGUAGE_MODEL_ONLY:-0}" = "1" ]; then
-    VLLM_CMD+=( --language_model_only )
-fi
+case "$ENGINE" in
+vllm)
+    # Pin fastapi < 0.137: fastapi 0.137 changed the router internals and breaks
+    # prometheus-fastapi-instrumentator (which vLLM mounts on every route), so the
+    # API server 500s on every request including /v1/models — the readiness probe
+    # below then never passes and the job is killed after 30 min.
+    # See vllm-project/vllm#45596 and #45597.
+    SERVER_CMD=( uvx --with "fastapi<0.137"
+               "vllm==${VLLM_VERSION}" serve "$MODEL_PATH"
+               --revision "$MODEL_REVISION"
+               --tokenizer-revision "$MODEL_REVISION"
+               --served-model-name "$SERVED_MODEL_NAME"
+               --enable-auto-tool-choice
+               --enable-prefix-caching
+               --tool-call-parser "$VLLM_TOOL_CALL_PARSER"
+               --port "$API_PORT"
+               --gpu-memory-utilization 0.85
+               --tensor-parallel-size "$TP_SIZE"
+               --data-parallel-size "$DP_SIZE" )
+    if [ -n "${MAX_MODEL_LEN:-}" ]; then
+        SERVER_CMD+=( --max-model-len "$MAX_MODEL_LEN" )
+    fi
+    # Reasoning models (e.g. Qwen3) emit <think>...</think>; --reasoning-parser
+    # splits that into reasoning_content so tool-calls/content parse cleanly. Leave
+    # empty for non-reasoning models (e.g. Qwen3.5).
+    if [ -n "${VLLM_REASONING_PARSER:-}" ]; then
+        SERVER_CMD+=( --reasoning-parser "$VLLM_REASONING_PARSER" )
+    fi
+    if [ "${VLLM_LANGUAGE_MODEL_ONLY:-0}" = "1" ]; then
+        SERVER_CMD+=( --language_model_only )
+    fi
+    ;;
+sglang)
+    # Serve as the Miles trainer's rollout engines do (miles examples/tmax
+    # run_tmax_qwen3_5.py): the chat endpoint with the qwen3_coder tool parser and
+    # the qwen3 reasoning parser, one GPU per engine, SGLang's other defaults.
+    : "${SGLANG_VERSION:=0.5.21}"
+    : "${SGLANG_TOOL_CALL_PARSER:=qwen3_coder}"
+    : "${SGLANG_REASONING_PARSER:=qwen3}"
+    # Prefer the image's own SGLang: the Miles image carries the sglang-miles build
+    # the rollout engines ran. Elsewhere, install the release it is based on.
+    SERVER_CMD=()
+    for py in python3 python; do
+        if command -v "$py" >/dev/null 2>&1 \
+            && "$py" -c 'import importlib.util, sys; sys.exit(importlib.util.find_spec("sglang") is None)' 2>/dev/null; then
+            SERVER_CMD=( "$py" -m sglang.launch_server )
+            log "sglang from the image: $("$py" -c 'import sglang; print(sglang.__version__, sglang.__file__)' 2>/dev/null)"
+            break
+        fi
+    done
+    if [ "${#SERVER_CMD[@]}" -eq 0 ]; then
+        SERVER_CMD=( uv run --no-project --python 3.12 --with "sglang==${SGLANG_VERSION}"
+                     python -m sglang.launch_server )
+    fi
+    # CUDA forward compatibility, as Miles's tmax_beaker_entry.sh: the Miles image
+    # is CUDA 13 and Beaker bypasses its entrypoint, so on CUDA 12 drivers
+    # (Jupiter, Ceres) the image's compat libcuda has to come first.
+    DRIVER_CUDA_MAJOR="$(nvidia-smi | sed -n 's/.*CUDA Version: *\([0-9]*\)\..*/\1/p')"
+    IMAGE_CUDA_VERSION="${CUDA_VERSION:-0}"
+    if [ -d /usr/local/cuda/compat ] && [ "${DRIVER_CUDA_MAJOR:-0}" -lt "${IMAGE_CUDA_VERSION%%.*}" ]; then
+        log "CUDA forward compatibility: the driver supports CUDA $DRIVER_CUDA_MAJOR, the image is CUDA $IMAGE_CUDA_VERSION"
+        SERVER_CMD=( env "LD_LIBRARY_PATH=/usr/local/cuda/compat${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" "${SERVER_CMD[@]}" )
+    fi
+    SERVER_CMD+=( --model-path "$MODEL_PATH"
+                  --served-model-name "$SERVED_MODEL_NAME"
+                  --trust-remote-code
+                  --host 127.0.0.1
+                  --port "$API_PORT"
+                  --mem-fraction-static 0.85
+                  --tp-size "$TP_SIZE"
+                  --dp-size "$DP_SIZE"
+                  --tool-call-parser "$SGLANG_TOOL_CALL_PARSER" )
+    if [ "$MODEL_REVISION" != main ]; then
+        SERVER_CMD+=( --revision "$MODEL_REVISION" )
+    fi
+    if [ -n "${MAX_MODEL_LEN:-}" ]; then
+        SERVER_CMD+=( --context-length "$MAX_MODEL_LEN" )
+    fi
+    if [ -n "$SGLANG_REASONING_PARSER" ]; then
+        SERVER_CMD+=( --reasoning-parser "$SGLANG_REASONING_PARSER" )
+    fi
+    if [ "${VLLM_LANGUAGE_MODEL_ONLY:-0}" = "1" ]; then
+        SERVER_CMD+=( --language-only )
+    fi
+    ;;
+*)
+    log "FATAL: ENGINE must be vllm or sglang, got '$ENGINE'"
+    exit 1
+    ;;
+esac
 
-log "launching vllm: ${VLLM_CMD[*]}"
-"${VLLM_CMD[@]}" >"$VLLM_LOG" 2>&1 &
-VLLM_PID=$!
+log "launching $ENGINE: ${SERVER_CMD[*]}"
+"${SERVER_CMD[@]}" >"$SERVER_LOG" 2>&1 &
+SERVER_PID=$!
 
 cleanup() {
-    log "cleanup: killing vllm pid $VLLM_PID"
-    kill "$VLLM_PID" 2>/dev/null || true
-    wait "$VLLM_PID" 2>/dev/null || true
+    log "cleanup: killing $ENGINE pid $SERVER_PID"
+    kill "$SERVER_PID" 2>/dev/null || true
+    wait "$SERVER_PID" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -477,7 +562,7 @@ trap cleanup EXIT
 # (CUDA-graph capture etc.) — the first completion then fails with "model does
 # not exist", fatal for small runs and lost trials for large ones (notably the
 # 9B). So gate readiness on a real /v1/chat/completions succeeding.
-vllm_can_generate() {
+server_can_generate() {
     curl -sf -X POST "http://localhost:$API_PORT/v1/chat/completions" \
         -H 'Content-Type: application/json' \
         -d "{\"model\":\"$SERVED_MODEL_NAME\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":1}" \
@@ -487,25 +572,25 @@ vllm_can_generate() {
 # like the 27B on TP>1 need >30 min for weight-load + torch.compile before the
 # API server binds). Override with VLLM_READY_MAX_ITERS.
 VLLM_READY_MAX_ITERS="${VLLM_READY_MAX_ITERS:-720}"
-log "waiting for vllm to serve completions on :$API_PORT (up to $((VLLM_READY_MAX_ITERS*5/60)) min)"
-VLLM_READY=0
+log "waiting for $ENGINE to serve completions on :$API_PORT (up to $((VLLM_READY_MAX_ITERS*5/60)) min)"
+SERVER_READY=0
 for _ in $(seq 1 "$VLLM_READY_MAX_ITERS"); do
-    if vllm_can_generate; then
-        log "vllm ready (completion probe ok)"
-        VLLM_READY=1
+    if server_can_generate; then
+        log "$ENGINE ready (completion probe ok)"
+        SERVER_READY=1
         break
     fi
-    if ! kill -0 "$VLLM_PID" 2>/dev/null; then
-        log "vllm process died — tail of $VLLM_LOG:"
-        tail -"$VLLM_LOG_TAIL_LINES" "$VLLM_LOG" || true
+    if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+        log "$ENGINE process died — tail of $SERVER_LOG:"
+        tail -"$VLLM_LOG_TAIL_LINES" "$SERVER_LOG" || true
         exit 1
     fi
     sleep 5
 done
 
-if [ "$VLLM_READY" -ne 1 ]; then
-    log "vllm did not become ready in 30 min — tail of $VLLM_LOG:"
-    tail -"$VLLM_LOG_TAIL_LINES" "$VLLM_LOG" || true
+if [ "$SERVER_READY" -ne 1 ]; then
+    log "$ENGINE did not become ready in $((VLLM_READY_MAX_ITERS*5/60)) min — tail of $SERVER_LOG:"
+    tail -"$VLLM_LOG_TAIL_LINES" "$SERVER_LOG" || true
     exit 1
 fi
 
@@ -677,11 +762,11 @@ wait "$PROGRESS_PID" 2>/dev/null || true
 
 # --- 7. Compute aggregate stats ---------------------------------------------
 JOB_DIR="jobs/$JOB_NAME"
-if [ -f "$VLLM_LOG" ]; then
-    log "preserving vllm log in $JOB_DIR"
+if [ -f "$SERVER_LOG" ]; then
+    log "preserving $ENGINE log in $JOB_DIR"
     mkdir -p "$JOB_DIR"
-    cp "$VLLM_LOG" "$JOB_DIR/vllm.log" || true
-    tail -"$VLLM_LOG_TAIL_LINES" "$VLLM_LOG" >"$JOB_DIR/vllm.tail.txt" 2>/dev/null || true
+    cp "$SERVER_LOG" "$JOB_DIR/$ENGINE.log" || true
+    tail -"$VLLM_LOG_TAIL_LINES" "$SERVER_LOG" >"$JOB_DIR/$ENGINE.tail.txt" 2>/dev/null || true
 fi
 if [ -d "$JOB_DIR" ]; then
     STATS_LOG="$JOB_DIR/stats.txt"

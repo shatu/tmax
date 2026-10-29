@@ -167,7 +167,8 @@ From [`run_eval_in_job.sh`](../scripts/beaker/run_eval_in_job.sh):
    `setup_dockerio_mirror` also points podman at a docker.io pull-through cache
    (co-located jobs then pull over the local network; authenticated docker.io is
    the fallback if the mirror is down).
-7. Launch vLLM in the background (`uvx vllm==$VLLM_VERSION serve ...`) and poll
+7. Launch the server in the background — vLLM (`uvx vllm==$VLLM_VERSION serve ...`)
+   or, with `--engine sglang`, SGLang ([below](#serving-with-sglang---engine-sglang)) — and poll
    `/v1/models` for up to 30 min.
 8. `uv run harbor run --env docker --model hosted_vllm/$SERVED_MODEL_NAME --agent-kwarg api_base=...`.
 9. `scripts/compute_stats.py` → `stats.txt` + `metrics.json`.
@@ -195,15 +196,58 @@ From [`run_eval_in_job.sh`](../scripts/beaker/run_eval_in_job.sh):
 | `--harbor-env ENV` | `docker` | Harbor backend; `daytona` installs `harbor[daytona]` and wires `DAYTONA_API_KEY`. |
 | `--override-cpus/-gpus/-memory-mb/-storage-mb`, `--*-timeout-multiplier` | unset | Pass-through Harbor resource/timeout overrides (`HARBOR_OVERRIDE_*` / `HARBOR_*_TIMEOUT_MULTIPLIER`). |
 | `--docker-image IMG` / `--image IMG` | `hamishivi/tmax-eval-interactive` | Public Docker image vs. a Beaker image/ID (each clears the other). |
-| `--max-model-len LEN` | unset | vLLM context length. Pass `32768` for Qwen3.5 so the 262k default KV cache fits one GPU and vLLM actually starts. |
-| `--tool-call-parser P` | `hermes` | vLLM tool parser. **Use `qwen3_xml` for Qwen3.5 with structured-tool agents** (Vanillux2Agent); `hermes` silently drops its tool-calls. |
-| `--reasoning-parser P` | none | vLLM reasoning parser. Use `qwen3` for Qwen3 reasoning models so `<think>…</think>` is split out of the visible response. |
+| `--engine ENGINE` | `vllm` | `vllm` or `sglang`; see [Serving with SGLang](#serving-with-sglang---engine-sglang). |
+| `--max-model-len LEN` | unset | Context length (vLLM `--max-model-len`, SGLang `--context-length`). Pass `32768` for Qwen3.5 so the 262k default KV cache fits one GPU and vLLM actually starts. |
+| `--tool-call-parser P` | `hermes` (vllm) / `qwen3_coder` (sglang) | Tool parser. **On vLLM use `qwen3_xml` for Qwen3.5 with structured-tool agents** (Vanillux2Agent); `hermes` silently drops its tool-calls. |
+| `--reasoning-parser P` | none (vllm) / `qwen3` (sglang) | Reasoning parser. Use `qwen3` for Qwen3 reasoning models so `<think>…</think>` is split out of the visible response; `none` disables. |
 | `--cluster` / `--workspace` / `--priority` / `--budget` | see script | Beaker placement. |
 | `--results-dir DIR` | `/results` (Gantry → weka) | Where to copy `jobs/`. |
 | `--repo-ref REF` | current HEAD SHA | **Must be pushed** to the remote. |
 
 > ⚠️ Gantry submits a git SHA, not your working tree. Commit and push first, or
 > pass `--repo-ref`. The script warns if the SHA isn't on a remote branch.
+
+### Serving with SGLang (`--engine sglang`)
+
+Checkpoints trained with Miles (Megatron + SGLang rollouts) can be evaluated
+behind the same inference stack they were trained against. `--engine sglang`
+serves the model the way the Miles TMax trainer's rollout engines do
+([`run_tmax_qwen3_5.py`](https://github.com/shatu/miles/blob/shashank/tmax-terminal-rl/examples/tmax/run_tmax_qwen3_5.py)):
+SGLang's OpenAI chat endpoint with the `qwen3_coder` tool parser and the `qwen3`
+reasoning parser, one GPU per engine, SGLang's other defaults. With the reasoning
+parser, the `<think>` block comes back as `reasoning_content`, which litellm
+echoes into the next request, so multi-turn history is rendered by the chat
+template as in training.
+
+- **Image.** Unless `--image`/`--docker-image` is given, the job runs in the Miles
+  image the TMax runs trained with (`SGLANG_DOCKER_IMAGE`, default
+  `docker.io/radixark/miles:dev-202610151741`), so the server is the exact
+  `sglang-miles` build. The in-job script installs podman, the Docker CLI and the
+  compose plugin it lacks, runs the vendored
+  [`setup_dockerio_mirror`](../scripts/beaker/setup_dockerio_mirror) for
+  `--mirror-url`, and prepends the image's CUDA forward-compat `libcuda` on CUDA 12
+  drivers (Jupiter, Ceres). An image without SGLang gets `sglang==$SGLANG_VERSION`
+  (`--sglang-version`, default `0.5.21`) via `uv`; that wheel is CUDA 13 and needs a
+  CUDA 13 driver.
+- **Parallelism.** Keep `--tp 1` for Qwen3.5: SGLang TP>1 produces garbage for it
+  (sgl-project/sglang#21039), and `launch_eval.sh` warns. Use `--dp N` for more GPUs
+  (SGLang `--dp-size`).
+- **Text-only checkpoints.** `--language-model-only` maps to SGLang's
+  `--language-only` (Miles `--save-hf` snapshots ship no vision tower).
+- **Scripts dataset.** A reused `--beaker-scripts-dataset` must hold this version of
+  `run_eval_in_job.sh`; an older upload ignores `ENGINE` and serves with vLLM.
+
+A Miles checkpoint, greedy, k=5, on 2 GPUs:
+
+```bash
+./beaker_configs/launch_eval.sh <ckpt>/hf/step_179 \
+    --engine sglang --language-model-only --model-provider openai \
+    --gpus 2 --tp 1 --dp 2 --max-model-len 67584 --n-concurrent 16 \
+    --agent-kwarg temperature=0 --agent-kwarg top_p=1.0 \
+    --dataset openthoughts-tblite@2.0 --n-attempts 5 \
+    --mirror-url <live mirror host:port list> \
+    --cluster ai2/jupiter --min-runtime 8h --name <name>
+```
 
 ### Running the podman path locally
 
@@ -590,7 +634,7 @@ Highlights:
 |---|---|
 | `unknown shorthand flag: 'p' in -p` on `docker compose down` | Image lacks the compose plugin; the script auto-installs it — check network reachability. |
 | `mknod` permission denied | Cluster doesn't grant `CAP_MKNOD`; use an image with `/dev/net/tun` pre-created. |
-| vLLM never ready | `/tmp/vllm.log` (the in-job script tails it on failure). |
+| vLLM / SGLang never ready | `/tmp/vllm.log` / `/tmp/sglang.log` (the in-job script tails it on failure; it is also saved as `<engine>.log` in the job dir). |
 | All trials `RewardFileNotFoundError` | Harbor patches didn't apply — confirm the chmod patch in `harbor/agents/oracle.py`. |
 | `setgroups 65534` | userns too small — confirm `auto:size=65536` in `containers.conf`. |
 | Reward 0 across the board | Likely a real model/agent issue; inspect one trial's `agent/oracle.txt` + `verifier/test-stdout.txt`. |
