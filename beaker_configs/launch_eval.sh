@@ -70,6 +70,8 @@ HARBOR_OVERRIDE_CPUS=""
 HARBOR_OVERRIDE_MEMORY_MB=""
 HARBOR_OVERRIDE_STORAGE_MB=""
 HARBOR_OVERRIDE_GPUS=""
+MIN_RUNTIME=""
+HOSTNAME_CONSTRAINT=""              # optional: pin to a specific beaker node hostname (gantry --hostname)
 HARBOR_TIMEOUT_MULTIPLIER=""
 HARBOR_AGENT_TIMEOUT_MULTIPLIER=""
 HARBOR_VERIFIER_TIMEOUT_MULTIPLIER=""
@@ -140,6 +142,8 @@ Options:
   --override-storage-mb N
                         harbor per-task environment storage override in MB
   --override-gpus N      harbor per-task environment GPU override
+  --min-runtime DUR      gantry --min-runtime (e.g. 8h): guaranteed runtime before preemption
+  --hostname HOST        pin the job to one beaker node (gantry --hostname; repeatable via comma list)
   --timeout-multiplier X harbor task timeout multiplier
   --agent-timeout-multiplier X
                         harbor agent timeout multiplier
@@ -200,6 +204,8 @@ while [ $# -gt 0 ]; do
         --override-memory-mb) HARBOR_OVERRIDE_MEMORY_MB="$2"; shift 2 ;;
         --override-storage-mb) HARBOR_OVERRIDE_STORAGE_MB="$2"; shift 2 ;;
         --override-gpus)   HARBOR_OVERRIDE_GPUS="$2"; shift 2 ;;
+        --min-runtime)     MIN_RUNTIME="$2"; shift 2 ;;
+        --hostname)        HOSTNAME_CONSTRAINT="$2"; shift 2 ;;
         --timeout-multiplier) HARBOR_TIMEOUT_MULTIPLIER="$2"; shift 2 ;;
         --agent-timeout-multiplier) HARBOR_AGENT_TIMEOUT_MULTIPLIER="$2"; shift 2 ;;
         --verifier-timeout-multiplier) HARBOR_VERIFIER_TIMEOUT_MULTIPLIER="$2"; shift 2 ;;
@@ -317,10 +323,19 @@ GANTRY_CMD=(
     --no-python
 )
 
+if [ -n "$MIN_RUNTIME" ]; then
+    GANTRY_CMD+=(--min-runtime "$MIN_RUNTIME")
+fi
+if [ -n "$HOSTNAME_CONSTRAINT" ]; then
+    for h in ${HOSTNAME_CONSTRAINT//,/ }; do GANTRY_CMD+=(--hostname "$h"); done
+fi
+
 # Gantry accepts repeated --cluster flags; CLUSTER may be comma-separated.
-for cluster in ${CLUSTER//,/ }; do
-    GANTRY_CMD+=(--cluster "$cluster")
-done
+if [ -z "$HOSTNAME_CONSTRAINT" ]; then   # gantry forbids --cluster together with --hostname
+    for cluster in ${CLUSTER//,/ }; do
+        GANTRY_CMD+=(--cluster "$cluster")
+    done
+fi
 
 # The daytona backend needs an API key; only register the secret then, so the
 # default docker path doesn't require a DAYTONA_API_KEY secret in the workspace.
