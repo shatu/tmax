@@ -155,7 +155,12 @@ From [`run_eval_in_job.sh`](../scripts/beaker/run_eval_in_job.sh):
 4. `uv sync`, then **patch harbor's installed package** for podman compat
    (host networking in the compose file, world-writable bind-mount dirs, drop
    `--rmi all` from compose-down to avoid Docker Hub rate limits).
-5. `source scripts/setup_podman_harbor.sh`: `mknod /dev/net/tun`, create the
+5. If `--mirror-url` is set, `setup_dockerio_mirror` points podman at a docker.io
+   pull-through cache (co-located jobs then pull over the local network;
+   authenticated docker.io is the fallback if the mirror is down). It runs before
+   the podman service starts, because podman records the storage driver on first
+   start and later CLI calls fail on a changed one.
+   Then `source scripts/setup_podman_harbor.sh`: `mknod /dev/net/tun`, create the
    aardvark-dns dir, start `podman system service` on `/tmp/podman.sock`, export
    `DOCKER_HOST`.
 6. Authenticate to Docker Hub for task-image pulls (from the `DOCKER_PAT` beaker
@@ -163,10 +168,7 @@ From [`run_eval_in_job.sh`](../scripts/beaker/run_eval_in_job.sh):
    essential — harbor pulls via the podman socket, and podman reads creds from
    `containers/auth.json`, *not* `~/.docker/config.json`, so a `docker login`
    alone leaves pulls anonymous → the shared-IP unauthenticated rate cap
-   (`toomanyrequests`) once jobs co-locate. If `--mirror-url` is set,
-   `setup_dockerio_mirror` also points podman at a docker.io pull-through cache
-   (co-located jobs then pull over the local network; authenticated docker.io is
-   the fallback if the mirror is down).
+   (`toomanyrequests`) once jobs co-locate.
 7. Launch the server in the background — vLLM (`uvx vllm==$VLLM_VERSION serve ...`)
    or, with `--engine sglang`, SGLang ([below](#serving-with-sglang---engine-sglang)) — and poll
    `/v1/models` for up to 30 min.

@@ -376,6 +376,25 @@ if '"--override-with-envs",' not in text:
     print("patched openhands.py: apply env settings in headless mode")
 PY
 
+# --- 3b. Docker Hub mirror + podman storage config --------------------------
+# Runs before the podman service starts: the first podman process records the
+# storage driver in its database, and a later driver change makes every podman
+# CLI call fail with "database graph driver "" does not match ... overlay".
+# Images without the mirror script (e.g. the Miles image) use the copy vendored
+# next to this script (open-instruct's docker/podman/setup_dockerio_mirror).
+if [ -x /usr/local/bin/setup_dockerio_mirror ]; then
+    /usr/local/bin/setup_dockerio_mirror || log "setup_dockerio_mirror failed (continuing)"
+elif [ -f "$SCRIPT_DIR/setup_dockerio_mirror" ]; then
+    # It patches only the driver into storage.conf, and apt's podman 4.9 rejects
+    # a storage.conf without runroot/graphroot (every podman CLI call then fails),
+    # so seed the defaults first, as Miles's tmax_beaker_entry.sh does.
+    if ! grep -qs '^graphroot' /etc/containers/storage.conf; then
+        printf '[storage]\ndriver = "overlay"\nrunroot = "/run/containers/storage"\ngraphroot = "/var/lib/containers/storage"\n' \
+            > /etc/containers/storage.conf
+    fi
+    python3 "$SCRIPT_DIR/setup_dockerio_mirror" || log "setup_dockerio_mirror failed (continuing)"
+fi
+
 # --- 4. Bring podman service up (uses scripts/setup_podman_harbor.sh) -------
 log "starting podman service"
 # shellcheck disable=SC1091
@@ -395,20 +414,7 @@ export DOCKER_HOST="${DOCKER_HOST:-unix:///tmp/podman.sock}"
 #   - image retention is controlled in step 3 by HARBOR_KEEP_TASK_IMAGES
 #     (default 0 = keep harbor's stock --rmi all; set 1 to persist images,
 #     only sane for small image sets like tb2's 89)
-# Images without it (e.g. the Miles image) use the copy vendored next to this
-# script (open-instruct's docker/podman/setup_dockerio_mirror).
-if [ -x /usr/local/bin/setup_dockerio_mirror ]; then
-    /usr/local/bin/setup_dockerio_mirror || log "setup_dockerio_mirror failed (continuing)"
-elif [ -f "$SCRIPT_DIR/setup_dockerio_mirror" ]; then
-    # It patches only the driver into storage.conf, and apt's podman 4.9 rejects
-    # a storage.conf without runroot/graphroot (every podman CLI call then fails),
-    # so seed the defaults first, as Miles's tmax_beaker_entry.sh does.
-    if ! grep -qs '^graphroot' /etc/containers/storage.conf; then
-        printf '[storage]\ndriver = "overlay"\nrunroot = "/run/containers/storage"\ngraphroot = "/var/lib/containers/storage"\n' \
-            > /etc/containers/storage.conf
-    fi
-    python3 "$SCRIPT_DIR/setup_dockerio_mirror" || log "setup_dockerio_mirror failed (continuing)"
-fi
+# The mirror itself is configured in step 3b, before the podman service starts.
 if [ -n "${DOCKER_PAT:-}" ]; then
     # Authenticate to Docker Hub so task-image pulls don't hit the
     # unauthenticated rate cap. We `docker login` to VERIFY the credentials and
