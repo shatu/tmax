@@ -125,6 +125,12 @@ structured tool-calls** (it reads the `command` argument out of
   `cd`/`export` persist across turns without a long-lived shell process.
 - **Observation:** each tool result truncated to ~10 000 chars (head/tail with an
   "elided" marker).
+- **Command timeout:** each command runs under the image's `timeout` for
+  `command_timeout` (120 s). An overrun is killed in the sandbox and reported as
+  `Step 'bash' timed out after 120s. Args: {'command': ...}`, and the episode
+  goes on, as in training (open-instruct and Miles). Before this, harbor raised
+  `RuntimeError: Command timed out after 120 seconds` and the trial ended with
+  reward 0.
 - **Termination:** `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` submit marker,
   `max_steps`, optional cost limit, no-tool-call, or context-window overflow.
 - **Hardening:** exponential-backoff retry; auth / not-found / context-window /
