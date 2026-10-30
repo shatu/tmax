@@ -149,9 +149,18 @@ From [`run_eval_in_job.sh`](../scripts/beaker/run_eval_in_job.sh):
 
 1. Optionally `git clone` the tmax repo at a SHA (or use the Gantry-provided
    checkout).
-2. `apt-get install` podman + helpers; install the Docker Compose v2 CLI plugin
-   (harbor shells out to `docker compose`, which talks to podman's socket).
-3. Write `/etc/containers/containers.conf` (host netns/ipc/uts, `userns=auto:size=65536`, crun, cgroups disabled).
+2. `apt-get install` podman + helpers if the image has none, and the static
+   Docker CLI if it has no `docker` (e.g. the Miles image `--engine sglang` uses).
+3. Write `/etc/containers/containers.conf` (host netns/ipc/uts, `userns=auto:size=65536`, crun, cgroups disabled),
+   then run `setup_dockerio_mirror` (the image's, or the copy vendored next to
+   the script). With `--mirror-url` it points podman at a docker.io pull-through
+   cache (co-located jobs then pull over the local network; authenticated
+   docker.io is the fallback if the mirror is down); it also sets podman's
+   `num_locks` and storage driver. Both steps come before any podman call:
+   podman fixes its lock count and storage driver on first use, and later
+   calls fail on a changed one ("failed to open N locks in /libpod_lock").
+   Only then the Docker Compose v2 plugin check (harbor shells out to
+   `docker compose`, which talks to podman's socket).
 4. `uv sync`, then **patch harbor's installed package** for podman compat
    (host networking in the compose file, world-writable bind-mount dirs, drop
    `--rmi all` from compose-down to avoid Docker Hub rate limits).
@@ -163,10 +172,7 @@ From [`run_eval_in_job.sh`](../scripts/beaker/run_eval_in_job.sh):
    essential — harbor pulls via the podman socket, and podman reads creds from
    `containers/auth.json`, *not* `~/.docker/config.json`, so a `docker login`
    alone leaves pulls anonymous → the shared-IP unauthenticated rate cap
-   (`toomanyrequests`) once jobs co-locate. If `--mirror-url` is set,
-   `setup_dockerio_mirror` also points podman at a docker.io pull-through cache
-   (co-located jobs then pull over the local network; authenticated docker.io is
-   the fallback if the mirror is down).
+   (`toomanyrequests`) once jobs co-locate.
 7. Launch the server in the background — vLLM (`uvx vllm==$VLLM_VERSION serve ...`)
    or, with `--engine sglang`, SGLang ([below](#serving-with-sglang---engine-sglang)) — and poll
    `/v1/models` for up to 30 min.
