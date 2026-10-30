@@ -57,8 +57,11 @@ published Tmax RL · RL checkpoints by step.
 
 ## How scores/errors are computed
 From each experiment's scoring-job log: `pass@1`, `pass@5`, the exception-count table, and `X/Y trials`.
-- **Error split:** `AgentTimeoutError` = the model's own 120s bash timeout (real failure); everything
-  else (`RuntimeError` = vLLM/connection crash, `Verifier*`, `RewardFileNotFound`, …) = **infra**.
+- **Error split:** `AgentTimeoutError` = the trial's agent time limit (real failure); everything
+  else (`RuntimeError`, `Verifier*`, `RewardFileNotFound`, …) = **infra**. Before Vanillux2Agent
+  reported command overruns to the model, `RuntimeError: Command timed out after 120 seconds` was a
+  bash command that ran past 120 s (a model failure, not infra; 13-15% of TB2.1 trials), so
+  `pass1_adj` of those runs leaves real failures out.
 - `err_rate = total_errors / n_trials` (TB2.1 = 89 tasks × k, TBlite = 100 × k; read from the log).
 - `pass1_adj` = pass@1 with infra-failed trials removed from the denominator — the fair cross-run
   number when infra error rates differ. Blank when a log has no exception table (can't split infra).

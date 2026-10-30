@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import time
 from pathlib import Path
 from typing import Any
@@ -51,6 +52,8 @@ RETRY_BASE_DELAY = 2.0
 LLM_TIMEOUT_SECONDS = 5 * 60 * 60
 LLM_OUTER_TIMEOUT_BUFFER_SECONDS = 30
 _STATE_DIR = "/tmp/.vanillux2"
+# Harbor's own exec timeout only backstops the in-container `timeout`.
+_EXEC_TIMEOUT_GRACE_SECONDS = 30
 _COMPOSE_PROVIDER_RE = re.compile(
     r"\x1b\[4m>>>> Executing external compose provider "
     r'"[^"]*docker-compose"\. Please see podman-compose\(1\) for how to disable '
@@ -199,7 +202,16 @@ class Vanillux2Agent(BaseAgent):
                 result = await self._execute_bash(command, environment)
                 exec_time = time.monotonic() - t1
 
-                tool_content = self._format_tool_result(result)
+                if result is None:
+                    # As in training (open-instruct's tool_call_timeout, Miles'
+                    # TMAX_TOOL_CALL_TIMEOUT_S): the overrun is reported to the
+                    # policy and the episode goes on.
+                    tool_content = (
+                        f"Step 'bash' timed out after {self.command_timeout:g}s. "
+                        f"Args: {{'command': {command!r}}}"
+                    )
+                else:
+                    tool_content = self._format_tool_result(result)
                 messages.append(
                     {
                         "role": "tool",
@@ -213,7 +225,9 @@ class Vanillux2Agent(BaseAgent):
                         "step": step + 1,
                         "llm_s": round(llm_time, 1),
                         "bash_s": round(exec_time, 1),
-                        "return_code": result.return_code,
+                        "return_code": (
+                            result.return_code if result is not None else "timeout"
+                        ),
                         "cmd": command[:200],
                     }
                 )
@@ -337,11 +351,34 @@ class Vanillux2Agent(BaseAgent):
 
     async def _execute_bash(
         self, command: str, environment: BaseEnvironment
-    ) -> Any:
-        return await environment.exec(
-            command=self._wrap_command(command),
-            timeout_sec=self.command_timeout,
-        )
+    ) -> Any | None:
+        """Runs one command; None if it outlived command_timeout.
+
+        The command runs under the image's `timeout` (when it takes -s/-k), so an
+        overrun is killed in the container, not left running into later steps.
+        """
+        script = shlex.quote(self._wrap_command(command))
+        t = self.command_timeout
+        t0 = time.monotonic()
+        try:
+            result = await environment.exec(
+                command=(
+                    f"if timeout -s TERM -k 10 {t} true 2>/dev/null; then "
+                    f"exec timeout -s TERM -k 10 {t} bash -c {script}; "
+                    f"else exec bash -c {script}; fi"
+                ),
+                timeout_sec=t + _EXEC_TIMEOUT_GRACE_SECONDS,
+            )
+        except RuntimeError as exc:
+            if not str(exc).startswith("Command timed out"):
+                raise
+            return None
+        # GNU timeout exits 124, BusyBox's with the signal (143, or 137 after -k).
+        # A command's own `timeout` can return these too; only a full-length run
+        # is ours.
+        if result.return_code in (124, 137, 143) and time.monotonic() - t0 >= t:
+            return None
+        return result
 
     @staticmethod
     def _format_tool_result(result: Any) -> str:
