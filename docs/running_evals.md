@@ -221,14 +221,18 @@ parser, the `<think>` block comes back as `reasoning_content`, which litellm
 echoes into the next request, so multi-turn history is rendered by the chat
 template as in training.
 
-- **Image.** Unless `--image`/`--docker-image` is given, the job runs in the Miles
-  image the TMax runs trained with (`SGLANG_DOCKER_IMAGE`, default
-  `docker.io/radixark/miles:dev-202610151741`), so the server is the exact
-  `sglang-miles` build. The in-job script installs podman, the Docker CLI and the
-  compose plugin it lacks, runs the vendored
+- **Image.** Unless `--image`/`--docker-image` is given, the job runs in the Beaker
+  image `SGLANG_BEAKER_IMAGE` (default `shashankg/tmax-miles-sglang-eval-20261031`):
+  the Miles training image (the exact `sglang-miles` build the TMax runs trained
+  with) plus the vLLM eval image's sandbox stack (podman 5.6.2 + crun 1.14.3,
+  `docker` -> podman, root subuid range), built by
+  [`Dockerfile.sglang_eval`](../scripts/beaker/Dockerfile.sglang_eval). Installing
+  apt's podman 4.9 and the Docker CLI at job start instead broke every harbor
+  sandbox. The in-job script still installs podman, the Docker CLI and the compose
+  plugin when an image lacks them, runs the vendored
   [`setup_dockerio_mirror`](../scripts/beaker/setup_dockerio_mirror) for
-  `--mirror-url`, and prepends the image's CUDA forward-compat `libcuda` on CUDA 12
-  drivers (Jupiter, Ceres). An image without SGLang gets `sglang==$SGLANG_VERSION`
+  `--mirror-url` when the image has none, and prepends the image's CUDA
+  forward-compat `libcuda` on CUDA 12 drivers (Jupiter, Ceres). An image without SGLang gets `sglang==$SGLANG_VERSION`
   (`--sglang-version`, default `0.5.21`) via `uv`; that wheel is CUDA 13 and needs a
   CUDA 13 driver.
 - **Parallelism.** Keep `--tp 1` for Qwen3.5: SGLang TP>1 produces garbage for it

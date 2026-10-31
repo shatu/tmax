@@ -41,10 +41,11 @@ ENGINE="vllm"
 VLLM_PORT=8008
 VLLM_VERSION="0.19.1"
 SGLANG_VERSION="0.5.21"
-# The image --engine sglang runs in unless --image/--docker-image is given: the
-# Miles image the TMax RL runs trained with, so the eval serves with the exact
-# SGLang build (radixark's sglang-miles) the rollout engines used.
-SGLANG_DOCKER_IMAGE="${SGLANG_DOCKER_IMAGE:-docker.io/radixark/miles:dev-202610151741}"
+# The Beaker image --engine sglang runs in unless --image/--docker-image is given:
+# the Miles image the TMax RL runs trained with (the exact sglang-miles build the
+# rollout engines used) plus the vLLM eval image's podman stack
+# (scripts/beaker/Dockerfile.sglang_eval).
+SGLANG_BEAKER_IMAGE="${SGLANG_BEAKER_IMAGE:-shashankg/tmax-miles-sglang-eval-20261031}"
 IMAGE_SET=0
 TOOL_CALL_PARSER=""                 # engine default: vllm hermes, sglang qwen3_coder
 REASONING_PARSER=""                 # engine default: vllm none, sglang qwen3; "none" disables
@@ -107,7 +108,7 @@ Options:
   --engine ENGINE        inference server: vllm (default) or sglang. sglang
                          serves like the Miles trainer's rollout engines
                          (qwen3_coder + qwen3 parsers) and defaults to the
-                         Miles image ($SGLANG_DOCKER_IMAGE).
+                         Miles eval image ($SGLANG_BEAKER_IMAGE).
                          Keep --tp 1 for Qwen3.5 (sgl-project/sglang#21039);
                          use --dp for more GPUs.
   --vllm-version VER     vLLM package version for uvx (default: 0.19.1)
@@ -254,8 +255,8 @@ case "$ENGINE" in
         TOOL_CALL_PARSER="${TOOL_CALL_PARSER:-qwen3_coder}"
         REASONING_PARSER="${REASONING_PARSER:-qwen3}"
         if [ "$IMAGE_SET" = 0 ]; then
-            BEAKER_IMAGE=""
-            BEAKER_DOCKER_IMAGE="$SGLANG_DOCKER_IMAGE"
+            BEAKER_IMAGE="$SGLANG_BEAKER_IMAGE"
+            BEAKER_DOCKER_IMAGE=""
         fi
         if [ -n "$BEAKER_SCRIPTS_DATASET" ]; then
             echo "warning: --beaker-scripts-dataset $BEAKER_SCRIPTS_DATASET must hold an SGLang-aware" >&2
