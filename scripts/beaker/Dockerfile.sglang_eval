@@ -1,0 +1,23 @@
+# Job image for `launch_eval.sh --engine sglang`: the Miles training image (the
+# SGLang build the policy was trained with) plus the sandbox stack of the vLLM
+# eval image, so the engine is the only difference between the two.
+#
+# The Miles image has no podman; installing apt's podman 4.9 + the Docker CLI at
+# job start broke every harbor sandbox ("not enough unused IDs in user
+# namespace", BuildKit "cannot set cgroup parent"). This bakes in what the
+# open-instruct Dockerfile does instead: podman 5.6.2 + crun 1.14.3 from source,
+# `docker` -> podman, root subuid/subgid 10000:11165536, setup_dockerio_mirror.
+#
+# Build from the tmax repo root (BASE_IMAGE = the training image, pulled locally,
+# e.g. Beaker image shashankg/tmax-miles-train-20261029):
+#   podman build -f scripts/beaker/Dockerfile.sglang_eval \
+#       --build-arg BASE_IMAGE=localhost/tmax-miles-train:20261029 \
+#       -t localhost/tmax-miles-sglang-eval:20261031 .
+#   beaker image create localhost/tmax-miles-sglang-eval:20261031 --name tmax-miles-sglang-eval-20261031
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+COPY training/open-instruct/docker/podman /opt/open-instruct/docker/podman
+COPY training/open-instruct/scripts/docker/setup_podman.sh /opt/open-instruct/scripts/docker/setup_podman.sh
+RUN bash /opt/open-instruct/scripts/docker/setup_podman.sh \
+    && install -m 0755 /opt/open-instruct/docker/podman/setup_dockerio_mirror /usr/local/bin/setup_dockerio_mirror
