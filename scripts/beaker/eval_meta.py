@@ -5,8 +5,8 @@ Harbor's own config.json records the agent, dataset, k and timeouts. For the
 model it records only `openai/<served-name>`, which is a free-form alias. This
 file adds the rest, so a batch-downloaded job dir identifies itself:
   * every launch_eval.sh setting passed into the job: model path + revision,
-    vLLM version and flags, dataset, agent, k, overrides, mirror;
-  * the exact `vllm serve` and `harbor run` commands;
+    engine (vLLM or SGLang) version and flags, dataset, agent, k, overrides, mirror;
+  * the exact inference-server and `harbor run` commands;
   * the HF commit SHA the revision pointed to (HF ids only; best effort);
   * the tmax git commit and harbor version;
   * Beaker workload/job/node ids;
@@ -18,7 +18,7 @@ file adds the rest, so a batch-downloaded job dir identifies itself:
 Secrets are never written: HF_TOKEN/DOCKER_PAT are not read, and agent env
 values whose name looks secret are redacted.
 
-  eval_meta.py start  --job-dir D --vllm-cmd "..." --harbor-cmd "..." --api-port P
+  eval_meta.py start  --job-dir D --server-cmd "..." --harbor-cmd "..." --api-port P
   eval_meta.py finish --job-dir D --harbor-rc N
 Stdlib only.
 """
@@ -151,7 +151,7 @@ def cmd_start(args) -> int:
             "served_name": eval_env["SERVED_MODEL_NAME"],
         },
         eval_env=eval_env,
-        vllm_cmd=redact_cmd(args.vllm_cmd),
+        server_cmd=redact_cmd(args.server_cmd),
         harbor_cmd=redact_cmd(args.harbor_cmd),
         code={
             **env(CODE_ENV),
@@ -208,7 +208,7 @@ def main() -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("start")
     s.add_argument("--job-dir", required=True)
-    s.add_argument("--vllm-cmd", default="")
+    s.add_argument("--server-cmd", default="")
     s.add_argument("--harbor-cmd", default="")
     s.add_argument("--api-port", default="")
     s.set_defaults(fn=cmd_start)

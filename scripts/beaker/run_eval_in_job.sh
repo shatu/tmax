@@ -780,7 +780,7 @@ fi
 # served alias. Best effort: never fails the eval.
 python3 "$SCRIPT_DIR/eval_meta.py" start \
     --job-dir "jobs/$JOB_NAME" \
-    --vllm-cmd "${VLLM_CMD[*]}" \
+    --server-cmd "${SERVER_CMD[*]}" \
     --harbor-cmd "${HARBOR_CMD[*]}" \
     --api-port "$API_PORT" || log "eval_meta.py start failed (continuing)"
 log "running harbor: ${HARBOR_CMD[*]}"
