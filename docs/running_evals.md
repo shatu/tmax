@@ -604,9 +604,9 @@ fills that gap so a batch-downloaded job dir identifies itself:
 
 - `model`: path, revision, and the HF commit SHA that revision resolved to
   when the eval started.
-- `eval_env`: every `launch_eval.sh` setting, including vLLM version and
+- `eval_env`: every `launch_eval.sh` setting, including the engine, its version and
   parsers, max-model-len, TP/DP, dataset, agent, k, overrides and mirror.
-- `vllm_cmd`, `harbor_cmd`: the exact commands that ran.
+- `server_cmd`, `harbor_cmd`: the exact commands that ran (vLLM or SGLang server).
 - `code`: the tmax commit and harbor version.
 - `beaker`: workload/task/dataset ids.
 - `segments`: one entry per Beaker job that worked on the eval (node, start
