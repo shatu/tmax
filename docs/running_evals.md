@@ -690,6 +690,12 @@ fails instead of reporting a low score. Only an exited process counts; a
 slow or stalled server is left alone. The job dir keeps the finished trials,
 and a resume drops the ones that hit the dead server.
 
+Beaker then retries a failed job (`--retries`, default 2). A retry, like a
+preemption, starts with the failed job's `/results`, so the eval resumes from
+there (checked on exp `01M6FMCW4RD00RWSZ5F9QKGBTZ`: each of 5 retries saw the
+previous jobs' files). A failure that repeats every time costs each retry's
+queue and setup time; `--retries 0` turns retries off.
+
 ### Clean errored trials
 
 To re-run errored trials selectively, delete them so harbor re-creates them:
