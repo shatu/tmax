@@ -523,22 +523,47 @@ and `OPENAI_BASE_URL`.
 
 ### Output layout
 
-A finished job writes `jobs/<job-name>/`:
+A finished job writes `jobs/<job-name>/`. On the Beaker path it lives at
+`/results/<job-name>/` in the result dataset of the job that finished the
+eval.
 
 ```
 jobs/<job-name>/
+├── eval_meta.json              # WHAT eval this is (Beaker path; see below)
 ├── result.json                 # job-level: trial count, reward dist, errors
 ├── config.json                 # the resolved harbor config (presence = resumable)
+├── lock.json                   # harbor's resolved trial list + task digests
 ├── stats.txt                   # compute_stats.py human summary  (Beaker path)
 ├── metrics.json                # compute_stats.py structured metrics (Beaker path)
+├── vllm.log / vllm.tail.txt    # final segment's vLLM log
+├── resume_log.txt              # one line per resume after a preemption
 └── <task>__<rand>/             # one dir per trial
     ├── result.json             # task_name, verifier_result.rewards.reward, exception_info
-    ├── agent/oracle.txt        # agent stdout
+    ├── agent/trajectory.json   # full rollout: messages, tool_calls, tool outputs (Vanillux2Agent)
+    ├── agent/timing.json, agent/usage.json
     ├── verifier/test-stdout.txt
     ├── verifier/reward.txt
+    ├── verifier/detailed_scores.json   # sub-scores + grader feedback (when the task emits it)
     ├── exception.txt
     └── trial.log
 ```
+
+For the model, harbor's `config.json` records only `openai/<served-name>`, a
+free-form alias. `eval_meta.json` (written by `scripts/beaker/eval_meta.py`)
+fills that gap so a batch-downloaded job dir identifies itself:
+
+- `model`: path, revision, and the HF commit SHA that revision resolved to
+  when the eval started.
+- `eval_env`: every `launch_eval.sh` setting, including vLLM version and
+  parsers, max-model-len, TP/DP, dataset, agent, k, overrides and mirror.
+- `vllm_cmd`, `harbor_cmd`: the exact commands that ran.
+- `code`: the tmax commit and harbor version.
+- `beaker`: workload/task/dataset ids.
+- `segments`: one entry per Beaker job that worked on the eval (node, start
+  and finish time, harbor exit code, finished trials at start and end).
+  Resumes after preemptions show up here.
+
+Secret-looking agent env values are redacted.
 
 ### `compute_stats.py` — aggregate reward + pass@k
 

@@ -33,6 +33,8 @@ import sys
 import time
 from pathlib import Path
 
+# Our own bookkeeping files; they survive a wipe (eval_meta.json keeps segment history).
+KEEP_ON_WIPE = {"eval_meta.json", "resume_log.txt"}
 API_BASE_RE = re.compile(r"^http://(localhost|127\.0\.0\.1):\d+/v1/?$")
 
 
@@ -76,7 +78,7 @@ def _rewrite_file(path: Path, new: str) -> int:
 
 def cmd_prepare(args) -> int:
     jd = Path(args.job_dir)
-    if not jd.is_dir() or not any(jd.iterdir()):
+    if not jd.is_dir() or not any(p for p in jd.iterdir() if p.name not in KEEP_ON_WIPE):
         log(f"no earlier state in {jd} — fresh run")
         return 0
     if _load(jd / "config.json") is None:
@@ -84,6 +86,8 @@ def cmd_prepare(args) -> int:
         # harbor mix old trial dirs into a fresh job.
         log(f"{jd}/config.json missing or unparseable — wiping {jd} for a fresh run")
         for p in jd.iterdir():
+            if p.name in KEEP_ON_WIPE:
+                continue
             shutil.rmtree(p) if p.is_dir() else p.unlink()
         return 0
 

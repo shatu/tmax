@@ -667,6 +667,15 @@ if [ "$EVAL_RESUMABLE" = "1" ]; then
         --job-dir "jobs/$JOB_NAME" \
         --api-base "http://localhost:$API_PORT/v1"
 fi
+# Record what this eval is (model path/revision/HF sha, vLLM flags, dataset,
+# agent, k, git commit, Beaker ids) plus one entry per job segment, so a
+# downloaded job dir identifies itself. Harbor's config.json only names the
+# served alias. Best effort: never fails the eval.
+python3 "$SCRIPT_DIR/eval_meta.py" start \
+    --job-dir "jobs/$JOB_NAME" \
+    --vllm-cmd "${VLLM_CMD[*]}" \
+    --harbor-cmd "${HARBOR_CMD[*]}" \
+    --api-port "$API_PORT" || log "eval_meta.py start failed (continuing)"
 log "running harbor: ${HARBOR_CMD[*]}"
 
 # Background progress reporter — harbor's built-in progress bar uses ANSI
@@ -709,6 +718,8 @@ set +e
 "${HARBOR_CMD[@]}"
 HARBOR_RC=$?
 set -e
+python3 "$SCRIPT_DIR/eval_meta.py" finish --job-dir "jobs/$JOB_NAME" --harbor-rc "$HARBOR_RC" \
+    || log "eval_meta.py finish failed (continuing)"
 
 kill "$PROGRESS_PID" 2>/dev/null || true
 wait "$PROGRESS_PID" 2>/dev/null || true
