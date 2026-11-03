@@ -80,6 +80,7 @@ HARBOR_OVERRIDE_MEMORY_MB=""
 HARBOR_OVERRIDE_STORAGE_MB=""
 HARBOR_OVERRIDE_GPUS=""
 MIN_RUNTIME=""
+EVAL_RESUMABLE=1                    # resume from the previous job's /results after a Beaker preemption
 HOSTNAME_CONSTRAINT=""              # optional: pin to a specific beaker node hostname (gantry --hostname)
 HARBOR_TIMEOUT_MULTIPLIER=""
 HARBOR_AGENT_TIMEOUT_MULTIPLIER=""
@@ -164,6 +165,7 @@ Options:
                         harbor per-task environment storage override in MB
   --override-gpus N      harbor per-task environment GPU override
   --min-runtime DUR      gantry --min-runtime (e.g. 8h): guaranteed runtime before preemption
+  --no-resume            disable preemption-resume (harbor writes to local disk, copied at end)
   --hostname HOST        pin the job to one beaker node (gantry --hostname; repeatable via comma list)
   --timeout-multiplier X harbor task timeout multiplier
   --agent-timeout-multiplier X
@@ -228,6 +230,7 @@ while [ $# -gt 0 ]; do
         --override-storage-mb) HARBOR_OVERRIDE_STORAGE_MB="$2"; shift 2 ;;
         --override-gpus)   HARBOR_OVERRIDE_GPUS="$2"; shift 2 ;;
         --min-runtime)     MIN_RUNTIME="$2"; shift 2 ;;
+        --no-resume)       EVAL_RESUMABLE=0; shift ;;
         --hostname)        HOSTNAME_CONSTRAINT="$2"; shift 2 ;;
         --timeout-multiplier) HARBOR_TIMEOUT_MULTIPLIER="$2"; shift 2 ;;
         --agent-timeout-multiplier) HARBOR_AGENT_TIMEOUT_MULTIPLIER="$2"; shift 2 ;;
@@ -303,6 +306,7 @@ cat <<EOF
   Model info:   ${HOSTED_VLLM_MODEL_INFO:-<auto>}
   Job name:     ${JOB_NAME}
   Results dir:  ${RESULTS_DIR}
+  Resumable:    ${EVAL_RESUMABLE}
   Image:        ${BEAKER_IMAGE:+beaker:${BEAKER_IMAGE}}${BEAKER_DOCKER_IMAGE:+docker:${BEAKER_DOCKER_IMAGE}}
   Repo ref:     ${REPO_GIT_REF}
   Gantry:       ${BEAKER_NAME}  cluster=${CLUSTER}  workspace=${BEAKER_WORKSPACE}
@@ -369,6 +373,7 @@ GANTRY_CMD=(
     --env "HARBOR_ENVIRONMENT_BUILD_TIMEOUT_MULTIPLIER=${HARBOR_ENVIRONMENT_BUILD_TIMEOUT_MULTIPLIER}"
     --env "HARBOR_AGENT_TIMEOUT_SEC=${HARBOR_AGENT_TIMEOUT_SEC}"
     --env "JOB_NAME=${JOB_NAME}"
+    --env "EVAL_RESUMABLE=${EVAL_RESUMABLE}"
     --env BEAKER_ALLOW_SUBCONTAINERS=1
     --env BEAKER_SKIP_DOCKER_SOCKET=1
     --host-networking

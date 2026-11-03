@@ -573,22 +573,47 @@ and `OPENAI_BASE_URL`.
 
 ### Output layout
 
-A finished job writes `jobs/<job-name>/`:
+A finished job writes `jobs/<job-name>/`. On the Beaker path it lives at
+`/results/<job-name>/` in the result dataset of the job that finished the
+eval.
 
 ```
 jobs/<job-name>/
+├── eval_meta.json              # WHAT eval this is (Beaker path; see below)
 ├── result.json                 # job-level: trial count, reward dist, errors
 ├── config.json                 # the resolved harbor config (presence = resumable)
+├── lock.json                   # harbor's resolved trial list + task digests
 ├── stats.txt                   # compute_stats.py human summary  (Beaker path)
 ├── metrics.json                # compute_stats.py structured metrics (Beaker path)
+├── vllm.log / vllm.tail.txt    # final segment's vLLM log
+├── resume_log.txt              # one line per resume after a preemption
 └── <task>__<rand>/             # one dir per trial
     ├── result.json             # task_name, verifier_result.rewards.reward, exception_info
-    ├── agent/oracle.txt        # agent stdout
+    ├── agent/trajectory.json   # full rollout: messages, tool_calls, tool outputs (Vanillux2Agent)
+    ├── agent/timing.json, agent/usage.json
     ├── verifier/test-stdout.txt
     ├── verifier/reward.txt
+    ├── verifier/detailed_scores.json   # sub-scores + grader feedback (when the task emits it)
     ├── exception.txt
     └── trial.log
 ```
+
+For the model, harbor's `config.json` records only `openai/<served-name>`, a
+free-form alias. `eval_meta.json` (written by `scripts/beaker/eval_meta.py`)
+fills that gap so a batch-downloaded job dir identifies itself:
+
+- `model`: path, revision, and the HF commit SHA that revision resolved to
+  when the eval started.
+- `eval_env`: every `launch_eval.sh` setting, including vLLM version and
+  parsers, max-model-len, TP/DP, dataset, agent, k, overrides and mirror.
+- `vllm_cmd`, `harbor_cmd`: the exact commands that ran.
+- `code`: the tmax commit and harbor version.
+- `beaker`: workload/task/dataset ids.
+- `segments`: one entry per Beaker job that worked on the eval (node, start
+  and finish time, harbor exit code, finished trials at start and end).
+  Resumes after preemptions show up here.
+
+Secret-looking agent env values are redacted.
 
 ### `compute_stats.py` — aggregate reward + pass@k
 
@@ -620,6 +645,35 @@ If `jobs/$JOB_NAME/` exists with a `config.json`, you can resume with
 (re-running only trials that failed with a transient Daytona error). The
 `run_rldata_*.sh` wrappers do this automatically. To start fresh, change
 `JOB_NAME` or delete the dir.
+
+### Surviving Beaker preemption (automatic on the Beaker path)
+
+Beaker gives eval jobs an 8h `min_runtime`. After that a job can be preempted
+(SIGTERM, ~10s grace), and `auto_resume` starts a **new job** in the same task,
+copying the preempted job's `/results` into it. That carry-over needs
+auto-resume left on, so don't pass gantry's `--not-preemptible`. Long runs
+(TB2.1/tblite at k=5, SWE-bench Verified at ~30h) used to lose everything at a
+preemption, because harbor's state lived on local disk until the end.
+
+`run_eval_in_job.sh` now does this by default (`EVAL_RESUMABLE=1`):
+
+1. Harbor writes its job dir straight into `/results/$JOB_NAME` (symlinked
+   from `jobs/$JOB_NAME`), so Beaker carries it into the replacement job.
+2. Before `harbor run`, `scripts/beaker/eval_resume.py prepare` drops trials
+   that were killed mid-write or cancelled. It also rewrites the old job's
+   random server port (`api_base`, which is baked into `config.json`,
+   `lock.json` and every trial config) to the new one.
+3. The identical `harbor run` then keeps the finished trials and runs only
+   the rest. Harbor refuses to resume if any other config field differs.
+
+Verified on exp `01M6F95K86AXSSBJ6JB3ESWMFY` (12 tblite tasks, preempted 3
+times). All 12 tasks finished once each, and the trials inherited from the
+first job were byte-identical in the final result.
+
+Each segment costs queue time plus ~10-20 min of setup, and reruns only the
+trials that were in flight. `resume_log.txt` in the job dir records each
+resume. `--no-resume` restores the old behaviour: harbor writes to local
+disk, and the dir is copied to `/results` at the end.
 
 ### Clean errored trials
 
