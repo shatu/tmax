@@ -46,6 +46,14 @@ ABORT_EXCEPTIONS = (
     litellm.exceptions.PermissionDeniedError,
 )
 
+# SGLang's context-overflow 400s. litellm maps vLLM's wording ("This model's
+# maximum context length is ...") to ContextWindowExceededError but not these,
+# so without this they are retried and end the trial unverified.
+_SGLANG_CONTEXT_OVERFLOW_RE = re.compile(
+    r"Requested token count exceeds the model's maximum context length"
+    r"|is longer than the model's context length"
+)
+
 MAX_RETRIES = 5
 RETRY_BASE_DELAY = 2.0
 LLM_TIMEOUT_SECONDS = 5 * 60 * 60
@@ -282,6 +290,14 @@ class Vanillux2Agent(BaseAgent):
             except ABORT_EXCEPTIONS:
                 raise
             except Exception as exc:
+                if isinstance(
+                    exc, litellm.exceptions.BadRequestError
+                ) and _SGLANG_CONTEXT_OVERFLOW_RE.search(str(exc)):
+                    raise litellm.exceptions.ContextWindowExceededError(
+                        message=str(exc),
+                        model=model,
+                        llm_provider=getattr(exc, "llm_provider", None) or "openai",
+                    ) from exc
                 if attempt == MAX_RETRIES:
                     logger.error("Max retries reached: %s: %s", type(exc).__name__, exc)
                     raise
