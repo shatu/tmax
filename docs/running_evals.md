@@ -664,7 +664,8 @@ preemption, because harbor's state lived on local disk until the end.
 1. Harbor writes its job dir straight into `/results/$JOB_NAME` (symlinked
    from `jobs/$JOB_NAME`), so Beaker carries it into the replacement job.
 2. Before `harbor run`, `scripts/beaker/eval_resume.py prepare` drops trials
-   that were killed mid-write or cancelled. It also rewrites the old job's
+   that were killed mid-write, cancelled, or failed with the agent's
+   "Connection error" (the server was gone). It also rewrites the old job's
    random server port (`api_base`, which is baked into `config.json`,
    `lock.json` and every trial config) to the new one.
 3. The identical `harbor run` then keeps the finished trials and runs only
@@ -678,6 +679,16 @@ Each segment costs queue time plus ~10-20 min of setup, and reruns only the
 trials that were in flight. `resume_log.txt` in the job dir records each
 resume. `--no-resume` restores the old behaviour: harbor writes to local
 disk, and the dir is copied to `/results` at the end.
+
+### When the inference server dies mid-run
+
+`run_eval_in_job.sh` watches the server process while harbor runs. If it
+exits (a crash, or SGLang's watchdog), the remaining trials could only fail
+with "Connection error", so the script prints the tail of the server log,
+stops harbor with SIGTERM (as a preemption does) and exits 3, so the job
+fails instead of reporting a low score. Only an exited process counts; a
+slow or stalled server is left alone. The job dir keeps the finished trials,
+and a resume drops the ones that hit the dead server.
 
 ### Clean errored trials
 
