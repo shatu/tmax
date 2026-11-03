@@ -16,6 +16,8 @@
 #                            (default: 0.5.21)
 #   SGLANG_TOOL_CALL_PARSER  SGLang tool parser (default: qwen3_coder)
 #   SGLANG_REASONING_PARSER  SGLang reasoning parser (default: qwen3)
+#   SGLANG_WATCHDOG_TIMEOUT  seconds without a finished batch before SGLang
+#                            stops itself (default: 1800, as Miles TMax trains)
 #   VLLM_LANGUAGE_MODEL_ONLY load the language model only when set to 1 (vLLM
 #                            --language_model_only, SGLang --language-only)
 #   VLLM_PORT                port for vLLM (default: 8008)
@@ -513,6 +515,11 @@ sglang)
     : "${SGLANG_VERSION:=0.5.21}"
     : "${SGLANG_TOOL_CALL_PARSER:=qwen3_coder}"
     : "${SGLANG_REASONING_PARSER:=qwen3}"
+    # SGLang stops the whole server when no batch finishes for this long, and it
+    # counts wall-clock time, so a node stall counts too: at the 300 s default a
+    # stalled node killed a TBlite eval's server on resume. 1800 is what the
+    # Miles TMax configs pass (--sglang-watchdog-timeout 1800).
+    : "${SGLANG_WATCHDOG_TIMEOUT:=1800}"
     # Prefer the image's own SGLang: the Miles image carries the sglang-miles build
     # the rollout engines ran. Elsewhere, install the release it is based on.
     SERVER_CMD=()
@@ -545,7 +552,8 @@ sglang)
                   --mem-fraction-static 0.85
                   --tp-size "$TP_SIZE"
                   --dp-size "$DP_SIZE"
-                  --tool-call-parser "$SGLANG_TOOL_CALL_PARSER" )
+                  --tool-call-parser "$SGLANG_TOOL_CALL_PARSER"
+                  --watchdog-timeout "$SGLANG_WATCHDOG_TIMEOUT" )
     if [ "$MODEL_REVISION" != main ]; then
         SERVER_CMD+=( --revision "$MODEL_REVISION" )
     fi

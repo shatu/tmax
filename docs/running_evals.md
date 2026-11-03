@@ -240,6 +240,10 @@ template as in training.
   (SGLang `--dp-size`).
 - **Text-only checkpoints.** `--language-model-only` maps to SGLang's
   `--language-only` (Miles `--save-hf` snapshots ship no vision tower).
+- **Watchdog.** SGLang stops the whole server when no batch finishes for
+  `--watchdog-timeout` seconds of wall-clock time, so a stalled node counts too.
+  The job passes 1800 (`SGLANG_WATCHDOG_TIMEOUT`), as the Miles TMax configs do;
+  SGLang's own default is 300. vLLM at TP 1 has no such timeout.
 - **Scripts dataset.** A reused `--beaker-scripts-dataset` must hold this version of
   `run_eval_in_job.sh`; an older upload ignores `ENGINE` and serves with vLLM.
 
