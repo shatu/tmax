@@ -571,6 +571,35 @@ If `jobs/$JOB_NAME/` exists with a `config.json`, you can resume with
 `run_rldata_*.sh` wrappers do this automatically. To start fresh, change
 `JOB_NAME` or delete the dir.
 
+### Surviving Beaker preemption (automatic on the Beaker path)
+
+Beaker gives eval jobs an 8h `min_runtime`. After that a job can be preempted
+(SIGTERM, ~10s grace), and `auto_resume` starts a **new job** in the same task,
+copying the preempted job's `/results` into it. That carry-over needs
+auto-resume left on, so don't pass gantry's `--not-preemptible`. Long runs
+(TB2.1/tblite at k=5, SWE-bench Verified at ~30h) used to lose everything at a
+preemption, because harbor's state lived on local disk until the end.
+
+`run_eval_in_job.sh` now does this by default (`EVAL_RESUMABLE=1`):
+
+1. Harbor writes its job dir straight into `/results/$JOB_NAME` (symlinked
+   from `jobs/$JOB_NAME`), so Beaker carries it into the replacement job.
+2. Before `harbor run`, `scripts/beaker/eval_resume.py prepare` drops trials
+   that were killed mid-write or cancelled. It also rewrites the old job's
+   random vLLM port (`api_base`, which is baked into `config.json`,
+   `lock.json` and every trial config) to the new one.
+3. The identical `harbor run` then keeps the finished trials and runs only
+   the rest. Harbor refuses to resume if any other config field differs.
+
+Verified on exp `01M6F95K86AXSSBJ6JB3ESWMFY` (12 tblite tasks, preempted 3
+times). All 12 tasks finished once each, and the trials inherited from the
+first job were byte-identical in the final result.
+
+Each segment costs queue time plus ~10-20 min of setup, and reruns only the
+trials that were in flight. `resume_log.txt` in the job dir records each
+resume. `--no-resume` restores the old behaviour: harbor writes to local
+disk, and the dir is copied to `/results` at the end.
+
 ### Clean errored trials
 
 To re-run errored trials selectively, delete them so harbor re-creates them:
