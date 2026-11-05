@@ -361,6 +361,58 @@ if '"--override-with-envs",' not in text:
     )
     openhands_py.write_text(text)
     print("patched openhands.py: apply env settings in headless mode")
+
+# environment.exec(timeout_sec=N) can hang until the TRIAL's agent timeout
+# (up to an hour). On timeout, harbor kills only its direct child (`docker`,
+# which is podman here). Podman's external compose provider (`docker-compose`)
+# is a grandchild holding the same stdout pipe. The in-container command keeps
+# streaming into that pipe, so harbor's final, unbounded `communicate()` never
+# sees EOF. Fix: run the compose client in its own process group, kill the
+# whole group, and never wait unbounded.
+# Seen: tmax-9b tblite book-portfolio-analysis, 4/5 trials stuck 3600s on a
+# 120s command. Reproduced locally with `sleep 100000`.
+docker_py = hdir / "environments/docker/docker.py"
+text = docker_py.read_text()
+if "tmax: kill the compose client's whole process group" not in text:
+    old_spawn = (
+        "        process = await asyncio.create_subprocess_exec(\n"
+        "            *full_command,\n"
+        "            env=env,\n"
+        "            stdin=asyncio.subprocess.DEVNULL,\n"
+    )
+    old_timeout = (
+        "        except asyncio.TimeoutError:\n"
+        "            process.terminate()\n"
+        "            try:\n"
+        "                stdout_bytes, stderr_bytes = await asyncio.wait_for(\n"
+        "                    process.communicate(), timeout=5\n"
+        "                )\n"
+        "            except asyncio.TimeoutError:\n"
+        "                process.kill()\n"
+        "                stdout_bytes, stderr_bytes = await process.communicate()\n"
+        "            raise RuntimeError(f\"Command timed out after {timeout_sec} seconds\")\n"
+    )
+    if text.count(old_spawn) != 1 or text.count(old_timeout) != 1:
+        raise SystemExit("FATAL: harbor docker.py exec-timeout code changed; update the tmax patch")
+    text = text.replace(old_spawn, old_spawn + "            start_new_session=True,\n")
+    text = text.replace(old_timeout, (
+        "        except asyncio.TimeoutError:\n"
+        "            # tmax: kill the compose client's whole process group, never wait unbounded.\n"
+        "            import signal as _signal\n"
+        "            for _sig, _grace in ((_signal.SIGTERM, 5), (_signal.SIGKILL, 5)):\n"
+        "                try:\n"
+        "                    os.killpg(process.pid, _sig)\n"
+        "                except (ProcessLookupError, PermissionError):\n"
+        "                    pass\n"
+        "                try:\n"
+        "                    await asyncio.wait_for(process.communicate(), timeout=_grace)\n"
+        "                    break\n"
+        "                except asyncio.TimeoutError:\n"
+        "                    pass\n"
+        "            raise RuntimeError(f\"Command timed out after {timeout_sec} seconds\")\n"
+    ))
+    docker_py.write_text(text)
+    print("patched docker.py: exec timeout kills compose process group, bounded wait")
 PY
 
 # --- 4. Bring podman service up (uses scripts/setup_podman_harbor.sh) -------

@@ -130,7 +130,11 @@ structured tool-calls** (it reads the `command` argument out of
   `Step 'bash' timed out after 120s. Args: {'command': ...}`, and the episode
   goes on, as in training (open-instruct and Miles). Before this, harbor raised
   `RuntimeError: Command timed out after 120 seconds` and the trial ended with
-  reward 0.
+  reward 0. Harbor's own exec timeout (+30 s) is the backstop, for images whose
+  `timeout` lacks `-s/-k`. Stock harbor 0.6.6 could hang there until the
+  trial's agent time limit (up to 3600 s): it killed only its direct child,
+  while podman's compose provider still held the output pipe. The Beaker path
+  patches this in `run_eval_in_job.sh`.
 - **Termination:** `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` submit marker,
   `max_steps`, optional cost limit, no-tool-call, or context-window overflow.
 - **Hardening:** exponential-backoff retry; auth / not-found / context-window /
