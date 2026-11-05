@@ -11,8 +11,9 @@ file adds the rest, so a batch-downloaded job dir identifies itself:
   * the tmax git commit and harbor version;
   * Beaker workload/job/node ids;
   * `segments`: one entry per Beaker job that worked on this eval (a new one
-    after each preemption), with start/finish time, harbor exit code and how
-    many trials were already finished when it started.
+    after each preemption), with GPU model, start/finish time, harbor exit code
+    and how many trials were already finished when it started;
+  * `gpu_types`: every GPU model across segments (more than one = mixed hardware).
 
 Secrets are never written: HF_TOKEN/DOCKER_PAT are not read, and agent env
 values whose name looks secret are redacted.
@@ -104,6 +105,16 @@ def hf_commit(model: str, revision: str) -> str | None:
         return None
 
 
+def gpus() -> list[str]:
+    """GPU model per visible device, e.g. ["NVIDIA A100-SXM4-80GB"] (empty if no nvidia-smi).
+
+    Matters for comparing runs: the same eval on A100 vs H100 gives the same
+    mean reward but many more AgentTimeoutErrors on time-tight tasks.
+    """
+    out = sh(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"])
+    return [ln.strip() for ln in out.splitlines() if ln.strip()] if out else []
+
+
 def count_finished(jd: Path) -> int:
     return sum(1 for p in jd.iterdir() if p.is_dir() and (p / "result.json").exists())
 
@@ -152,16 +163,21 @@ def cmd_start(args) -> int:
     )
     meta.setdefault("created_at", now())
     segs = meta.setdefault("segments", [])
+    seg_gpus = gpus()
     segs.append({
         "beaker_job_id": os.environ.get("BEAKER_JOB_ID", ""),
         "node_hostname": os.environ.get("BEAKER_NODE_HOSTNAME", ""),
         "gpus": os.environ.get("BEAKER_ASSIGNED_GPU_COUNT", ""),
+        "gpu_names": seg_gpus,
         "started_at": now(),
         "api_port": args.api_port,
         "finished_trials_at_start": count_finished(jd),
         "finished_at": None,
         "harbor_rc": None,
     })
+    # A resumed eval can land on different hardware after a preemption. Keep
+    # every GPU type that worked on it, so a mixed run is obvious at a glance.
+    meta["gpu_types"] = sorted({g for s in segs for g in s.get("gpu_names") or []})
     save(jd, meta)
     print(f"[eval_meta] wrote {jd / META} (segment {len(segs)})", flush=True)
     return 0

@@ -559,9 +559,13 @@ fills that gap so a batch-downloaded job dir identifies itself:
 - `vllm_cmd`, `harbor_cmd`: the exact commands that ran.
 - `code`: the tmax commit and harbor version.
 - `beaker`: workload/task/dataset ids.
-- `segments`: one entry per Beaker job that worked on the eval (node, start
-  and finish time, harbor exit code, finished trials at start and end).
-  Resumes after preemptions show up here.
+- `segments`: one entry per Beaker job that worked on the eval (node, GPU
+  model, start and finish time, harbor exit code, finished trials at start
+  and end). Resumes after preemptions show up here.
+- `gpu_types`: every GPU model across segments. It matters: on the same 8
+  tblite tasks, tmax-9b on A100 (ai2/saturn) matched H100 mean reward but had
+  11/40 `AgentTimeoutError`s vs 2/40, because trials run about 2x slower and
+  hit time-tight agent limits.
 
 Secret-looking agent env values are redacted.
 
