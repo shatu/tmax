@@ -36,6 +36,11 @@
 #   HARBOR_AGENT_TIMEOUT_SEC optional exact per-task agent timeout override
 #   JOB_NAME                 harbor job name
 #   RESULTS_DIR              /weka path to copy jobs/$JOB_NAME into
+#   EVAL_RESUMABLE           default 1: harbor writes jobs/$JOB_NAME straight into
+#                            /results/$JOB_NAME. Beaker carries /results into the
+#                            job it auto-resumes after a preemption, and harbor
+#                            resumes from it (see eval_resume.py). Set 0 for the
+#                            old local-disk path.
 #   REPO_GIT_URL, REPO_GIT_REF
 #                            optional — if set, this script self-clones into a
 #                            workdir; otherwise it assumes pwd is the repo.
@@ -473,6 +478,31 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# --- 5a. Resume state (overlaps with vLLM warmup) ----------------------------
+# Beaker preempts eval jobs (e.g. once their 8h min_runtime is up) and
+# auto-resumes them as a new job, copying the old job's /results into it.
+# So harbor writes its job dir straight into /results/$JOB_NAME; after a
+# preemption the carried-over state is already there. harbor 0.6.6 then
+# resumes on its own: finished trials are kept and in-flight ones rerun.
+# See eval_resume.py.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+EVAL_RESUMABLE="${EVAL_RESUMABLE:-1}"
+if [ "$EVAL_RESUMABLE" = "1" ] && [ ! -d /results ]; then
+    log "EVAL_RESUMABLE=1 but /results doesn't exist; disabling resume"
+    EVAL_RESUMABLE=0
+fi
+if [ "$EVAL_RESUMABLE" = "1" ]; then
+    if [ -f "/results/$JOB_NAME/config.json" ]; then
+        log "resuming: found carried-over state in /results/$JOB_NAME"
+    fi
+    mkdir -p jobs "/results/$JOB_NAME"
+    if [ -e "jobs/$JOB_NAME" ] && [ ! -L "jobs/$JOB_NAME" ]; then
+        log "jobs/$JOB_NAME exists locally; moving aside"
+        mv "jobs/$JOB_NAME" "jobs/$JOB_NAME.local-$(date +%s)"
+    fi
+    ln -sfn "/results/$JOB_NAME" "jobs/$JOB_NAME"
+fi
+
 # A 200 on /v1/models can precede the engine actually being able to GENERATE
 # (CUDA-graph capture etc.) — the first completion then fails with "model does
 # not exist", fatal for small runs and lost trials for large ones (notably the
@@ -629,6 +659,23 @@ if [[ "$AGENT_IMPORT_PATH" == *:* ]]; then
 else
     HARBOR_CMD+=( --agent "$AGENT_IMPORT_PATH" )
 fi
+if [ "$EVAL_RESUMABLE" = "1" ]; then
+    # Drop trials killed mid-write / cancelled, and rewrite the previous
+    # job's random vLLM port to ours (harbor refuses to resume on any config
+    # difference, and api_base is baked into config.json/lock.json/trials).
+    python3 "$SCRIPT_DIR/eval_resume.py" prepare \
+        --job-dir "jobs/$JOB_NAME" \
+        --api-base "http://localhost:$API_PORT/v1"
+fi
+# Record what this eval is (model path/revision/HF sha, vLLM flags, dataset,
+# agent, k, git commit, Beaker ids) plus one entry per job segment, so a
+# downloaded job dir identifies itself. Harbor's config.json only names the
+# served alias. Best effort: never fails the eval.
+python3 "$SCRIPT_DIR/eval_meta.py" start \
+    --job-dir "jobs/$JOB_NAME" \
+    --vllm-cmd "${VLLM_CMD[*]}" \
+    --harbor-cmd "${HARBOR_CMD[*]}" \
+    --api-port "$API_PORT" || log "eval_meta.py start failed (continuing)"
 log "running harbor: ${HARBOR_CMD[*]}"
 
 # Background progress reporter — harbor's built-in progress bar uses ANSI
@@ -671,6 +718,8 @@ set +e
 "${HARBOR_CMD[@]}"
 HARBOR_RC=$?
 set -e
+python3 "$SCRIPT_DIR/eval_meta.py" finish --job-dir "jobs/$JOB_NAME" --harbor-rc "$HARBOR_RC" \
+    || log "eval_meta.py finish failed (continuing)"
 
 kill "$PROGRESS_PID" 2>/dev/null || true
 wait "$PROGRESS_PID" 2>/dev/null || true
@@ -708,11 +757,15 @@ if [ -f "$JOB_DIR/metrics.json" ] && [ -d /results ]; then
     cp "$JOB_DIR/metrics.json" /results/metrics.json || true
     log "metrics also available at /results/metrics.json (Beaker UI)"
 fi
-if [ -n "${RESULTS_DIR:-}" ]; then
+if [ "$EVAL_RESUMABLE" = "1" ] && [ "${RESULTS_DIR:-}" = "/results" ]; then
+    log "results already live at /results/$JOB_NAME (resumable mode)"
+elif [ -n "${RESULTS_DIR:-}" ]; then
     if [ -d "$JOB_DIR" ]; then
         log "copying $JOB_DIR -> $RESULTS_DIR/"
-        mkdir -p "$RESULTS_DIR"
-        cp -r "$JOB_DIR" "$RESULTS_DIR/"
+        mkdir -p "$RESULTS_DIR/$JOB_NAME"
+        # "$JOB_DIR/." — JOB_DIR may be a symlink into /results; plain
+        # `cp -r` would copy the symlink instead of the tree.
+        cp -r "$JOB_DIR/." "$RESULTS_DIR/$JOB_NAME/"
         log "results available at $RESULTS_DIR/$JOB_NAME"
         if [ -f "$JOB_DIR/metrics.json" ]; then
             cp "$JOB_DIR/metrics.json" "$RESULTS_DIR/metrics.json"
