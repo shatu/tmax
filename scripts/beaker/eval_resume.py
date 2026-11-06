@@ -11,6 +11,9 @@ run_eval_in_job.sh therefore has harbor write its job dir straight into
 /results/<JOB_NAME>. Before `harbor run`, this script cleans that dir:
   * drops trial dirs whose result.json or config.json don't parse (killed
     mid-write), or whose error is CancelledError;
+  * drops trials that failed because the inference server was gone (the
+    agent's "Connection error"): run_eval_in_job.sh fails the job when the
+    server dies, and those trials say nothing about the model;
   * drops an unparseable job-level result.json or lock.json;
   * rewrites the old job's random vLLM port in the agent kwargs
     (api_base=http://localhost:<port>/v1) to this job's port, in config.json,
@@ -35,6 +38,8 @@ from pathlib import Path
 
 # Our own bookkeeping files; they survive a wipe (eval_meta.json keeps segment history).
 KEEP_ON_WIPE = {"eval_meta.json", "resume_log.txt"}
+# litellm's error when nothing listens on api_base (the server process is gone).
+SERVER_GONE_RE = re.compile(r"OpenAIException - Connection error")
 API_BASE_RE = re.compile(r"^http://(localhost|127\.0\.0\.1):\d+/v1/?$")
 
 
@@ -103,9 +108,12 @@ def cmd_prepare(args) -> int:
         if res is None or cfg is None:
             reason = "unparseable result/config"
         else:
-            et = ((res.get("exception_info") or {}).get("exception_type"))
+            exc = res.get("exception_info") or {}
+            et = exc.get("exception_type")
             if et in drop_types:
                 reason = et
+            elif SERVER_GONE_RE.search(exc.get("exception_message") or ""):
+                reason = f"{et} (server gone)"
         if reason:
             log(f"dropping {td.name}: {reason}")
             shutil.rmtree(td)

@@ -71,6 +71,7 @@ HARBOR_OVERRIDE_MEMORY_MB=""
 HARBOR_OVERRIDE_STORAGE_MB=""
 HARBOR_OVERRIDE_GPUS=""
 MIN_RUNTIME=""
+RETRIES=2                           # Beaker retries of a failed job; each resumes from its /results
 EVAL_RESUMABLE=1                    # resume from the previous job's /results after a Beaker preemption
 HOSTNAME_CONSTRAINT=""              # optional: pin to a specific beaker node hostname (gantry --hostname)
 HARBOR_TIMEOUT_MULTIPLIER=""
@@ -144,6 +145,8 @@ Options:
                         harbor per-task environment storage override in MB
   --override-gpus N      harbor per-task environment GPU override
   --min-runtime DUR      gantry --min-runtime (e.g. 8h): guaranteed runtime before preemption
+  --retries N            Beaker retries of a failed job (default: 2; 0 = none). A retry gets the
+                         failed job's /results, so a resumable eval picks up where it stopped
   --no-resume            disable preemption-resume (harbor writes to local disk, copied at end)
   --hostname HOST        pin the job to one beaker node (gantry --hostname; repeatable via comma list)
   --timeout-multiplier X harbor task timeout multiplier
@@ -207,6 +210,7 @@ while [ $# -gt 0 ]; do
         --override-storage-mb) HARBOR_OVERRIDE_STORAGE_MB="$2"; shift 2 ;;
         --override-gpus)   HARBOR_OVERRIDE_GPUS="$2"; shift 2 ;;
         --min-runtime)     MIN_RUNTIME="$2"; shift 2 ;;
+        --retries)         RETRIES="$2"; shift 2 ;;
         --no-resume)       EVAL_RESUMABLE=0; shift ;;
         --hostname)        HOSTNAME_CONSTRAINT="$2"; shift 2 ;;
         --timeout-multiplier) HARBOR_TIMEOUT_MULTIPLIER="$2"; shift 2 ;;
@@ -258,6 +262,7 @@ cat <<EOF
   Job name:     ${JOB_NAME}
   Results dir:  ${RESULTS_DIR}
   Resumable:    ${EVAL_RESUMABLE}
+  Retries:      ${RETRIES}
   Image:        ${BEAKER_IMAGE:+beaker:${BEAKER_IMAGE}}${BEAKER_DOCKER_IMAGE:+docker:${BEAKER_DOCKER_IMAGE}}
   Repo ref:     ${REPO_GIT_REF}
   Gantry:       ${BEAKER_NAME}  cluster=${CLUSTER}  workspace=${BEAKER_WORKSPACE}
@@ -330,6 +335,9 @@ GANTRY_CMD=(
 
 if [ -n "$MIN_RUNTIME" ]; then
     GANTRY_CMD+=(--min-runtime "$MIN_RUNTIME")
+fi
+if [ "$RETRIES" -gt 0 ]; then
+    GANTRY_CMD+=(--retries "$RETRIES")
 fi
 if [ -n "$HOSTNAME_CONSTRAINT" ]; then
     for h in ${HOSTNAME_CONSTRAINT//,/ }; do GANTRY_CMD+=(--hostname "$h"); done
