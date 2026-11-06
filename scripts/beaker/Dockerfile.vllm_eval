@@ -1,0 +1,67 @@
+# Job image for `launch_eval.sh` with the default vLLM engine.
+#
+# Replaces hamishivi/tmax-eval-interactive, which has no Dockerfile anywhere. A
+# probe of that image (exp 01M6SE9C5Q3DW0QDQCQVRKE53A, 2026-11-06) found:
+#   * an Ai2 interactive-session base: nvidia/cuda 12.9.1 cuDNN devel on Ubuntu
+#     24.04, Python 3.12, plus session extras (aws, gcloud, ollama, s5cmd, extra
+#     Pythons, ssh server, cursor-server) that the eval job never uses;
+#   * open-instruct's podman stack: podman 5.6.2 + crun 1.14.3 from source, its
+#     /etc/containers config, `docker` -> podman, root subuid/subgid
+#     10000:11165536, setup_dockerio_mirror;
+#   * the Docker Compose v2 plugin 5.1.4 in /usr/libexec/docker/cli-plugins.
+#     Harbor runs `docker compose`, i.e. `podman compose`, which hands off to it.
+# This image keeps the CUDA base, Python and the sandbox stack, and drops the
+# session extras. It also bakes in uv, which the old image lacked: every job
+# downloaded the latest uv at start.
+#
+# vLLM itself is not baked in: run_eval_in_job.sh still runs
+# `uvx vllm==$VLLM_VERSION serve` (pinned per launch with --vllm-version).
+#
+# Build from the tmax repo root with podman, then upload to Beaker:
+#   podman build -f scripts/beaker/Dockerfile.vllm_eval -t localhost/tmax-vllm-eval:YYYYMMDD .
+#   podman system service --time=0 unix:///tmp/podman-api.sock &
+#   DOCKER_HOST=unix:///tmp/podman-api.sock \
+#       beaker image create localhost/tmax-vllm-eval:YYYYMMDD -n tmax-vllm-eval-YYYYMMDD -w ai2/oe-agents
+FROM nvidia/cuda:12.9.1-cudnn-devel-ubuntu24.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+ENV TZ=America/Los_Angeles \
+    LANG=C.UTF-8 \
+    PYTHONUNBUFFERED=1 \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+# Python 3.12 with headers: uv builds the tmax venv and the uvx vLLM env on the
+# system interpreter, and Triton/FlashInfer compile kernels against Python.h at
+# run time. gcc and nvcc (from the base) cover those JIT builds as well.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        curl \
+        git \
+        git-lfs \
+        python3 \
+        python3-dev \
+        python3-venv \
+        tzdata \
+        wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Podman 5.6.2 + crun 1.14.3 and their config, exactly as open-instruct's
+# Dockerfile installs them (shared script, so the SGLang eval image matches).
+COPY training/open-instruct/docker/podman /opt/open-instruct/docker/podman
+COPY training/open-instruct/scripts/docker/setup_podman.sh /opt/open-instruct/scripts/docker/setup_podman.sh
+RUN bash /opt/open-instruct/scripts/docker/setup_podman.sh \
+    && install -m 0755 /opt/open-instruct/docker/podman/setup_dockerio_mirror /usr/local/bin/setup_dockerio_mirror
+
+# The compose provider podman uses for `docker compose`: same release as the old
+# image, in the cli-plugins dir podman searches.
+ARG DOCKER_COMPOSE_VERSION=v5.1.4
+RUN mkdir -p /usr/libexec/docker/cli-plugins \
+    && curl -fsSL "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-linux-x86_64" \
+        -o /usr/libexec/docker/cli-plugins/docker-compose \
+    && chmod 0755 /usr/libexec/docker/cli-plugins/docker-compose
+
+# uv, pinned to the release the jobs were downloading when this was written.
+COPY --from=ghcr.io/astral-sh/uv:0.13.7 /uv /uvx /usr/local/bin/
+
+WORKDIR /root

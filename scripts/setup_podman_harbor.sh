@@ -42,7 +42,9 @@ else
     sleep 0.2
   done
   if [ ! -S "$SOCKET" ]; then
-    echo "podman service failed to come up — see /tmp/podman-service.log" >&2
+    # Print the log: in a Beaker job /tmp is gone once the job exits.
+    echo "podman service failed to come up — tail of /tmp/podman-service.log:" >&2
+    tail -n 50 /tmp/podman-service.log >&2 || true
     exit 1
   fi
 fi
