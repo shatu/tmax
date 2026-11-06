@@ -677,7 +677,7 @@ preemption, because harbor's state lived on local disk until the end.
 2. Before `harbor run`, `scripts/beaker/eval_resume.py prepare` drops trials
    that were killed mid-write, cancelled, or failed with the agent's
    "Connection error" (the server was gone). It also rewrites the old job's
-   random vLLM port (`api_base`, which is baked into `config.json`,
+   random server port (`api_base`, which is baked into `config.json`,
    `lock.json` and every trial config) to the new one.
 3. The identical `harbor run` then keeps the finished trials and runs only
    the rest. Harbor refuses to resume if any other config field differs.
@@ -693,13 +693,13 @@ disk, and the dir is copied to `/results` at the end.
 
 ### When the inference server dies mid-run
 
-`run_eval_in_job.sh` watches the vLLM process while harbor runs. If it exits
-(e.g. a crash), the remaining trials could only fail with "Connection error",
-so the script prints the tail of the server log, stops harbor with SIGTERM
-(as a preemption does) and exits 3, so the job fails instead of reporting a
-low score. Only an exited process counts; a slow or stalled server is left
-alone. The job dir keeps the finished trials, and a resume drops the ones
-that hit the dead server.
+`run_eval_in_job.sh` watches the server process while harbor runs. If it
+exits (a crash, or SGLang's watchdog), the remaining trials could only fail
+with "Connection error", so the script prints the tail of the server log,
+stops harbor with SIGTERM (as a preemption does) and exits 3, so the job
+fails instead of reporting a low score. Only an exited process counts; a
+slow or stalled server is left alone. The job dir keeps the finished trials,
+and a resume drops the ones that hit the dead server.
 
 Beaker then retries a failed job (`--retries`, default 2). A retry, like a
 preemption, starts with the failed job's `/results`, so the eval resumes from
