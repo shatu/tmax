@@ -714,10 +714,44 @@ PY
 ) &
 PROGRESS_PID=$!
 
+# Server liveness: harbor runs in the background while we watch the vLLM
+# process. If the server exits mid-run, every remaining trial would fail with
+# "Connection error" and the job would still exit 0, so stop harbor the way a
+# Beaker preemption does (SIGTERM: in-flight trials end as CancelledError,
+# which eval_resume.py drops) and fail the job. Only an exited server process
+# counts; a slow or stalled one is left alone.
 set +e
-"${HARBOR_CMD[@]}"
+"${HARBOR_CMD[@]}" &
+HARBOR_PID=$!
+SERVER_DIED=0
+while kill -0 "$HARBOR_PID" 2>/dev/null; do
+    if ! kill -0 "$VLLM_PID" 2>/dev/null; then
+        SERVER_DIED=1
+        break
+    fi
+    sleep 10
+done
+if [ "$SERVER_DIED" = 1 ]; then
+    log "FATAL: vllm (pid $VLLM_PID) exited while harbor was running — tail of $VLLM_LOG:"
+    tail -"$VLLM_LOG_TAIL_LINES" "$VLLM_LOG" || true
+    log "stopping harbor (SIGTERM) so no more trials run against a dead server"
+    kill -TERM "$HARBOR_PID" 2>/dev/null
+    for _ in $(seq 1 60); do
+        kill -0 "$HARBOR_PID" 2>/dev/null || break
+        sleep 5
+    done
+    if kill -0 "$HARBOR_PID" 2>/dev/null; then
+        log "harbor still running after 5 min; SIGKILL"
+        kill -KILL "$HARBOR_PID" 2>/dev/null
+    fi
+fi
+wait "$HARBOR_PID"
 HARBOR_RC=$?
 set -e
+if [ "$SERVER_DIED" = 1 ]; then
+    log "failing the job: the vllm server died mid-run (harbor exit code $HARBOR_RC)"
+    HARBOR_RC=3
+fi
 python3 "$SCRIPT_DIR/eval_meta.py" finish --job-dir "jobs/$JOB_NAME" --harbor-rc "$HARBOR_RC" \
     || log "eval_meta.py finish failed (continuing)"
 
