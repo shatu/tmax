@@ -57,7 +57,7 @@ CLUSTER="ai2/saturn"
 BUDGET=""
 PRIORITY="urgent"
 BEAKER_WORKSPACE="${BEAKER_WORKSPACE:-ai2/oe-agents}"
-BEAKER_IMAGE="${BEAKER_IMAGE:-hamishivi/tmax-eval-interactive}"
+BEAKER_IMAGE="${BEAKER_IMAGE:-shashankg/tmax-vllm-eval_latest}"  # scripts/beaker/build_vllm_eval_image.sh
 BEAKER_DOCKER_IMAGE="${BEAKER_DOCKER_IMAGE:-}"
 REPO_GIT_URL=""
 REPO_GIT_REF=""
@@ -239,6 +239,24 @@ fi
 
 BEAKER_NAME="eval-${JOB_NAME}"
 
+# Resolve a Beaker image name to its ID now and submit the ID: a moving name like
+# tmax-vllm-eval_latest may point at a newer build by the time a queued job (or a
+# resume after preemption) starts. The job records name, ID and description
+# (which carries the build commit) in eval_meta.json.
+EVAL_IMAGE="${BEAKER_IMAGE:+beaker:${BEAKER_IMAGE}}${BEAKER_DOCKER_IMAGE:+docker:${BEAKER_DOCKER_IMAGE}}"
+EVAL_IMAGE_ID=""
+EVAL_IMAGE_DESCRIPTION=""
+if [ -n "$BEAKER_IMAGE" ]; then
+    if IMAGE_INFO="$(beaker image get "$BEAKER_IMAGE" --format json 2>/dev/null \
+            | python3 -c 'import json,sys; d=json.load(sys.stdin); d=d[0] if isinstance(d,list) else d; print(d["id"]); print((d.get("description") or "").replace("\n"," "))')"; then
+        EVAL_IMAGE_ID="$(sed -n 1p <<<"$IMAGE_INFO")"
+        EVAL_IMAGE_DESCRIPTION="$(sed -n 2p <<<"$IMAGE_INFO")"
+    else
+        echo "error: beaker image '$BEAKER_IMAGE' not found" >&2
+        exit 1
+    fi
+fi
+
 cat <<EOF
 === Launching tmax eval on Beaker ===
   Model:        ${MODEL_PATH}@${REVISION}
@@ -263,7 +281,7 @@ cat <<EOF
   Results dir:  ${RESULTS_DIR}
   Resumable:    ${EVAL_RESUMABLE}
   Retries:      ${RETRIES}
-  Image:        ${BEAKER_IMAGE:+beaker:${BEAKER_IMAGE}}${BEAKER_DOCKER_IMAGE:+docker:${BEAKER_DOCKER_IMAGE}}
+  Image:        ${EVAL_IMAGE}${EVAL_IMAGE_ID:+ = ${EVAL_IMAGE_ID} (${EVAL_IMAGE_DESCRIPTION:-no description})}
   Repo ref:     ${REPO_GIT_REF}
   Gantry:       ${BEAKER_NAME}  cluster=${CLUSTER}  workspace=${BEAKER_WORKSPACE}
 EOF
@@ -325,6 +343,9 @@ GANTRY_CMD=(
     --env "HARBOR_ENVIRONMENT_BUILD_TIMEOUT_MULTIPLIER=${HARBOR_ENVIRONMENT_BUILD_TIMEOUT_MULTIPLIER}"
     --env "HARBOR_AGENT_TIMEOUT_SEC=${HARBOR_AGENT_TIMEOUT_SEC}"
     --env "JOB_NAME=${JOB_NAME}"
+    --env "EVAL_IMAGE=${EVAL_IMAGE}"
+    --env "EVAL_IMAGE_ID=${EVAL_IMAGE_ID}"
+    --env "EVAL_IMAGE_DESCRIPTION=${EVAL_IMAGE_DESCRIPTION}"
     --env "EVAL_RESUMABLE=${EVAL_RESUMABLE}"
     --env BEAKER_ALLOW_SUBCONTAINERS=1
     --env BEAKER_SKIP_DOCKER_SOCKET=1
@@ -357,7 +378,7 @@ if [ "$HARBOR_ENV" = "daytona" ]; then
 fi
 
 if [ -n "$BEAKER_IMAGE" ]; then
-    GANTRY_CMD+=(--beaker-image "$BEAKER_IMAGE")
+    GANTRY_CMD+=(--beaker-image "$EVAL_IMAGE_ID")
 elif [ -n "$BEAKER_DOCKER_IMAGE" ]; then
     GANTRY_CMD+=(--docker-image "$BEAKER_DOCKER_IMAGE")
 else
