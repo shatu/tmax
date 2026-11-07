@@ -72,23 +72,6 @@ if ! command -v podman >/dev/null 2>&1; then
         curl git ca-certificates
 fi
 
-# Some images (e.g. AI2's cuda gantry images) ship a real Docker CLI without
-# the compose plugin. Harbor shells out to `docker compose ...`, so without
-# the plugin every up/down errors with "unknown shorthand flag: 'p' in -p"
-# (Docker CLI rejects `compose` as a subcommand and then mis-parses `-p`).
-# Drop in the official compose v2 static binary as a user-level CLI plugin —
-# it talks the Docker API, which podman serves on /tmp/podman.sock.
-if ! docker compose version >/dev/null 2>&1; then
-    log "installing docker compose v2 plugin"
-    DOCKER_COMPOSE_VERSION="${DOCKER_COMPOSE_VERSION:-v2.39.4}"
-    DOCKER_COMPOSE_ARCH="$(uname -m)"
-    mkdir -p /root/.docker/cli-plugins
-    curl -fsSL \
-        "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-linux-${DOCKER_COMPOSE_ARCH}" \
-        -o /root/.docker/cli-plugins/docker-compose
-    chmod +x /root/.docker/cli-plugins/docker-compose
-fi
-
 # --- 2. Write containers.conf -----------------------------------------------
 log "writing /etc/containers/containers.conf"
 mkdir -p /etc/containers
@@ -116,6 +99,39 @@ CONF
 # Ensure root has a subuid/subgid range big enough for the userns size above.
 grep -q '^root:' /etc/subuid 2>/dev/null || echo 'root:10000:65536' >> /etc/subuid
 grep -q '^root:' /etc/subgid 2>/dev/null || echo 'root:10000:65536' >> /etc/subgid
+
+# Docker Hub mirror + podman config, before any podman call. open-instruct's
+# setup_dockerio_mirror writes registries.conf (when MIRROR_URL is set) and also
+# sets num_locks (default 8192) in containers.conf and the storage driver in
+# storage.conf. Podman sizes its lock memory (/dev/shm/libpod_lock) and records
+# the storage driver on first use, and every later podman process must agree:
+# run after the podman service had started, it made `docker login` fail with
+# "failed to open 8192 locks in /libpod_lock".
+if [ -x /usr/local/bin/setup_dockerio_mirror ]; then
+    /usr/local/bin/setup_dockerio_mirror || log "setup_dockerio_mirror failed (continuing)"
+fi
+
+# The compose check below is the first podman call, so it also has to come after
+# containers.conf is final: an image whose own containers.conf sets a different
+# num_locks would otherwise leave a lock file the service can't open
+# ("failed to open 2048 locks in /libpod_lock").
+#
+# Some images (e.g. AI2's cuda gantry images) ship a real Docker CLI without
+# the compose plugin. Harbor shells out to `docker compose ...`, so without
+# the plugin every up/down errors with "unknown shorthand flag: 'p' in -p"
+# (Docker CLI rejects `compose` as a subcommand and then mis-parses `-p`).
+# Drop in the official compose v2 static binary as a user-level CLI plugin —
+# it talks the Docker API, which podman serves on /tmp/podman.sock.
+if ! docker compose version >/dev/null 2>&1; then
+    log "installing docker compose v2 plugin"
+    DOCKER_COMPOSE_VERSION="${DOCKER_COMPOSE_VERSION:-v2.39.4}"
+    DOCKER_COMPOSE_ARCH="$(uname -m)"
+    mkdir -p /root/.docker/cli-plugins
+    curl -fsSL \
+        "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-linux-${DOCKER_COMPOSE_ARCH}" \
+        -o /root/.docker/cli-plugins/docker-compose
+    chmod +x /root/.docker/cli-plugins/docker-compose
+fi
 
 log "running uv sync"
 if ! command -v uv >/dev/null 2>&1; then
@@ -382,9 +398,7 @@ export DOCKER_HOST="${DOCKER_HOST:-unix:///tmp/podman.sock}"
 #   - image retention is controlled in step 3 by HARBOR_KEEP_TASK_IMAGES
 #     (default 0 = keep harbor's stock --rmi all; set 1 to persist images,
 #     only sane for small image sets like tb2's 89)
-if [ -x /usr/local/bin/setup_dockerio_mirror ]; then
-    /usr/local/bin/setup_dockerio_mirror || log "setup_dockerio_mirror failed (continuing)"
-fi
+# (The mirror itself is configured right after containers.conf, in step 2.)
 if [ -n "${DOCKER_PAT:-}" ]; then
     # Authenticate to Docker Hub so task-image pulls don't hit the
     # unauthenticated rate cap. We `docker login` to VERIFY the credentials and
@@ -394,10 +408,11 @@ if [ -n "${DOCKER_PAT:-}" ]; then
     # Docker Hub account that owns the DOCKER_PAT secret.
     DOCKERHUB_USERNAME="${DOCKERHUB_USERNAME:-shashankg209}"
     log "docker login as '$DOCKERHUB_USERNAME'"
-    if printf '%s' "$DOCKER_PAT" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin docker.io >/dev/null 2>&1; then
+    # Keep the error (stderr only; the PAT goes in on stdin) so a failure says why.
+    if DOCKER_LOGIN_ERR=$(printf '%s' "$DOCKER_PAT" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin docker.io 2>&1 >/dev/null); then
         log "Docker Hub login OK ($DOCKERHUB_USERNAME)"
     else
-        log "FATAL: Docker Hub login failed for '$DOCKERHUB_USERNAME'. Check DOCKERHUB_USERNAME and the DOCKER_PAT secret. Aborting."
+        log "FATAL: Docker Hub login failed for '$DOCKERHUB_USERNAME': ${DOCKER_LOGIN_ERR}. Check DOCKERHUB_USERNAME and the DOCKER_PAT secret. Aborting."
         exit 1
     fi
     # Harbor pulls task images via the podman socket (DOCKER_HOST=.../podman.sock);
@@ -406,10 +421,10 @@ if [ -n "${DOCKER_PAT:-}" ]; then
     # then hits the shared-IP unauthenticated rate cap under --host-networking, even
     # with a paid account). Authenticate podman's own store too.
     if command -v podman >/dev/null 2>&1; then
-        if printf '%s' "$DOCKER_PAT" | podman login -u "$DOCKERHUB_USERNAME" --password-stdin docker.io >/dev/null 2>&1; then
+        if PODMAN_LOGIN_ERR=$(printf '%s' "$DOCKER_PAT" | podman login -u "$DOCKERHUB_USERNAME" --password-stdin docker.io 2>&1 >/dev/null); then
             log "podman Docker Hub login OK ($DOCKERHUB_USERNAME)"
         else
-            log "FATAL: podman Docker Hub login failed for '$DOCKERHUB_USERNAME'. Aborting."
+            log "FATAL: podman Docker Hub login failed for '$DOCKERHUB_USERNAME': ${PODMAN_LOGIN_ERR}. Aborting."
             exit 1
         fi
     fi

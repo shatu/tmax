@@ -17,11 +17,15 @@
 # vLLM itself is not baked in: run_eval_in_job.sh still runs
 # `uvx vllm==$VLLM_VERSION serve` (pinned per launch with --vllm-version).
 #
-# Build from the tmax repo root with podman, then upload to Beaker:
+# Build from the tmax repo root with podman, at a committed tree, then upload to
+# Beaker as tmax-vllm-eval-YYYYMMDD with the commit in the description (Beaker
+# images keep no other record of what they were built from):
 #   podman build -f scripts/beaker/Dockerfile.vllm_eval -t localhost/tmax-vllm-eval:YYYYMMDD .
-#   podman system service --time=0 unix:///tmp/podman-api.sock &
-#   DOCKER_HOST=unix:///tmp/podman-api.sock \
-#       beaker image create localhost/tmax-vllm-eval:YYYYMMDD -n tmax-vllm-eval-YYYYMMDD -w ai2/oe-agents
+#   podman system service --time=0 unix:///tmp/podman-api.sock &   # short path: socket path limit
+#   DOCKER_HOST=unix:///tmp/podman-api.sock beaker image create localhost/tmax-vllm-eval:YYYYMMDD \
+#       -n tmax-vllm-eval-YYYYMMDD -w ai2/oe-agents \
+#       --description "tmax scripts/beaker/Dockerfile.vllm_eval @ $(git rev-parse HEAD)"
+# Then point launch_eval.sh's BEAKER_IMAGE default at shashankg/tmax-vllm-eval-YYYYMMDD.
 FROM nvidia/cuda:12.9.1-cudnn-devel-ubuntu24.04
 
 ARG DEBIAN_FRONTEND=noninteractive
@@ -52,6 +56,12 @@ COPY training/open-instruct/docker/podman /opt/open-instruct/docker/podman
 COPY training/open-instruct/scripts/docker/setup_podman.sh /opt/open-instruct/scripts/docker/setup_podman.sh
 RUN bash /opt/open-instruct/scripts/docker/setup_podman.sh \
     && install -m 0755 /opt/open-instruct/docker/podman/setup_dockerio_mirror /usr/local/bin/setup_dockerio_mirror
+
+# open-instruct's containers.conf sets num_locks = 8192; the old eval image's
+# copy did not. The eval job writes its own containers.conf (podman's default
+# 2048 locks), and a podman call made under 8192 first leaves a lock file the
+# service then can't open. Match the old image.
+RUN sed -i '/^num_locks/d' /etc/containers/containers.conf
 
 # The compose provider podman uses for `docker compose`: same release as the old
 # image, in the cli-plugins dir podman searches.
