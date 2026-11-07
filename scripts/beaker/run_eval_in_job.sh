@@ -83,13 +83,15 @@ if ! command -v podman >/dev/null 2>&1; then
         curl git ca-certificates
 fi
 
-# Harbor and the Docker Hub login below shell out to `docker`; images without a
-# Docker CLI (e.g. the Miles image --engine sglang runs in) get the static one.
+# The eval images (Dockerfile.vllm_eval, Dockerfile.sglang_eval) bake in the
+# sandbox stack: podman 5.6.2 + crun, `docker` -> podman, root subuid range and
+# setup_dockerio_mirror. Harbor and the Docker Hub login below shell out to
+# `docker`. Patching a Docker CLI into an image without that stack (tried: apt
+# podman 4.9 + the static Docker CLI) failed every sandbox, so refuse instead.
+SANDBOX_STACK_HINT="this image lacks the eval sandbox stack; use an image built from scripts/beaker/Dockerfile.vllm_eval or scripts/beaker/Dockerfile.sglang_eval"
 if ! command -v docker >/dev/null 2>&1; then
-    log "installing the docker CLI"
-    DOCKER_CLI_VERSION="${DOCKER_CLI_VERSION:-27.5.1}"
-    curl -fsSL "https://download.docker.com/linux/static/stable/$(uname -m)/docker-${DOCKER_CLI_VERSION}.tgz" \
-        | tar -xz -C /usr/local/bin --strip-components=1 docker/docker
+    log "FATAL: no \`docker\` command: ${SANDBOX_STACK_HINT}. Aborting."
+    exit 1
 fi
 
 # --- 2. Write containers.conf -----------------------------------------------
@@ -127,20 +129,11 @@ grep -q '^root:' /etc/subgid 2>/dev/null || echo 'root:10000:65536' >> /etc/subg
 # the storage driver on first use, and every later podman process must agree:
 # run after the podman service had started, it made `docker login` fail with
 # "failed to open 8192 locks in /libpod_lock".
-# Images without it (e.g. the Miles image --engine sglang runs in) use the copy
-# vendored next to this script (open-instruct's docker/podman/setup_dockerio_mirror).
-if [ -x /usr/local/bin/setup_dockerio_mirror ]; then
-    /usr/local/bin/setup_dockerio_mirror || log "setup_dockerio_mirror failed (continuing)"
-elif [ -f "$SCRIPT_DIR/setup_dockerio_mirror" ]; then
-    # It patches only the driver into storage.conf, and apt's podman 4.9 rejects
-    # a storage.conf without runroot/graphroot (every podman CLI call then fails),
-    # so seed the defaults first, as Miles's tmax_beaker_entry.sh does.
-    if ! grep -qs '^graphroot' /etc/containers/storage.conf; then
-        printf '[storage]\ndriver = "overlay"\nrunroot = "/run/containers/storage"\ngraphroot = "/var/lib/containers/storage"\n' \
-            > /etc/containers/storage.conf
-    fi
-    python3 "$SCRIPT_DIR/setup_dockerio_mirror" || log "setup_dockerio_mirror failed (continuing)"
+if [ ! -x /usr/local/bin/setup_dockerio_mirror ]; then
+    log "FATAL: no /usr/local/bin/setup_dockerio_mirror: ${SANDBOX_STACK_HINT}. Aborting."
+    exit 1
 fi
+/usr/local/bin/setup_dockerio_mirror || log "setup_dockerio_mirror failed (continuing)"
 
 # The compose check below is the first podman call, so it also has to come after
 # containers.conf is final: an image whose own containers.conf sets a different
@@ -151,11 +144,13 @@ fi
 # the compose plugin. Harbor shells out to `docker compose ...`, so without
 # the plugin every up/down errors with "unknown shorthand flag: 'p' in -p"
 # (Docker CLI rejects `compose` as a subcommand and then mis-parses `-p`).
-# Drop in the official compose v2 static binary as a user-level CLI plugin —
-# it talks the Docker API, which podman serves on /tmp/podman.sock.
+# Drop in the official compose static binary as a user-level CLI plugin —
+# it talks the Docker API, which podman serves on /tmp/podman.sock. The default
+# is the release Dockerfile.vllm_eval bakes in, so an image that lacks the plugin
+# (the SGLang image) builds and tears down sandboxes with the same compose.
 if ! docker compose version >/dev/null 2>&1; then
-    log "installing docker compose v2 plugin"
-    DOCKER_COMPOSE_VERSION="${DOCKER_COMPOSE_VERSION:-v2.39.4}"
+    DOCKER_COMPOSE_VERSION="${DOCKER_COMPOSE_VERSION:-v5.1.4}"
+    log "installing docker compose plugin ${DOCKER_COMPOSE_VERSION}"
     DOCKER_COMPOSE_ARCH="$(uname -m)"
     mkdir -p /root/.docker/cli-plugins
     curl -fsSL \
@@ -166,7 +161,10 @@ fi
 
 log "running uv sync"
 if ! command -v uv >/dev/null 2>&1; then
-    curl -LsSf https://astral.sh/uv/install.sh | sh
+    # Same uv as Dockerfile.vllm_eval bakes in, not whatever is latest today.
+    UV_VERSION="${UV_VERSION:-0.13.7}"
+    log "installing uv ${UV_VERSION}"
+    curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh
     export PATH="$HOME/.local/bin:$PATH"
 fi
 uv sync

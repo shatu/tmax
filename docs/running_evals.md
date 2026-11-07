@@ -149,18 +149,21 @@ From [`run_eval_in_job.sh`](../scripts/beaker/run_eval_in_job.sh):
 
 1. Optionally `git clone` the tmax repo at a SHA (or use the Gantry-provided
    checkout).
-2. `apt-get install` podman + helpers if the image has none, and the static
-   Docker CLI if it has no `docker` (e.g. the Miles image `--engine sglang` uses).
+2. `apt-get install` podman + helpers if the image has none. Fail fast if the
+   image has no `docker` command or no `/usr/local/bin/setup_dockerio_mirror`:
+   the eval images (`Dockerfile.vllm_eval`, `Dockerfile.sglang_eval`) bake in the
+   sandbox stack, and patching one into another image failed every sandbox.
 3. Write `/etc/containers/containers.conf` (host netns/ipc/uts, `userns=auto:size=65536`, crun, cgroups disabled),
-   then run `setup_dockerio_mirror` (the image's, or the copy vendored next to
-   the script). With `--mirror-url` it points podman at a docker.io pull-through
+   then run the image's `setup_dockerio_mirror`. With `--mirror-url` it points podman at a docker.io pull-through
    cache (co-located jobs then pull over the local network; authenticated
    docker.io is the fallback if the mirror is down); it also sets podman's
    `num_locks` and storage driver. Both steps come before any podman call:
    podman fixes its lock count and storage driver on first use, and later
    calls fail on a changed one ("failed to open N locks in /libpod_lock").
-   Only then the Docker Compose v2 plugin check (harbor shells out to
-   `docker compose`, which talks to podman's socket).
+   Only then the Docker Compose plugin check (harbor shells out to
+   `docker compose`, which talks to podman's socket). An image without the plugin
+   gets v5.1.4, the release `Dockerfile.vllm_eval` bakes in, so sandboxes are built
+   by the same compose on either engine. `uv` likewise defaults to 0.13.7.
 4. `uv sync`, then **patch harbor's installed package** for podman compat
    (host networking in the compose file, world-writable bind-mount dirs, drop
    `--rmi all` from compose-down to avoid Docker Hub rate limits).
@@ -230,12 +233,15 @@ template as in training.
   the Miles training image (the exact `sglang-miles` build the TMax runs trained
   with) plus the vLLM eval image's sandbox stack (podman 5.6.2 + crun 1.14.3,
   `docker` -> podman, root subuid range), built by
-  [`Dockerfile.sglang_eval`](../scripts/beaker/Dockerfile.sglang_eval). Installing
+  [`Dockerfile.sglang_eval`](../scripts/beaker/Dockerfile.sglang_eval) (Beaker description:
+  `Dockerfile.sglang_eval @ 47a5342a`). New builds go through
+  [`build_sglang_eval_image.sh`](../scripts/beaker/build_sglang_eval_image.sh), which follows the vLLM image's
+  conventions: `tmax-sglang-eval_<commit>` plus `tmax-sglang-eval_latest`, each described
+  `Dockerfile.sglang_eval @ <sha> (base <name> = <id>)`. Installing
   apt's podman 4.9 and the Docker CLI at job start instead broke every harbor
-  sandbox. The in-job script still installs podman, the Docker CLI and the compose
-  plugin when an image lacks them, runs the vendored
-  [`setup_dockerio_mirror`](../scripts/beaker/setup_dockerio_mirror) for
-  `--mirror-url` when the image has none, and prepends the image's CUDA
+  sandbox, so the in-job script now refuses an image without `docker` or
+  `setup_dockerio_mirror`. It installs the compose plugin (v5.1.4, as in the vLLM
+  image) and uv (0.13.7) when the image lacks them, and prepends the image's CUDA
   forward-compat `libcuda` on CUDA 12 drivers (Jupiter, Ceres). An image without SGLang gets `sglang==$SGLANG_VERSION`
   (`--sglang-version`, default `0.5.21`) via `uv`; that wheel is CUDA 13 and needs a
   CUDA 13 driver.
