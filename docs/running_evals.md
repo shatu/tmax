@@ -194,7 +194,7 @@ From [`run_eval_in_job.sh`](../scripts/beaker/run_eval_in_job.sh):
 | `--n-tasks N` | all | Run only the first N tasks of the dataset (harbor `--n-tasks`). |
 | `--harbor-env ENV` | `docker` | Harbor backend; `daytona` installs `harbor[daytona]` and wires `DAYTONA_API_KEY`. |
 | `--override-cpus/-gpus/-memory-mb/-storage-mb`, `--*-timeout-multiplier` | unset | Pass-through Harbor resource/timeout overrides (`HARBOR_OVERRIDE_*` / `HARBOR_*_TIMEOUT_MULTIPLIER`). |
-| `--docker-image IMG` / `--image IMG` | `hamishivi/tmax-eval-interactive` | Public Docker image vs. a Beaker image/ID (each clears the other). |
+| `--docker-image IMG` / `--image IMG` | `shashankg/tmax-vllm-eval-20261106` | Public Docker image vs. a Beaker image/ID (each clears the other). The default is built from [`scripts/beaker/Dockerfile.vllm_eval`](../scripts/beaker/Dockerfile.vllm_eval); its Beaker description names the commit. It replaced `hamishivi/tmax-eval-interactive` (2026-11-06), which can still be passed with `--image`. |
 | `--max-model-len LEN` | unset | vLLM context length. Pass `32768` for Qwen3.5 so the 262k default KV cache fits one GPU and vLLM actually starts. |
 | `--tool-call-parser P` | `hermes` | vLLM tool parser. **Use `qwen3_xml` for Qwen3.5 with structured-tool agents** (Vanillux2Agent); `hermes` silently drops its tool-calls. |
 | `--reasoning-parser P` | none | vLLM reasoning parser. Use `qwen3` for Qwen3 reasoning models so `<think>…</think>` is split out of the visible response. |
