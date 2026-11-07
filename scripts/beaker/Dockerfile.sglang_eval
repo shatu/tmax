@@ -8,12 +8,13 @@
 # open-instruct Dockerfile does instead: podman 5.6.2 + crun 1.14.3 from source,
 # `docker` -> podman, root subuid/subgid 10000:11165536, setup_dockerio_mirror.
 #
-# Build from the tmax repo root (BASE_IMAGE = the training image, pulled locally,
-# e.g. Beaker image shashankg/tmax-miles-train-20261029):
-#   podman build -f scripts/beaker/Dockerfile.sglang_eval \
-#       --build-arg BASE_IMAGE=localhost/tmax-miles-train:20261029 \
-#       -t localhost/tmax-miles-sglang-eval:20261031 .
-#   beaker image create localhost/tmax-miles-sglang-eval:20261031 --name tmax-miles-sglang-eval-20261031
+# Build and push with scripts/beaker/build_sglang_eval_image.sh (at a committed
+# tree). It pulls the base (default Beaker image shashankg/tmax-miles-train-20261029)
+# and uploads <user>/tmax-sglang-eval_<commit> and <user>/tmax-sglang-eval_latest,
+# both described "tmax scripts/beaker/Dockerfile.sglang_eval @ <sha> (base <name> = <id>)",
+# the same conventions as build_vllm_eval_image.sh. The image launch_eval.sh
+# currently defaults to (shashankg/tmax-miles-sglang-eval-20261031) predates the
+# script; its description records the commit it was built from (47a5342a).
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 

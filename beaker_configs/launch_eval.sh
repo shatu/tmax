@@ -45,7 +45,8 @@ SGLANG_VERSION="0.5.21"
 # the Miles image the TMax RL runs trained with (the exact sglang-miles build the
 # rollout engines used) plus the vLLM eval image's podman stack
 # (scripts/beaker/Dockerfile.sglang_eval).
-SGLANG_BEAKER_IMAGE="${SGLANG_BEAKER_IMAGE:-shashankg/tmax-miles-sglang-eval-20261031}"
+SGLANG_BEAKER_IMAGE="${SGLANG_BEAKER_IMAGE:-shashankg/tmax-miles-sglang-eval-20261031}"  # hand-built (Dockerfile.sglang_eval @ 47a5342a); the next build via
+                                    # build_sglang_eval_image.sh -> shashankg/tmax-sglang-eval_latest
 IMAGE_SET=0
 TOOL_CALL_PARSER=""                 # engine default: vllm hermes, sglang qwen3_coder
 REASONING_PARSER=""                 # engine default: vllm none, sglang qwen3; "none" disables
