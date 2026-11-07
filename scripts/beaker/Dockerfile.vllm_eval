@@ -17,15 +17,10 @@
 # vLLM itself is not baked in: run_eval_in_job.sh still runs
 # `uvx vllm==$VLLM_VERSION serve` (pinned per launch with --vllm-version).
 #
-# Build from the tmax repo root with podman, at a committed tree, then upload to
-# Beaker as tmax-vllm-eval-YYYYMMDD with the commit in the description (Beaker
-# images keep no other record of what they were built from):
-#   podman build -f scripts/beaker/Dockerfile.vllm_eval -t localhost/tmax-vllm-eval:YYYYMMDD .
-#   podman system service --time=0 unix:///tmp/podman-api.sock &   # short path: socket path limit
-#   DOCKER_HOST=unix:///tmp/podman-api.sock beaker image create localhost/tmax-vllm-eval:YYYYMMDD \
-#       -n tmax-vllm-eval-YYYYMMDD -w ai2/oe-agents \
-#       --description "tmax scripts/beaker/Dockerfile.vllm_eval @ $(git rev-parse HEAD)"
-# Then point launch_eval.sh's BEAKER_IMAGE default at shashankg/tmax-vllm-eval-YYYYMMDD.
+# Build and push with scripts/beaker/build_vllm_eval_image.sh (at a committed
+# tree). It uploads <user>/tmax-vllm-eval_<commit> and <user>/tmax-vllm-eval_latest,
+# both described "tmax scripts/beaker/Dockerfile.vllm_eval @ <sha>".
+# launch_eval.sh defaults to _latest, resolved to an image ID at launch.
 FROM nvidia/cuda:12.9.1-cudnn-devel-ubuntu24.04
 
 ARG DEBIAN_FRONTEND=noninteractive

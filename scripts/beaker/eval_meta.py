@@ -160,6 +160,13 @@ def cmd_start(args) -> int:
                                   "import importlib.metadata as m; print(m.version('harbor'))"]),
         },
         beaker=env(BEAKER_ENV),
+        # The job image as launch_eval.sh resolved it: a name like
+        # tmax-vllm-eval_latest moves, the ID and description (build commit) don't.
+        image={
+            "name": os.environ.get("EVAL_IMAGE", ""),
+            "beaker_id": os.environ.get("EVAL_IMAGE_ID", ""),
+            "description": os.environ.get("EVAL_IMAGE_DESCRIPTION", ""),
+        },
     )
     meta.setdefault("created_at", now())
     segs = meta.setdefault("segments", [])
