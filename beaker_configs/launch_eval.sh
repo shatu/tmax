@@ -43,6 +43,7 @@ VLLM_REASONING_PARSER=""
 MIRROR_URL="${MIRROR_URL:-}"
 MODEL_PROVIDER=""
 VLLM_LANGUAGE_MODEL_ONLY=0
+VLLM_HF_CONFIG_PATH=""              # optional: vLLM --hf-config-path (a dir with config.json)
 MAX_MODEL_LEN=""
 DATASET="terminal-bench@2.0"
 DATASET_PATH=""
@@ -110,6 +111,10 @@ Options:
                          for import-path agents, openai otherwise). Use openai for
                          Vanillux2Agent.
   --language-model-only  pass --language_model_only to vLLM
+  --hf-config-path DIR   vLLM --hf-config-path: read config.json from DIR (a path the job
+                         can read, e.g. under /weka/oe-adapt-default) and the weights from
+                         the model repo. For checkpoints vLLM can't load as packaged, e.g.
+                         text-only Qwen3.5 exports (Qwen3_5ForCausalLM) on vLLM < 0.27
   --max-model-len LEN    pass --max-model-len to vllm
   --dataset DS           harbor dataset (default: terminal-bench@2.0; also
                          valid: openthoughts-tblite@2.0)
@@ -182,6 +187,7 @@ while [ $# -gt 0 ]; do
         --mirror-url)      MIRROR_URL="$2"; shift 2 ;;
         --model-provider)  MODEL_PROVIDER="$2"; shift 2 ;;
         --language-model-only|--language_model_only) VLLM_LANGUAGE_MODEL_ONLY=1; shift ;;
+        --hf-config-path)  VLLM_HF_CONFIG_PATH="$2"; shift 2 ;;
         --max-model-len)   MAX_MODEL_LEN="$2"; shift 2 ;;
         --dataset)         DATASET="$2"; shift 2 ;;
         --dataset-path)    DATASET_PATH="$2"; shift 2 ;;
@@ -266,6 +272,7 @@ cat <<EOF
   Tool parser:  ${VLLM_TOOL_CALL_PARSER}
   Reason parser: ${VLLM_REASONING_PARSER:-<none>}
   LM only:      ${VLLM_LANGUAGE_MODEL_ONLY}
+  HF config:    ${VLLM_HF_CONFIG_PATH:-<model repo>}
   GPUs:         ${GPU_COUNT} (TP=${TP_SIZE}, DP=${DP_SIZE})
   Dataset:      ${DATASET}
   Harbor env:   ${HARBOR_ENV}
@@ -317,6 +324,7 @@ GANTRY_CMD=(
     --env "MIRROR_URL=${MIRROR_URL}"
     --env "MODEL_PROVIDER=${MODEL_PROVIDER}"
     --env "VLLM_LANGUAGE_MODEL_ONLY=${VLLM_LANGUAGE_MODEL_ONLY}"
+    --env "VLLM_HF_CONFIG_PATH=${VLLM_HF_CONFIG_PATH}"
     --env "VLLM_PORT=${VLLM_PORT}"
     --env "TP_SIZE=${TP_SIZE}"
     --env "DP_SIZE=${DP_SIZE}"

@@ -11,6 +11,7 @@
 #   VLLM_VERSION             vLLM package version for uvx (default: 0.19.1)
 #   VLLM_TOOL_CALL_PARSER    vLLM tool parser (default: hermes)
 #   VLLM_LANGUAGE_MODEL_ONLY pass --language_model_only to vLLM when set to 1
+#   VLLM_HF_CONFIG_PATH      optional vLLM --hf-config-path (dir with config.json)
 #   VLLM_PORT                port for vLLM (default: 8008)
 #   TP_SIZE                  --tensor-parallel-size (required)
 #   DP_SIZE                  --data-parallel-size (default: 1)
@@ -480,6 +481,10 @@ if [ -n "${VLLM_REASONING_PARSER:-}" ]; then
 fi
 if [ "${VLLM_LANGUAGE_MODEL_ONLY:-0}" = "1" ]; then
     VLLM_CMD+=( --language_model_only )
+fi
+# Config from elsewhere, weights from the model repo (see launch_eval.sh --hf-config-path).
+if [ -n "${VLLM_HF_CONFIG_PATH:-}" ]; then
+    VLLM_CMD+=( --hf-config-path "$VLLM_HF_CONFIG_PATH" )
 fi
 
 log "launching vllm: ${VLLM_CMD[*]}"
