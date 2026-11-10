@@ -249,7 +249,17 @@ template as in training.
   (sgl-project/sglang#21039), and `launch_eval.sh` warns. Use `--dp N` for more GPUs
   (SGLang `--dp-size`).
 - **Text-only checkpoints.** `--language-model-only` maps to SGLang's
-  `--language-only` (Miles `--save-hf` snapshots ship no vision tower).
+  `--language-model-only` (Miles `--save-hf` snapshots ship no vision tower), which
+  skips the vision tower and the image processor. Not SGLang's `--language-only`: that
+  is the language half of encoder/decoder disaggregation, and waits for encoders.
+- **Bare `Qwen3_5ForCausalLM` exports with VLM tensor names** (e.g.
+  `TMaxxx/tmax-9b-v1.1`: `model.language_model.*`). SGLang's text class strips `model.`
+  before remapping `model.language_model.`, so it silently skips nearly every weight and
+  the server emits `!` (token 0) forever. Serve a copy with the keys renamed to
+  `model.*`; for v1.1 one is at
+  `/weka/oe-adapt-default/shashankg/models/tmax-9b-v1.1-textnames` (see its README).
+  The job now catches this before harbor starts: it fails unless a greedy completion of
+  "The capital of France is" contains letters (`SKIP_OUTPUT_SANITY_CHECK=1` to skip).
 - **Watchdog.** SGLang stops the whole server when no batch finishes for
   `--watchdog-timeout` seconds of wall-clock time, so a stalled node counts too.
   The job passes 3600 (`SGLANG_WATCHDOG_TIMEOUT`; the Miles TMax configs use 1800);

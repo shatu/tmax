@@ -130,7 +130,7 @@ Options:
                          for import-path agents, openai otherwise). Use openai for
                          Vanillux2Agent.
   --language-model-only  load the language model only (vLLM
-                         --language_model_only, SGLang --language-only)
+                         --language_model_only, SGLang --language-model-only)
   --max-model-len LEN    context length (vLLM --max-model-len, SGLang
                          --context-length)
   --dataset DS           harbor dataset (default: terminal-bench@2.0; also

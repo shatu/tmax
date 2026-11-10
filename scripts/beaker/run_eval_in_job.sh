@@ -19,7 +19,7 @@
 #   SGLANG_WATCHDOG_TIMEOUT  seconds without a finished batch before SGLang
 #                            stops itself (default: 3600)
 #   VLLM_LANGUAGE_MODEL_ONLY load the language model only when set to 1 (vLLM
-#                            --language_model_only, SGLang --language-only)
+#                            --language_model_only, SGLang --language-model-only)
 #   VLLM_PORT                port for vLLM (default: 8008)
 #   TP_SIZE                  --tensor-parallel-size (required)
 #   DP_SIZE                  --data-parallel-size (default: 1)
@@ -572,7 +572,7 @@ sglang)
         SERVER_CMD+=( --reasoning-parser "$SGLANG_REASONING_PARSER" )
     fi
     if [ "${VLLM_LANGUAGE_MODEL_ONLY:-0}" = "1" ]; then
-        SERVER_CMD+=( --language-only )
+        SERVER_CMD+=( --language-model-only )
     fi
     ;;
 *)
@@ -651,6 +651,28 @@ if [ "$SERVER_READY" -ne 1 ]; then
     log "$ENGINE did not become ready in $((VLLM_READY_MAX_ITERS*5/60)) min — tail of $SERVER_LOG:"
     tail -"$VLLM_LOG_TAIL_LINES" "$SERVER_LOG" || true
     exit 1
+fi
+
+# A server that answers is not necessarily serving the model: a checkpoint whose
+# weight names the engine doesn't map loads with most layers left uninitialised
+# (seen with TMaxxx/tmax-9b-v1.1 on SGLang: model.language_model.* under a bare
+# Qwen3_5ForCausalLM config), and then every token is id 0 ("!") until max_tokens.
+# Every trial times out with reward 0. Catch it here with one greedy raw completion
+# (no chat template / reasoning parser in the way): fail unless it contains letters.
+# SKIP_OUTPUT_SANITY_CHECK=1 disables this.
+if [ "${SKIP_OUTPUT_SANITY_CHECK:-0}" != "1" ]; then
+    SANITY_RESP="$(curl -s -X POST "http://localhost:$API_PORT/v1/completions" \
+        -H 'Content-Type: application/json' \
+        -d "{\"model\":\"$SERVED_MODEL_NAME\",\"prompt\":\"The capital of France is\",\"max_tokens\":16,\"temperature\":0}" 2>&1 || true)"
+    SANITY_TEXT="$(printf '%s' "$SANITY_RESP" | python3 -c 'import json,sys; print(json.load(sys.stdin)["choices"][0]["text"])' 2>/dev/null || true)"
+    log "output sanity check: 'The capital of France is' -> $(printf '%q' "$SANITY_TEXT")"
+    if ! printf '%s' "$SANITY_TEXT" | grep -q '[A-Za-z]'; then
+        log "FATAL: $ENGINE answers but its output has no letters; the weights probably did not load. Response: ${SANITY_RESP:0:500}"
+        log "weight-loading warnings in $SERVER_LOG (first 20):"
+        grep -iE "not found in params_dict|not loaded|missing keys|unexpected key" "$SERVER_LOG" | head -20 || true
+        log "(set SKIP_OUTPUT_SANITY_CHECK=1 to run anyway)"
+        exit 1
+    fi
 fi
 
 # --- 6. Run harbor ----------------------------------------------------------
