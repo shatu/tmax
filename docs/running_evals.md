@@ -149,9 +149,21 @@ From [`run_eval_in_job.sh`](../scripts/beaker/run_eval_in_job.sh):
 
 1. Optionally `git clone` the tmax repo at a SHA (or use the Gantry-provided
    checkout).
-2. `apt-get install` podman + helpers; install the Docker Compose v2 CLI plugin
-   (harbor shells out to `docker compose`, which talks to podman's socket).
-3. Write `/etc/containers/containers.conf` (host netns/ipc/uts, `userns=auto:size=65536`, crun, cgroups disabled).
+2. `apt-get install` podman + helpers if the image has none. Fail fast if the
+   image has no `docker` command or no `/usr/local/bin/setup_dockerio_mirror`:
+   the eval images (`Dockerfile.vllm_eval`, `Dockerfile.sglang_eval`) bake in the
+   sandbox stack, and patching one into another image failed every sandbox.
+3. Write `/etc/containers/containers.conf` (host netns/ipc/uts, `userns=auto:size=65536`, crun, cgroups disabled),
+   then run the image's `setup_dockerio_mirror`. With `--mirror-url` it points podman at a docker.io pull-through
+   cache (co-located jobs then pull over the local network; authenticated
+   docker.io is the fallback if the mirror is down); it also sets podman's
+   `num_locks` and storage driver. Both steps come before any podman call:
+   podman fixes its lock count and storage driver on first use, and later
+   calls fail on a changed one ("failed to open N locks in /libpod_lock").
+   Only then the Docker Compose plugin check (harbor shells out to
+   `docker compose`, which talks to podman's socket). An image without the plugin
+   gets v5.1.4, the release `Dockerfile.vllm_eval` bakes in, so sandboxes are built
+   by the same compose on either engine. `uv` likewise defaults to 0.13.7.
 4. `uv sync`, then **patch harbor's installed package** for podman compat
    (host networking in the compose file, world-writable bind-mount dirs, drop
    `--rmi all` from compose-down to avoid Docker Hub rate limits).
@@ -163,11 +175,9 @@ From [`run_eval_in_job.sh`](../scripts/beaker/run_eval_in_job.sh):
    essential — harbor pulls via the podman socket, and podman reads creds from
    `containers/auth.json`, *not* `~/.docker/config.json`, so a `docker login`
    alone leaves pulls anonymous → the shared-IP unauthenticated rate cap
-   (`toomanyrequests`) once jobs co-locate. If `--mirror-url` is set,
-   `setup_dockerio_mirror` also points podman at a docker.io pull-through cache
-   (co-located jobs then pull over the local network; authenticated docker.io is
-   the fallback if the mirror is down).
-7. Launch vLLM in the background (`uvx vllm==$VLLM_VERSION serve ...`) and poll
+   (`toomanyrequests`) once jobs co-locate.
+7. Launch the server in the background — vLLM (`uvx vllm==$VLLM_VERSION serve ...`)
+   or, with `--engine sglang`, SGLang ([below](#serving-with-sglang---engine-sglang)) — and poll
    `/v1/models` for up to 30 min.
 8. `uv run harbor run --env docker --model hosted_vllm/$SERVED_MODEL_NAME --agent-kwarg api_base=...`.
 9. `scripts/compute_stats.py` → `stats.txt` + `metrics.json`.
@@ -195,16 +205,80 @@ From [`run_eval_in_job.sh`](../scripts/beaker/run_eval_in_job.sh):
 | `--harbor-env ENV` | `docker` | Harbor backend; `daytona` installs `harbor[daytona]` and wires `DAYTONA_API_KEY`. |
 | `--override-cpus/-gpus/-memory-mb/-storage-mb`, `--*-timeout-multiplier` | unset | Pass-through Harbor resource/timeout overrides (`HARBOR_OVERRIDE_*` / `HARBOR_*_TIMEOUT_MULTIPLIER`). |
 | `--docker-image IMG` / `--image IMG` | `shashankg/tmax-vllm-eval_latest` | Public Docker image vs. a Beaker image/ID (each clears the other). A Beaker image name is resolved to its ID at launch, and `eval_meta.json` records name, ID and description. The default is built from [`scripts/beaker/Dockerfile.vllm_eval`](../scripts/beaker/Dockerfile.vllm_eval) by [`build_vllm_eval_image.sh`](../scripts/beaker/build_vllm_eval_image.sh), which also pushes a permanent `tmax-vllm-eval_<commit>`; both descriptions name the build commit. It replaced `hamishivi/tmax-eval-interactive` (2026-11-06), which still works with `--image`. |
-| `--max-model-len LEN` | unset | vLLM context length. Pass `32768` for Qwen3.5 so the 262k default KV cache fits one GPU and vLLM actually starts. |
-| `--hf-config-path DIR` | unset | vLLM `--hf-config-path`: `config.json` from DIR, weights from the model repo. Text-only Qwen3.5 exports (`Qwen3_5ForCausalLM`, e.g. `TMaxxx/tmax-9b-v1.1`) don't load on vLLM 0.19.1 (registered from 0.27); their weights are named like the multimodal checkpoints', so a `Qwen3_5ForConditionalGeneration` config (e.g. `allenai/tmax-9b`'s) plus `--language-model-only` serves them. See [Text-only Qwen3.5 checkpoints](#text-only-qwen35-checkpoints-on-vllm-0191). |
-| `--tool-call-parser P` | `hermes` | vLLM tool parser. **Use `qwen3_xml` for Qwen3.5 with structured-tool agents** (Vanillux2Agent); `hermes` silently drops its tool-calls. |
-| `--reasoning-parser P` | none | vLLM reasoning parser. Use `qwen3` for Qwen3 reasoning models so `<think>…</think>` is split out of the visible response. |
+| `--engine ENGINE` | `vllm` | `vllm` or `sglang`; see [Serving with SGLang](#serving-with-sglang---engine-sglang). |
+| `--max-model-len LEN` | unset | Context length (vLLM `--max-model-len`, SGLang `--context-length`). Pass `32768` for Qwen3.5 so the 262k default KV cache fits one GPU and vLLM actually starts. |
+| `--hf-config-path DIR` | unset | vLLM only: `--hf-config-path`: `config.json` from DIR, weights from the model repo. Text-only Qwen3.5 exports (`Qwen3_5ForCausalLM`, e.g. `TMaxxx/tmax-9b-v1.1`) don't load on vLLM 0.19.1 (registered from 0.27); their weights are named like the multimodal checkpoints', so a `Qwen3_5ForConditionalGeneration` config (e.g. `allenai/tmax-9b`'s) plus `--language-model-only` serves them. See [Text-only Qwen3.5 checkpoints](#text-only-qwen35-checkpoints-on-vllm-0191). |
+| `--tool-call-parser P` | `hermes` (vllm) / `qwen3_coder` (sglang) | Tool parser. **On vLLM use `qwen3_xml` for Qwen3.5 with structured-tool agents** (Vanillux2Agent); `hermes` silently drops its tool-calls. |
+| `--reasoning-parser P` | none (vllm) / `qwen3` (sglang) | Reasoning parser. Use `qwen3` for Qwen3 reasoning models so `<think>…</think>` is split out of the visible response; `none` disables. |
 | `--cluster` / `--workspace` / `--priority` / `--budget` | see script | Beaker placement. |
 | `--results-dir DIR` | `/results` (Gantry → weka) | Where to copy `jobs/`. |
 | `--repo-ref REF` | current HEAD SHA | **Must be pushed** to the remote. |
 
 > ⚠️ Gantry submits a git SHA, not your working tree. Commit and push first, or
 > pass `--repo-ref`. The script warns if the SHA isn't on a remote branch.
+
+### Serving with SGLang (`--engine sglang`)
+
+Checkpoints trained with Miles (Megatron + SGLang rollouts) can be evaluated
+behind the same inference stack they were trained against. `--engine sglang`
+serves the model the way the Miles TMax trainer's rollout engines do
+([`run_tmax_qwen3_5.py`](https://github.com/shatu/miles/blob/shashank/tmax-terminal-rl/examples/tmax/run_tmax_qwen3_5.py)):
+SGLang's OpenAI chat endpoint with the `qwen3_coder` tool parser and the `qwen3`
+reasoning parser, one GPU per engine, SGLang's other defaults. With the reasoning
+parser, the `<think>` block comes back as `reasoning_content`, which litellm
+echoes into the next request, so multi-turn history is rendered by the chat
+template as in training.
+
+- **Image.** Unless `--image`/`--docker-image` is given, the job runs in the Beaker
+  image `SGLANG_BEAKER_IMAGE` (default `shashankg/tmax-miles-sglang-eval-20261031`):
+  the Miles training image (the exact `sglang-miles` build the TMax runs trained
+  with) plus the vLLM eval image's sandbox stack (podman 5.6.2 + crun 1.14.3,
+  `docker` -> podman, root subuid range), built by
+  [`Dockerfile.sglang_eval`](../scripts/beaker/Dockerfile.sglang_eval) (Beaker description:
+  `Dockerfile.sglang_eval @ 47a5342a`). New builds go through
+  [`build_sglang_eval_image.sh`](../scripts/beaker/build_sglang_eval_image.sh), which follows the vLLM image's
+  conventions: `tmax-sglang-eval_<commit>` plus `tmax-sglang-eval_latest`, each described
+  `Dockerfile.sglang_eval @ <sha> (base <name> = <id>)`. Installing
+  apt's podman 4.9 and the Docker CLI at job start instead broke every harbor
+  sandbox, so the in-job script now refuses an image without `docker` or
+  `setup_dockerio_mirror`. It installs the compose plugin (v5.1.4, as in the vLLM
+  image) and uv (0.13.7) when the image lacks them, and prepends the image's CUDA
+  forward-compat `libcuda` on CUDA 12 drivers (Jupiter, Ceres). An image without SGLang gets `sglang==$SGLANG_VERSION`
+  (`--sglang-version`, default `0.5.21`) via `uv`; that wheel is CUDA 13 and needs a
+  CUDA 13 driver.
+- **Parallelism.** Keep `--tp 1` for Qwen3.5: SGLang TP>1 produces garbage for it
+  (sgl-project/sglang#21039), and `launch_eval.sh` warns. Use `--dp N` for more GPUs
+  (SGLang `--dp-size`).
+- **Text-only checkpoints.** `--language-model-only` maps to SGLang's
+  `--language-model-only` (Miles `--save-hf` snapshots ship no vision tower), which
+  skips the vision tower and the image processor. Not SGLang's `--language-only`: that
+  is the language half of encoder/decoder disaggregation, and waits for encoders.
+- **Bare `Qwen3_5ForCausalLM` exports with VLM tensor names** (e.g.
+  `TMaxxx/tmax-9b-v1.1`: `model.language_model.*`). SGLang's text class strips `model.`
+  before remapping `model.language_model.`, so it silently skips nearly every weight and
+  the server emits `!` (token 0) forever. Serve a copy with the keys renamed to
+  `model.*`; for v1.1 one is at
+  `/weka/oe-adapt-default/shashankg/models/tmax-9b-v1.1-textnames` (see its README).
+  The job now catches this before harbor starts: it fails unless a greedy completion of
+  "The capital of France is" contains letters (`SKIP_OUTPUT_SANITY_CHECK=1` to skip).
+- **Watchdog.** SGLang stops the whole server when no batch finishes for
+  `--watchdog-timeout` seconds of wall-clock time, so a stalled node counts too.
+  The job passes 3600 (`SGLANG_WATCHDOG_TIMEOUT`; the Miles TMax configs use 1800);
+  SGLang's own default is 300. vLLM at TP 1 has no such timeout.
+- **Scripts dataset.** A reused `--beaker-scripts-dataset` must hold this version of
+  `run_eval_in_job.sh`; an older upload ignores `ENGINE` and serves with vLLM.
+
+A Miles checkpoint, greedy, k=5, on 2 GPUs:
+
+```bash
+./beaker_configs/launch_eval.sh <ckpt>/hf/step_179 \
+    --engine sglang --language-model-only --model-provider openai \
+    --gpus 2 --tp 1 --dp 2 --max-model-len 67584 --n-concurrent 16 \
+    --agent-kwarg temperature=0 --agent-kwarg top_p=1.0 \
+    --dataset openthoughts-tblite@2.0 --n-attempts 5 \
+    --mirror-url <live mirror host:port list> \
+    --cluster ai2/jupiter --min-runtime 8h --name <name>
+```
 
 ### Running the podman path locally
 
@@ -424,9 +498,9 @@ the 9B lives at `/weka/oe-adapt-default/shashankg/models/hf-configs/tmax-9b-v1.1
   --tool-call-parser qwen3_xml ...
 ```
 
-SGLang (`--engine sglang`) has the opposite problem: it serves the bare text
-config but tries to load an image processor for the wrapper, which these repos
-don't ship.
+`--hf-config-path` is vLLM-only. SGLang (`--engine sglang`) starts on the bare text
+config but silently skips nearly every `model.language_model.*` weight; serve a copy
+with the tensors renamed instead (see the SGLang section above).
 
 ### SWE-bench Verified
 
@@ -579,9 +653,9 @@ fills that gap so a batch-downloaded job dir identifies itself:
 
 - `model`: path, revision, and the HF commit SHA that revision resolved to
   when the eval started.
-- `eval_env`: every `launch_eval.sh` setting, including vLLM version and
+- `eval_env`: every `launch_eval.sh` setting, including the engine, its version and
   parsers, max-model-len, TP/DP, dataset, agent, k, overrides and mirror.
-- `vllm_cmd`, `harbor_cmd`: the exact commands that ran.
+- `server_cmd`, `harbor_cmd`: the exact commands that ran (vLLM or SGLang server).
 - `code`: the tmax commit and harbor version.
 - `beaker`: workload/task/dataset ids.
 - `segments`: one entry per Beaker job that worked on the eval (node, GPU
@@ -644,7 +718,7 @@ preemption, because harbor's state lived on local disk until the end.
 2. Before `harbor run`, `scripts/beaker/eval_resume.py prepare` drops trials
    that were killed mid-write, cancelled, or failed with the agent's
    "Connection error" (the server was gone). It also rewrites the old job's
-   random vLLM port (`api_base`, which is baked into `config.json`,
+   random server port (`api_base`, which is baked into `config.json`,
    `lock.json` and every trial config) to the new one.
 3. The identical `harbor run` then keeps the finished trials and runs only
    the rest. Harbor refuses to resume if any other config field differs.
@@ -660,13 +734,13 @@ disk, and the dir is copied to `/results` at the end.
 
 ### When the inference server dies mid-run
 
-`run_eval_in_job.sh` watches the vLLM process while harbor runs. If it exits
-(e.g. a crash), the remaining trials could only fail with "Connection error",
-so the script prints the tail of the server log, stops harbor with SIGTERM
-(as a preemption does) and exits 3, so the job fails instead of reporting a
-low score. Only an exited process counts; a slow or stalled server is left
-alone. The job dir keeps the finished trials, and a resume drops the ones
-that hit the dead server.
+`run_eval_in_job.sh` watches the server process while harbor runs. If it
+exits (a crash, or SGLang's watchdog), the remaining trials could only fail
+with "Connection error", so the script prints the tail of the server log,
+stops harbor with SIGTERM (as a preemption does) and exits 3, so the job
+fails instead of reporting a low score. Only an exited process counts; a
+slow or stalled server is left alone. The job dir keeps the finished trials,
+and a resume drops the ones that hit the dead server.
 
 Beaker then retries a failed job (`--retries`, default 2). A retry, like a
 preemption, starts with the failed job's `/results`, so the eval resumes from
@@ -693,7 +767,7 @@ Highlights:
 |---|---|
 | `unknown shorthand flag: 'p' in -p` on `docker compose down` | Image lacks the compose plugin; the script auto-installs it — check network reachability. |
 | `mknod` permission denied | Cluster doesn't grant `CAP_MKNOD`; use an image with `/dev/net/tun` pre-created. |
-| vLLM never ready | `/tmp/vllm.log` (the in-job script tails it on failure). |
+| vLLM / SGLang never ready | `/tmp/vllm.log` / `/tmp/sglang.log` (the in-job script tails it on failure; it is also saved as `<engine>.log` in the job dir). |
 | All trials `RewardFileNotFoundError` | Harbor patches didn't apply — confirm the chmod patch in `harbor/agents/oracle.py`. |
 | `setgroups 65534` | userns too small — confirm `auto:size=65536` in `containers.conf`. |
 | Reward 0 across the board | Likely a real model/agent issue; inspect one trial's `agent/oracle.txt` + `verifier/test-stdout.txt`. |

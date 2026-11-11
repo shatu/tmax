@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 #
 # Launch a single beaker task that:
-#   1. spins up a vLLM server on the local GPUs (8 by default)
+#   1. spins up a vLLM server (or SGLang, --engine sglang) on the local GPUs
+#      (8 by default)
 #   2. configures podman + harbor (incl. the patches discovered while bringing
 #      up harbor on the podman socket — see scripts/setup_podman_harbor.sh and
 #      scripts/beaker/run_eval_in_job.sh)
-#   3. runs `harbor run` on the chosen dataset against the local vLLM
+#   3. runs `harbor run` on the chosen dataset against the local server
 #   4. copies the resulting jobs/<name>/ tree to a /weka path you can fetch.
 #
 # Usage:
@@ -36,10 +37,19 @@ HARBOR_MODEL_NAME=""
 GPU_COUNT=8
 TP_SIZE=""
 DP_SIZE=""
+ENGINE="vllm"
 VLLM_PORT=8008
 VLLM_VERSION="0.19.1"
-VLLM_TOOL_CALL_PARSER="hermes"
-VLLM_REASONING_PARSER=""
+SGLANG_VERSION="0.5.21"
+# The Beaker image --engine sglang runs in unless --image/--docker-image is given:
+# the Miles image the TMax RL runs trained with (the exact sglang-miles build the
+# rollout engines used) plus the vLLM eval image's podman stack
+# (scripts/beaker/Dockerfile.sglang_eval).
+SGLANG_BEAKER_IMAGE="${SGLANG_BEAKER_IMAGE:-shashankg/tmax-miles-sglang-eval-20261031}"  # hand-built (Dockerfile.sglang_eval @ 47a5342a); the next build via
+                                    # build_sglang_eval_image.sh -> shashankg/tmax-sglang-eval_latest
+IMAGE_SET=0
+TOOL_CALL_PARSER=""                 # engine default: vllm hermes, sglang qwen3_coder
+REASONING_PARSER=""                 # engine default: vllm none, sglang qwen3; "none" disables
 MIRROR_URL="${MIRROR_URL:-}"
 MODEL_PROVIDER=""
 VLLM_LANGUAGE_MODEL_ONLY=0
@@ -99,23 +109,36 @@ Options:
   --tp N                 tensor-parallel-size (default: GPU_COUNT)
   --dp N                 data-parallel-size (default: 1)
   --port PORT            vllm port (default: 8008)
+  --engine ENGINE        inference server: vllm (default) or sglang. sglang
+                         serves like the Miles trainer's rollout engines
+                         (qwen3_coder + qwen3 parsers) and defaults to the
+                         Miles eval image ($SGLANG_BEAKER_IMAGE).
+                         Keep --tp 1 for Qwen3.5 (sgl-project/sglang#21039);
+                         use --dp for more GPUs.
   --vllm-version VER     vLLM package version for uvx (default: 0.19.1)
-  --tool-call-parser P   vLLM tool call parser (default: hermes; use qwen3_xml
-                         for Qwen3.5 with tool-calling agents like Vanillux2Agent)
-  --reasoning-parser P   vLLM reasoning parser (default: none; use qwen3 for
-                         Qwen3 so <think> blocks are split out of tool-calls)
+  --sglang-version VER   SGLang release to install when the image has no SGLang
+                         (default: 0.5.21; the Miles image brings its own)
+  --tool-call-parser P   tool call parser (default: hermes for vllm, use qwen3_xml
+                         for Qwen3.5 with tool-calling agents like Vanillux2Agent;
+                         qwen3_coder for sglang, as Miles trains)
+  --reasoning-parser P   reasoning parser (default: none for vllm, use qwen3 for
+                         Qwen3 so <think> blocks are split out of tool-calls;
+                         qwen3 for sglang, as Miles trains; "none" disables)
   --mirror-url HOST:PORT docker.io pull-through mirror(s) for podman task-image
                          pulls (comma-sep; e.g. jupiter-cs-aus-137.reviz.ai2.in:5000).
                          Avoids Docker Hub rate limits under co-located jobs.
   --model-provider PROV  litellm provider prefix for --model (default: hosted_vllm
                          for import-path agents, openai otherwise). Use openai for
                          Vanillux2Agent.
-  --language-model-only  pass --language_model_only to vLLM
+  --language-model-only  load the language model only (vLLM
+                         --language_model_only, SGLang --language-model-only)
   --hf-config-path DIR   vLLM --hf-config-path: read config.json from DIR (a path the job
                          can read, e.g. under /weka/oe-adapt-default) and the weights from
                          the model repo. For checkpoints vLLM can't load as packaged, e.g.
-                         text-only Qwen3.5 exports (Qwen3_5ForCausalLM) on vLLM < 0.27
-  --max-model-len LEN    pass --max-model-len to vllm
+                         text-only Qwen3.5 exports (Qwen3_5ForCausalLM) on vLLM < 0.27.
+                         vLLM only.
+  --max-model-len LEN    context length (vLLM --max-model-len, SGLang
+                         --context-length)
   --dataset DS           harbor dataset (default: terminal-bench@2.0; also
                          valid: openthoughts-tblite@2.0)
   --harbor-env ENV       harbor environment backend (default: docker)
@@ -181,9 +204,11 @@ while [ $# -gt 0 ]; do
         --tp)              TP_SIZE="$2"; shift 2 ;;
         --dp)              DP_SIZE="$2"; shift 2 ;;
         --port)            VLLM_PORT="$2"; shift 2 ;;
+        --engine)          ENGINE="$2"; shift 2 ;;
         --vllm-version)    VLLM_VERSION="$2"; shift 2 ;;
-        --tool-call-parser) VLLM_TOOL_CALL_PARSER="$2"; shift 2 ;;
-        --reasoning-parser) VLLM_REASONING_PARSER="$2"; shift 2 ;;
+        --sglang-version)  SGLANG_VERSION="$2"; shift 2 ;;
+        --tool-call-parser) TOOL_CALL_PARSER="$2"; shift 2 ;;
+        --reasoning-parser) REASONING_PARSER="$2"; shift 2 ;;
         --mirror-url)      MIRROR_URL="$2"; shift 2 ;;
         --model-provider)  MODEL_PROVIDER="$2"; shift 2 ;;
         --language-model-only|--language_model_only) VLLM_LANGUAGE_MODEL_ONLY=1; shift ;;
@@ -202,8 +227,8 @@ while [ $# -gt 0 ]; do
         --budget)          BUDGET="$2"; shift 2 ;;
         --priority)        PRIORITY="$2"; shift 2 ;;
         --workspace)       BEAKER_WORKSPACE="$2"; shift 2 ;;
-        --image)           BEAKER_IMAGE="$2"; BEAKER_DOCKER_IMAGE=""; shift 2 ;;
-        --docker-image)    BEAKER_DOCKER_IMAGE="$2"; BEAKER_IMAGE=""; shift 2 ;;
+        --image)           BEAKER_IMAGE="$2"; BEAKER_DOCKER_IMAGE=""; IMAGE_SET=1; shift 2 ;;
+        --docker-image)    BEAKER_DOCKER_IMAGE="$2"; BEAKER_IMAGE=""; IMAGE_SET=1; shift 2 ;;
         --beaker-scripts-dataset) BEAKER_SCRIPTS_DATASET="$2"; shift 2 ;;
         --repo-url)        REPO_GIT_URL="$2"; shift 2 ;;
         --repo-ref)        REPO_GIT_REF="$2"; shift 2 ;;
@@ -234,6 +259,37 @@ done
 SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-$(basename "$MODEL_PATH")}"
 TP_SIZE="${TP_SIZE:-$GPU_COUNT}"
 DP_SIZE="${DP_SIZE:-1}"
+
+case "$ENGINE" in
+    vllm)
+        ENGINE_VERSION="$VLLM_VERSION"
+        TOOL_CALL_PARSER="${TOOL_CALL_PARSER:-hermes}"
+        ;;
+    sglang)
+        ENGINE_VERSION="image's own, else ${SGLANG_VERSION}"
+        TOOL_CALL_PARSER="${TOOL_CALL_PARSER:-qwen3_coder}"
+        REASONING_PARSER="${REASONING_PARSER:-qwen3}"
+        if [ "$IMAGE_SET" = 0 ]; then
+            BEAKER_IMAGE="$SGLANG_BEAKER_IMAGE"
+            BEAKER_DOCKER_IMAGE=""
+        fi
+        if [ -n "$VLLM_HF_CONFIG_PATH" ]; then
+            echo "error: --hf-config-path is vLLM-only. For a Qwen3.5 export SGLang can't load as" >&2
+            echo "       packaged, serve a copy with renamed tensors (docs/running_evals.md, SGLang section)." >&2
+            exit 1
+        fi
+        if [ -n "$BEAKER_SCRIPTS_DATASET" ]; then
+            echo "warning: --beaker-scripts-dataset $BEAKER_SCRIPTS_DATASET must hold an SGLang-aware" >&2
+            echo "         run_eval_in_job.sh; an older upload ignores ENGINE and serves with vLLM." >&2
+        fi
+        if [ "$TP_SIZE" -gt 1 ]; then
+            echo "warning: --engine sglang with TP=$TP_SIZE: SGLang TP>1 produces garbage for Qwen3.5" >&2
+            echo "         (sgl-project/sglang#21039; Miles trains with one GPU per engine). Use --tp 1 --dp N." >&2
+        fi
+        ;;
+    *) echo "error: --engine must be vllm or sglang, got '$ENGINE'" >&2; exit 1 ;;
+esac
+[ "$REASONING_PARSER" = none ] && REASONING_PARSER=""
 
 DATASET_SLUG="${DATASET//[^A-Za-z0-9]/-}"
 JOB_NAME="${JOB_NAME:-${SERVED_MODEL_NAME}-${DATASET_SLUG}}"
@@ -268,9 +324,9 @@ cat <<EOF
   Model:        ${MODEL_PATH}@${REVISION}
   Served name:  ${SERVED_MODEL_NAME}
   Harbor model: ${HARBOR_MODEL_NAME:-${MODEL_PROVIDER:-hosted_vllm}/${SERVED_MODEL_NAME}}
-  vLLM version: ${VLLM_VERSION}
-  Tool parser:  ${VLLM_TOOL_CALL_PARSER}
-  Reason parser: ${VLLM_REASONING_PARSER:-<none>}
+  Engine:       ${ENGINE} (${ENGINE_VERSION})
+  Tool parser:  ${TOOL_CALL_PARSER}
+  Reason parser: ${REASONING_PARSER:-<none>}
   LM only:      ${VLLM_LANGUAGE_MODEL_ONLY}
   HF config:    ${VLLM_HF_CONFIG_PATH:-<model repo>}
   GPUs:         ${GPU_COUNT} (TP=${TP_SIZE}, DP=${DP_SIZE})
@@ -307,7 +363,7 @@ GANTRY_CMD=(
     --allow-dirty
     --workspace "$BEAKER_WORKSPACE"
     --name "$BEAKER_NAME"
-    --description "Harbor eval (${DATASET}) of ${SERVED_MODEL_NAME} (${MODEL_PATH}@${REVISION}) via vLLM"
+    --description "Harbor eval (${DATASET}) of ${SERVED_MODEL_NAME} (${MODEL_PATH}@${REVISION}) via ${ENGINE}"
     --ref "$REPO_GIT_REF"
     --gpus "$GPU_COUNT"
     --priority "$PRIORITY"
@@ -318,9 +374,13 @@ GANTRY_CMD=(
     --env "MODEL_REVISION=${REVISION}"
     --env "SERVED_MODEL_NAME=${SERVED_MODEL_NAME}"
     --env "HARBOR_MODEL_NAME=${HARBOR_MODEL_NAME}"
+    --env "ENGINE=${ENGINE}"
     --env "VLLM_VERSION=${VLLM_VERSION}"
-    --env "VLLM_TOOL_CALL_PARSER=${VLLM_TOOL_CALL_PARSER}"
-    --env "VLLM_REASONING_PARSER=${VLLM_REASONING_PARSER}"
+    --env "SGLANG_VERSION=${SGLANG_VERSION}"
+    # Parser env names are per engine: vLLM keeps the names older uploads of
+    # run_eval_in_job.sh read (e.g. a reused --beaker-scripts-dataset).
+    --env "${ENGINE^^}_TOOL_CALL_PARSER=${TOOL_CALL_PARSER}"
+    --env "${ENGINE^^}_REASONING_PARSER=${REASONING_PARSER}"
     --env "MIRROR_URL=${MIRROR_URL}"
     --env "MODEL_PROVIDER=${MODEL_PROVIDER}"
     --env "VLLM_LANGUAGE_MODEL_ONLY=${VLLM_LANGUAGE_MODEL_ONLY}"

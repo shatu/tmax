@@ -72,7 +72,9 @@ A single task running:
                 --data-parallel-size $DP_SIZE
                 --port $VLLM_PORT
    ```
-   Logs go to `/tmp/vllm.log`.
+   Logs go to `/tmp/vllm.log`. With `ENGINE=sglang` it launches SGLang instead
+   (`python -m sglang.launch_server`, log `/tmp/sglang.log`); see
+   [Serving with SGLang](../../docs/running_evals.md#serving-with-sglang---engine-sglang).
 7. Polls `http://localhost:$VLLM_PORT/v1/models` for up to 30 minutes. If
    vLLM dies before becoming ready, prints the tail of the log and exits 1.
 8. Runs `uv run harbor run --env docker --agent-import-path
@@ -168,7 +170,7 @@ Inside the beaker task, in order of when things fail:
 | `unknown shorthand flag: 'p' in -p` from `docker compose down` | The image's `docker` CLI has no compose plugin. The script auto-installs Docker Compose v2 as a CLI plugin; if you see this anyway, check that `curl https://github.com/...` is reachable from your beaker network. |
 | `mknod` permission denied | The cluster doesn't grant CAP_MKNOD. Ask your beaker admin or use an image with `/dev/net/tun` pre-created. |
 | podman socket never appears | `/tmp/podman-service.log` for the daemon, then beaker task log. |
-| vLLM never becomes ready | `/tmp/vllm.log` (the inner script tails it on failure). |
+| vLLM / SGLang never becomes ready | `/tmp/vllm.log` / `/tmp/sglang.log` (the inner script tails it on failure). |
 | Trials all `RewardFileNotFoundError` | Harbor patches didn't apply. Confirm the patched files via `python3 -c "import harbor, pathlib; print((pathlib.Path(harbor.__file__).parent/'agents/oracle.py').read_text())" \| grep chmod`. |
 | Trials fail with `setgroups 65534` | Your podman's userns is too small. The script writes `auto:size=65536`; confirm `/etc/containers/containers.conf` actually has that line. |
 | Reward `0` across the board | Look at one trial: `jobs/$JOB_NAME/<task>/agent/oracle.txt` (agent stdout) and `verifier/test-stdout.txt` (test output). Likely a real model/agent issue, not infra. |
