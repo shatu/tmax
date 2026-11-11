@@ -9,12 +9,15 @@ through Harbor's active environment and calls the model directly with LiteLLM.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import re
 import shlex
 import time
+from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -22,16 +25,11 @@ import litellm
 from harbor.agents.base import BaseAgent
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
-
-from rl_data.generator.sample_solutions import (
-    SUBMIT_MARKER,
-    TOOL_SCHEMAS,
-    _extract_tool_call,
-)
+from rl_data.generator.sample_solutions import SUBMIT_MARKER, TOOL_SCHEMAS, _extract_tool_call
 from rl_data.generator.vanillux_solver import (
+    _SYSTEM_TEMPLATE,
     _format_error_message,
     _render_instance,
-    _SYSTEM_TEMPLATE,
     _truncate_observation,
 )
 
@@ -65,6 +63,14 @@ _DOCKER_EXEC_ERROR_RE = re.compile(
 )
 
 
+@dataclass
+class _CommandResult:
+    stdout: str | None
+    stderr: str | None
+    return_code: int
+    timed_out: bool = False
+
+
 class Vanillux2Agent(BaseAgent):
     """Bash-tool Harbor agent with vanillux prompts and direct API calls."""
 
@@ -73,7 +79,8 @@ class Vanillux2Agent(BaseAgent):
         return "vanillux2-agent"
 
     def version(self) -> str:
-        return "0.1.0"
+        # Upstream v1.1 (0.2.3) agent with tmax-eval's podman timeout handling.
+        return "0.2.3+podman"
 
     def __init__(
         self,
@@ -88,7 +95,6 @@ class Vanillux2Agent(BaseAgent):
         api_base: str | None = None,
         command_timeout: int = 120,
         persistent_bash: bool = True,
-        max_format_errors: int = 64,
         **kwargs: Any,
     ) -> None:
         super().__init__(logs_dir=logs_dir, model_name=model_name, **kwargs)
@@ -101,37 +107,27 @@ class Vanillux2Agent(BaseAgent):
         self.api_base = api_base
         self.command_timeout = command_timeout
         self.persistent_bash = persistent_bash
-        self.max_format_errors = max_format_errors
         self.cost: float = 0.0
 
     async def setup(self, environment: BaseEnvironment) -> None:
         if not self.persistent_bash:
             return
-        # NOTE: the work here is trivial (milliseconds), but this is the FIRST
-        # exec into a freshly-started container, so it queues behind container
-        # startup + the task-image pull. Under high --n-concurrent on one node
-        # (many containers starting at once, each pulling a multi-GB image —
-        # e.g. swebench-verified's 500 unique ~1.2 GiB images with harbor's
-        # stock `compose down --rmi all`) that contention regularly exceeds a
-        # short timeout. A timeout HERE raises out of setup() and fails the
-        # whole TRIAL (an exception, not reward 0), so a hardcoded 10s was
-        # silently erroring ~45% of trials at --n-concurrent 32 and depressing
-        # pass@k. Use the agent's own command timeout instead.
-        await environment.exec(
+        result = await environment.exec(
             command=(
-                f"mkdir -p {_STATE_DIR} && "
-                f"pwd > {_STATE_DIR}/cwd && "
-                f"export -p > {_STATE_DIR}/env"
+                f"mkdir -p {_STATE_DIR} && pwd > {_STATE_DIR}/cwd && (unset FAKEROOTKEY; export -p) > {_STATE_DIR}/env"
             ),
+            # First exec into a fresh container: it queues behind container start and
+            # the task-image pull, which under high --n-concurrent exceeds 10 s and
+            # fails the whole trial (682989c8). Use the command timeout instead.
             timeout_sec=self.command_timeout,
         )
+        if result.return_code != 0:
+            raise RuntimeError(
+                "Failed to initialize Vanillux runtime state "
+                f"(exit={result.return_code}): {result.stderr or result.stdout}"
+            )
 
-    async def run(
-        self,
-        instruction: str,
-        environment: BaseEnvironment,
-        context: AgentContext,
-    ) -> None:
+    async def run(self, instruction: str, environment: BaseEnvironment, context: AgentContext) -> None:
         model = self.model_name or "anthropic/claude-haiku-4-5"
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": _SYSTEM_TEMPLATE},
@@ -139,24 +135,14 @@ class Vanillux2Agent(BaseAgent):
         ]
 
         timing_log: list[dict[str, Any]] = []
-        usage_totals = {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-            "reasoning_tokens": 0,
-        }
-        format_errors = 0
+        usage_totals = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "reasoning_tokens": 0}
 
         try:
             for step in range(self.max_steps):
                 logger.info("Step %s/%s", step + 1, self.max_steps)
 
                 if self.cost_limit > 0 and self.cost >= self.cost_limit:
-                    logger.warning(
-                        "Cost limit reached: $%.2f >= $%.2f",
-                        self.cost,
-                        self.cost_limit,
-                    )
+                    logger.warning("Cost limit reached: $%.2f >= $%.2f", self.cost, self.cost_limit)
                     break
 
                 t0 = time.monotonic()
@@ -168,33 +154,25 @@ class Vanillux2Agent(BaseAgent):
                 llm_time = time.monotonic() - t0
 
                 self._accumulate_usage(response, usage_totals)
-                try:
+                with contextlib.suppress(Exception):
                     self.cost += litellm.completion_cost(response, model=model)
-                except Exception:
-                    pass
 
                 msg = response.choices[0].message.model_dump()
-                action = _extract_tool_call(msg)
+                try:
+                    action = _extract_tool_call(msg)
+                except (AttributeError, TypeError):
+                    action = {"type": "no_tool_call"}
                 if action["type"] == "no_tool_call":
                     msg.pop("tool_calls", None)
                     msg["content"] = msg.get("content") or ""
                     messages.append(msg)
-                    format_errors += 1
-                    self._append_format_error(messages, action.get("tool_call_id"))
-                    timing_log.append(
-                        {
-                            "step": step + 1,
-                            "llm_s": round(llm_time, 1),
-                            "format_error": True,
-                        }
-                    )
-                    if format_errors >= self.max_format_errors:
-                        logger.warning("Stopping after %s format errors", format_errors)
-                        break
+                    self._append_format_error(messages)
+                    timing_log.append({"step": step + 1, "llm_s": round(llm_time, 1), "format_error": True})
                     continue
 
+                # Retain only the call that will receive a tool response.
+                msg["tool_calls"] = msg["tool_calls"][:1]
                 messages.append(msg)
-                format_errors = 0
                 command = action.get("command") or ""
                 tool_call_id = action.get("tool_call_id") or ""
 
@@ -202,76 +180,53 @@ class Vanillux2Agent(BaseAgent):
                 result = await self._execute_bash(command, environment)
                 exec_time = time.monotonic() - t1
 
-                if result is None:
-                    # As in training (open-instruct's tool_call_timeout, Miles'
-                    # TMAX_TOOL_CALL_TIMEOUT_S): the overrun is reported to the
-                    # policy and the episode goes on.
-                    tool_content = (
-                        f"Step 'bash' timed out after {self.command_timeout:g}s. "
-                        f"Args: {{'command': {command!r}}}"
-                    )
-                else:
-                    tool_content = self._format_tool_result(result)
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call_id,
-                        "content": tool_content,
-                    }
-                )
+                tool_content = self._format_tool_result(result)
+                messages.append({"role": "tool", "tool_call_id": tool_call_id, "content": tool_content})
 
                 timing_log.append(
                     {
                         "step": step + 1,
                         "llm_s": round(llm_time, 1),
                         "bash_s": round(exec_time, 1),
-                        "return_code": (
-                            result.return_code if result is not None else "timeout"
-                        ),
+                        "return_code": result.return_code,
+                        "timed_out": result.timed_out,
                         "cmd": command[:200],
                     }
                 )
 
+                if result.timed_out:
+                    # A command deadline ends this action, not the evaluation.
+                    # Preserve partial output so the model can recover on its
+                    # next turn; Harbor still enforces the overall task budget.
+                    continue
                 if action["type"] == "done" or SUBMIT_MARKER in tool_content:
                     break
         finally:
             self.logs_dir.mkdir(parents=True, exist_ok=True)
-            (self.logs_dir / "trajectory.json").write_text(
-                json.dumps(messages, indent=2, default=str) + "\n"
-            )
-            (self.logs_dir / "timing.json").write_text(
-                json.dumps(timing_log, indent=2) + "\n"
-            )
+            (self.logs_dir / "trajectory.json").write_text(json.dumps(messages, indent=2, default=str) + "\n")
+            (self.logs_dir / "timing.json").write_text(json.dumps(timing_log, indent=2) + "\n")
             (self.logs_dir / "usage.json").write_text(
-                json.dumps(
-                    {
-                        **usage_totals,
-                        "cost_usd": self.cost,
-                        "max_steps": self.max_steps,
-                    },
-                    indent=2,
-                )
-                + "\n"
+                json.dumps({**usage_totals, "cost_usd": self.cost, "max_steps": self.max_steps}, indent=2) + "\n"
             )
             context.cost_usd = self.cost
             context.n_input_tokens = usage_totals["prompt_tokens"]
             context.n_output_tokens = usage_totals["completion_tokens"]
 
-    async def _query_with_retry(
-        self, model: str, messages: list[dict[str, Any]]
-    ) -> Any:
-        api_base = (
-            self.api_base
-            or os.environ.get("OPENAI_BASE_URL")
-            or os.environ.get("OPENAI_API_BASE")
-        )
+    async def _query_with_retry(self, model: str, messages: list[dict[str, Any]]) -> Any:
+        api_base = self.api_base or os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENAI_API_BASE")
+        tool_schemas = deepcopy(TOOL_SCHEMAS)
+        if self.persistent_bash:
+            tool_schemas[0]["function"]["description"] = (
+                "Execute a bash command in a persistent shell. "
+                "Working directory and environment variables are preserved between calls."
+            )
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 llm_timeout = LLM_TIMEOUT_SECONDS
                 completion_kwargs: dict[str, Any] = {
                     "model": model,
                     "messages": messages,
-                    "tools": TOOL_SCHEMAS,
+                    "tools": tool_schemas,
                     "max_tokens": self.max_tokens,
                     "api_base": api_base,
                     "timeout": llm_timeout,
@@ -280,17 +235,12 @@ class Vanillux2Agent(BaseAgent):
                 }
                 if self.temperature is not None:
                     completion_kwargs["temperature"] = self.temperature
-                if self.top_p is not None and not (
-                    model.startswith("anthropic/") and self.temperature is not None
-                ):
+                if self.top_p is not None and not (model.startswith("anthropic/") and self.temperature is not None):
                     completion_kwargs["top_p"] = self.top_p
                 if self.top_k is not None:
                     completion_kwargs.setdefault("extra_body", {})["top_k"] = self.top_k
                 return await asyncio.wait_for(
-                    asyncio.to_thread(
-                        litellm.completion,
-                        **completion_kwargs,
-                    ),
+                    asyncio.to_thread(litellm.completion, **completion_kwargs),
                     timeout=llm_timeout + LLM_OUTER_TIMEOUT_BUFFER_SECONDS,
                 )
             except ABORT_EXCEPTIONS:
@@ -301,12 +251,7 @@ class Vanillux2Agent(BaseAgent):
                     raise
                 delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
                 logger.warning(
-                    "Retry %s/%s after %s: %s (waiting %.0fs)",
-                    attempt,
-                    MAX_RETRIES,
-                    type(exc).__name__,
-                    exc,
-                    delay,
+                    "Retry %s/%s after %s: %s (waiting %.0fs)", attempt, MAX_RETRIES, type(exc).__name__, exc, delay
                 )
                 await asyncio.sleep(delay)
 
@@ -319,43 +264,33 @@ class Vanillux2Agent(BaseAgent):
             usage_totals[key] += getattr(usage, key, 0) or 0
 
     @staticmethod
-    def _append_format_error(
-        messages: list[dict[str, Any]], tool_call_id: str | None
-    ) -> None:
-        content = _format_error_message(
-            "Your last response did not include a valid `bash` tool call."
-        )
-        if tool_call_id:
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_call_id,
-                    "content": content,
-                }
-            )
-            return
+    def _append_format_error(messages: list[dict[str, Any]]) -> None:
+        # Invalid tool calls have been removed from the assistant message.
+        content = _format_error_message("Your last response did not include a valid `bash` tool call.")
         messages.append({"role": "user", "content": content})
 
     def _wrap_command(self, command: str) -> str:
         if not self.persistent_bash:
             return command
+        # Apptainer supplies a fresh fakeroot connection for each exec. Persist
+        # user exports, but never restore a previous exec's connection key.
         return (
             f'cd "$(cat {_STATE_DIR}/cwd)" 2>/dev/null || true\n'
             f". {_STATE_DIR}/env 2>/dev/null || true\n"
             f"{command}\n"
             "_vanillux2_ec=$?\n"
             f"pwd > {_STATE_DIR}/cwd\n"
-            f"export -p > {_STATE_DIR}/env\n"
+            f"(unset FAKEROOTKEY; export -p) > {_STATE_DIR}/env\n"
             "exit $_vanillux2_ec"
         )
 
-    async def _execute_bash(
-        self, command: str, environment: BaseEnvironment
-    ) -> Any | None:
-        """Runs one command; None if it outlived command_timeout.
+    async def _execute_bash(self, command: str, environment: BaseEnvironment) -> _CommandResult:
+        """Runs one command under the image's `timeout` (when it takes -s/-k).
 
-        The command runs under the image's `timeout` (when it takes -s/-k), so an
-        overrun is killed in the container, not left running into later steps.
+        Upstream v1.1 relies on Harbor's exec timeout plus an exit-124 marker file;
+        on our podman backend Harbor's exec timeout blocks on the compose pipe, so
+        the deadline is enforced in the container instead (b0a7e6af). As in v1.1,
+        a timed-out command keeps its partial output and the run goes on.
         """
         script = shlex.quote(self._wrap_command(command))
         t = self.command_timeout
@@ -372,13 +307,12 @@ class Vanillux2Agent(BaseAgent):
         except RuntimeError as exc:
             if not str(exc).startswith("Command timed out"):
                 raise
-            return None
+            return _CommandResult(None, f"Command timed out after {t}s.", 124, True)
         # GNU timeout exits 124, BusyBox's with the signal (143, or 137 after -k).
         # A command's own `timeout` can return these too; only a full-length run
         # is ours.
-        if result.return_code in (124, 137, 143) and time.monotonic() - t0 >= t:
-            return None
-        return result
+        timed_out = result.return_code in (124, 137, 143) and time.monotonic() - t0 >= t
+        return _CommandResult(result.stdout, result.stderr, result.return_code, timed_out)
 
     @staticmethod
     def _format_tool_result(result: Any) -> str:
