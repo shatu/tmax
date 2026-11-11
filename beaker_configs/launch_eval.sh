@@ -53,6 +53,7 @@ REASONING_PARSER=""                 # engine default: vllm none, sglang qwen3; "
 MIRROR_URL="${MIRROR_URL:-}"
 MODEL_PROVIDER=""
 VLLM_LANGUAGE_MODEL_ONLY=0
+VLLM_HF_CONFIG_PATH=""              # optional: vLLM --hf-config-path (a dir with config.json)
 MAX_MODEL_LEN=""
 DATASET="terminal-bench@2.0"
 DATASET_PATH=""
@@ -131,6 +132,11 @@ Options:
                          Vanillux2Agent.
   --language-model-only  load the language model only (vLLM
                          --language_model_only, SGLang --language-model-only)
+  --hf-config-path DIR   vLLM --hf-config-path: read config.json from DIR (a path the job
+                         can read, e.g. under /weka/oe-adapt-default) and the weights from
+                         the model repo. For checkpoints vLLM can't load as packaged, e.g.
+                         text-only Qwen3.5 exports (Qwen3_5ForCausalLM) on vLLM < 0.27.
+                         vLLM only.
   --max-model-len LEN    context length (vLLM --max-model-len, SGLang
                          --context-length)
   --dataset DS           harbor dataset (default: terminal-bench@2.0; also
@@ -206,6 +212,7 @@ while [ $# -gt 0 ]; do
         --mirror-url)      MIRROR_URL="$2"; shift 2 ;;
         --model-provider)  MODEL_PROVIDER="$2"; shift 2 ;;
         --language-model-only|--language_model_only) VLLM_LANGUAGE_MODEL_ONLY=1; shift ;;
+        --hf-config-path)  VLLM_HF_CONFIG_PATH="$2"; shift 2 ;;
         --max-model-len)   MAX_MODEL_LEN="$2"; shift 2 ;;
         --dataset)         DATASET="$2"; shift 2 ;;
         --dataset-path)    DATASET_PATH="$2"; shift 2 ;;
@@ -266,6 +273,11 @@ case "$ENGINE" in
             BEAKER_IMAGE="$SGLANG_BEAKER_IMAGE"
             BEAKER_DOCKER_IMAGE=""
         fi
+        if [ -n "$VLLM_HF_CONFIG_PATH" ]; then
+            echo "error: --hf-config-path is vLLM-only. For a Qwen3.5 export SGLang can't load as" >&2
+            echo "       packaged, serve a copy with renamed tensors (docs/running_evals.md, SGLang section)." >&2
+            exit 1
+        fi
         if [ -n "$BEAKER_SCRIPTS_DATASET" ]; then
             echo "warning: --beaker-scripts-dataset $BEAKER_SCRIPTS_DATASET must hold an SGLang-aware" >&2
             echo "         run_eval_in_job.sh; an older upload ignores ENGINE and serves with vLLM." >&2
@@ -316,6 +328,7 @@ cat <<EOF
   Tool parser:  ${TOOL_CALL_PARSER}
   Reason parser: ${REASONING_PARSER:-<none>}
   LM only:      ${VLLM_LANGUAGE_MODEL_ONLY}
+  HF config:    ${VLLM_HF_CONFIG_PATH:-<model repo>}
   GPUs:         ${GPU_COUNT} (TP=${TP_SIZE}, DP=${DP_SIZE})
   Dataset:      ${DATASET}
   Harbor env:   ${HARBOR_ENV}
@@ -371,6 +384,7 @@ GANTRY_CMD=(
     --env "MIRROR_URL=${MIRROR_URL}"
     --env "MODEL_PROVIDER=${MODEL_PROVIDER}"
     --env "VLLM_LANGUAGE_MODEL_ONLY=${VLLM_LANGUAGE_MODEL_ONLY}"
+    --env "VLLM_HF_CONFIG_PATH=${VLLM_HF_CONFIG_PATH}"
     --env "VLLM_PORT=${VLLM_PORT}"
     --env "TP_SIZE=${TP_SIZE}"
     --env "DP_SIZE=${DP_SIZE}"

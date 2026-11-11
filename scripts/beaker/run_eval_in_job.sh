@@ -20,6 +20,7 @@
 #                            stops itself (default: 3600)
 #   VLLM_LANGUAGE_MODEL_ONLY load the language model only when set to 1 (vLLM
 #                            --language_model_only, SGLang --language-model-only)
+#   VLLM_HF_CONFIG_PATH      optional vLLM --hf-config-path (dir with config.json)
 #   VLLM_PORT                port for vLLM (default: 8008)
 #   TP_SIZE                  --tensor-parallel-size (required)
 #   DP_SIZE                  --data-parallel-size (default: 1)
@@ -513,6 +514,10 @@ vllm)
     fi
     if [ "${VLLM_LANGUAGE_MODEL_ONLY:-0}" = "1" ]; then
         SERVER_CMD+=( --language_model_only )
+    fi
+    # Config from elsewhere, weights from the model repo (see launch_eval.sh --hf-config-path).
+    if [ -n "${VLLM_HF_CONFIG_PATH:-}" ]; then
+        SERVER_CMD+=( --hf-config-path "$VLLM_HF_CONFIG_PATH" )
     fi
     ;;
 sglang)

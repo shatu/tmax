@@ -207,6 +207,7 @@ From [`run_eval_in_job.sh`](../scripts/beaker/run_eval_in_job.sh):
 | `--docker-image IMG` / `--image IMG` | `shashankg/tmax-vllm-eval_latest` | Public Docker image vs. a Beaker image/ID (each clears the other). A Beaker image name is resolved to its ID at launch, and `eval_meta.json` records name, ID and description. The default is built from [`scripts/beaker/Dockerfile.vllm_eval`](../scripts/beaker/Dockerfile.vllm_eval) by [`build_vllm_eval_image.sh`](../scripts/beaker/build_vllm_eval_image.sh), which also pushes a permanent `tmax-vllm-eval_<commit>`; both descriptions name the build commit. It replaced `hamishivi/tmax-eval-interactive` (2026-11-06), which still works with `--image`. |
 | `--engine ENGINE` | `vllm` | `vllm` or `sglang`; see [Serving with SGLang](#serving-with-sglang---engine-sglang). |
 | `--max-model-len LEN` | unset | Context length (vLLM `--max-model-len`, SGLang `--context-length`). Pass `32768` for Qwen3.5 so the 262k default KV cache fits one GPU and vLLM actually starts. |
+| `--hf-config-path DIR` | unset | vLLM only: `--hf-config-path`: `config.json` from DIR, weights from the model repo. Text-only Qwen3.5 exports (`Qwen3_5ForCausalLM`, e.g. `TMaxxx/tmax-9b-v1.1`) don't load on vLLM 0.19.1 (registered from 0.27); their weights are named like the multimodal checkpoints', so a `Qwen3_5ForConditionalGeneration` config (e.g. `allenai/tmax-9b`'s) plus `--language-model-only` serves them. See [Text-only Qwen3.5 checkpoints](#text-only-qwen35-checkpoints-on-vllm-0191). |
 | `--tool-call-parser P` | `hermes` (vllm) / `qwen3_coder` (sglang) | Tool parser. **On vLLM use `qwen3_xml` for Qwen3.5 with structured-tool agents** (Vanillux2Agent); `hermes` silently drops its tool-calls. |
 | `--reasoning-parser P` | none (vllm) / `qwen3` (sglang) | Reasoning parser. Use `qwen3` for Qwen3 reasoning models so `<think>…</think>` is split out of the visible response; `none` disables. |
 | `--cluster` / `--workspace` / `--priority` / `--budget` | see script | Beaker placement. |
@@ -476,6 +477,30 @@ harbor runs them unchanged from a **local directory**. No harbor upgrade require
    The directory must live under a weka mount the job has (`launch_eval.sh`
    mounts `oe-adapt-default`). To move any existing eval onto 2.1, just swap
    `--dataset terminal-bench@2.0` for the `--dataset-path` above.
+
+### Text-only Qwen3.5 checkpoints on vLLM 0.19.1
+
+Qwen3.5 checkpoints come packaged two ways with the same weights
+(`model.language_model.*` + `lm_head`, no vision tensors):
+
+| Packaging | Example | vLLM 0.19.1 |
+|---|---|---|
+| `Qwen3_5ForConditionalGeneration` wrapping a `qwen3_5_text` config | `allenai/tmax-9b` | Loads; `--language-model-only` skips the (absent) vision tower |
+| Bare `qwen3_5_text` config as `Qwen3_5ForCausalLM` | `TMaxxx/tmax-9b-v1.1` | Fails: `Invalid type of HuggingFace config ... Qwen3_5TextConfig` (the class is registered from vLLM 0.27, which needs CUDA 13 torch) |
+
+Serve the second kind with a wrapper config via `--hf-config-path` (weights still
+come from the HF repo, so `eval_meta.json` records its commit). A ready one for
+the 9B lives at `/weka/oe-adapt-default/shashankg/models/hf-configs/tmax-9b-v1.1-vllm0.19` (tmax-9b's `config.json`):
+
+```bash
+./beaker_configs/launch_eval.sh TMaxxx/tmax-9b-v1.1 \
+  --hf-config-path /weka/oe-adapt-default/shashankg/models/hf-configs/tmax-9b-v1.1-vllm0.19 --language-model-only \
+  --tool-call-parser qwen3_xml ...
+```
+
+`--hf-config-path` is vLLM-only. SGLang (`--engine sglang`) starts on the bare text
+config but silently skips nearly every `model.language_model.*` weight; serve a copy
+with the tensors renamed instead (see the SGLang section above).
 
 ### SWE-bench Verified
 
