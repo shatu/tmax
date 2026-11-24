@@ -57,6 +57,7 @@ VLLM_HF_CONFIG_PATH=""              # optional: vLLM --hf-config-path (a dir wit
 SERVER_CHAT_TEMPLATE=""             # optional: --chat-template file for the server (both engines)
 SERVER_ENV=""                       # optional: newline-separated KEY=VALUE set for the server only
 SERVER_EXTRA_ARGS=""                # optional: space-separated extra flags for the server (both engines)
+VLLM_BIN=""                         # optional: a vllm executable in the image instead of uvx vllm==VERSION
 MAX_MODEL_LEN=""
 DATASET="terminal-bench@2.0"
 DATASET_PATH=""
@@ -144,6 +145,9 @@ Options:
   --chat-template FILE   chat template the server renders with (--chat-template, both
                          engines) instead of the model's own; a path the job can read,
                          e.g. under /weka/oe-adapt-default
+  --vllm-bin PATH        vLLM only: run this vllm executable from the image instead of
+                         uvx vllm==VERSION, e.g. /opt/vllm-venv/bin/vllm in an image built on
+                         olmo-eval's, whose vLLM serves Olmo 3.5 MoE (no PyPI release does)
   --server-extra-args "FLAGS"
                          extra flags appended to the server command (space-separated, both
                          engines), e.g. for Olmo 3.5 hybrid (KDA) models on SGLang:
@@ -232,6 +236,7 @@ while [ $# -gt 0 ]; do
         --hf-config-path)  VLLM_HF_CONFIG_PATH="$2"; shift 2 ;;
         --chat-template)   SERVER_CHAT_TEMPLATE="$2"; shift 2 ;;
         --server-extra-args) SERVER_EXTRA_ARGS="$2"; shift 2 ;;
+        --vllm-bin)        VLLM_BIN="$2"; shift 2 ;;
         --server-env)      SERVER_ENV="${SERVER_ENV:+$SERVER_ENV$'\n'}$2"; shift 2 ;;
         --max-model-len)   MAX_MODEL_LEN="$2"; shift 2 ;;
         --dataset)         DATASET="$2"; shift 2 ;;
@@ -353,6 +358,7 @@ cat <<EOF
   Chat template: ${SERVER_CHAT_TEMPLATE:-<from the model>}
   Server env:   ${SERVER_ENV:-<none>}
   Server args:  ${SERVER_EXTRA_ARGS:-<none>}
+  vLLM binary:  ${VLLM_BIN:-<uvx>}
   GPUs:         ${GPU_COUNT} (TP=${TP_SIZE}, DP=${DP_SIZE})
   Dataset:      ${DATASET}
   Harbor env:   ${HARBOR_ENV}
@@ -412,6 +418,7 @@ GANTRY_CMD=(
     --env "SERVER_CHAT_TEMPLATE=${SERVER_CHAT_TEMPLATE}"
     --env "SERVER_ENV=${SERVER_ENV}"
     --env "SERVER_EXTRA_ARGS=${SERVER_EXTRA_ARGS}"
+    --env "VLLM_BIN=${VLLM_BIN}"
     --env "VLLM_PORT=${VLLM_PORT}"
     --env "TP_SIZE=${TP_SIZE}"
     --env "DP_SIZE=${DP_SIZE}"

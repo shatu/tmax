@@ -10,6 +10,8 @@
 #   HARBOR_MODEL_NAME        optional model name passed to harbor
 #   ENGINE                   vllm (default) or sglang
 #   VLLM_VERSION             vLLM package version for uvx (default: 0.19.1)
+#   VLLM_BIN                 optional vllm executable already in the image (e.g. olmo-eval's
+#                            /opt/vllm-venv/bin/vllm, which serves Olmo 3.5 MoE) instead of uvx
 #   VLLM_TOOL_CALL_PARSER    vLLM tool parser (default: hermes)
 #   VLLM_REASONING_PARSER    optional vLLM reasoning parser
 #   SGLANG_VERSION           SGLang release to install when the image has none
@@ -498,8 +500,19 @@ vllm)
     # API server 500s on every request including /v1/models — the readiness probe
     # below then never passes and the job is killed after 30 min.
     # See vllm-project/vllm#45596 and #45597.
-    SERVER_CMD=( uvx --with "fastapi<0.137"
-               "vllm==${VLLM_VERSION}" serve "$MODEL_PATH"
+    if [ -n "${VLLM_BIN:-}" ]; then
+        # A vLLM build in the image (launch_eval.sh --vllm-bin): models the PyPI releases lack.
+        VLLM_LAUNCH=( "$VLLM_BIN" )
+        # A venv's own Triton ships the ptxas that knows the GPU (olmo-eval sets this too).
+        PTXAS="$(ls "$(dirname "$VLLM_BIN")"/../lib/python*/site-packages/triton/backends/nvidia/bin/ptxas 2>/dev/null | head -1)"
+        if [ -z "${TRITON_PTXAS_PATH:-}" ] && [ -n "$PTXAS" ]; then
+            VLLM_LAUNCH=( env "TRITON_PTXAS_PATH=$PTXAS" "$VLLM_BIN" )
+        fi
+        log "vllm from the image: $VLLM_BIN ($("$VLLM_BIN" --version 2>/dev/null | tail -1))"
+    else
+        VLLM_LAUNCH=( uvx --with "fastapi<0.137" "vllm==${VLLM_VERSION}" )
+    fi
+    SERVER_CMD=( "${VLLM_LAUNCH[@]}" serve "$MODEL_PATH"
                --revision "$MODEL_REVISION"
                --tokenizer-revision "$MODEL_REVISION"
                --served-model-name "$SERVED_MODEL_NAME"
