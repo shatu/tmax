@@ -344,7 +344,7 @@ cat <<EOF
   Reason parser: ${REASONING_PARSER:-<none>}
   LM only:      ${VLLM_LANGUAGE_MODEL_ONLY}
   HF config:    ${VLLM_HF_CONFIG_PATH:-<model repo>}
-  Chat template: ${SERVER_CHAT_TEMPLATE:-<model's own>}
+  Chat template: ${SERVER_CHAT_TEMPLATE:-<from the model>}
   Server env:   ${SERVER_ENV:-<none>}
   GPUs:         ${GPU_COUNT} (TP=${TP_SIZE}, DP=${DP_SIZE})
   Dataset:      ${DATASET}
