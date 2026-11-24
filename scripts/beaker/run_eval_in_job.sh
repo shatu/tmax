@@ -24,6 +24,8 @@
 #   VLLM_HF_CONFIG_PATH      optional vLLM --hf-config-path (dir with config.json)
 #   SERVER_CHAT_TEMPLATE     optional chat template file the server renders with
 #                            (--chat-template, vLLM and SGLang) instead of the model's
+#   SERVER_EXTRA_ARGS        optional space-separated extra server flags (both engines),
+#                            e.g. SGLang's KDA settings for Olmo 3.5 hybrid models
 #   SERVER_ENV               optional newline-separated KEY=VALUE pairs set for the
 #                            server process only (e.g. SGLANG_EXTERNAL_MODEL_PACKAGE)
 #   VLLM_PORT                port for vLLM (default: 8008)
@@ -592,7 +594,11 @@ sglang)
     ;;
 esac
 
-# Options both engines take, from launch_eval.sh --chat-template / --server-env.
+# Options both engines take, from launch_eval.sh --server-extra-args / --chat-template / --server-env.
+if [ -n "${SERVER_EXTRA_ARGS:-}" ]; then
+    read -ra SERVER_EXTRA_ARGV <<< "$SERVER_EXTRA_ARGS"
+    SERVER_CMD+=( "${SERVER_EXTRA_ARGV[@]}" )
+fi
 if [ -n "${SERVER_CHAT_TEMPLATE:-}" ]; then
     if [ ! -f "$SERVER_CHAT_TEMPLATE" ]; then
         log "FATAL: SERVER_CHAT_TEMPLATE=$SERVER_CHAT_TEMPLATE is not a readable file"

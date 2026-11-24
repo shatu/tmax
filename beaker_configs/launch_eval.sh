@@ -56,6 +56,7 @@ VLLM_LANGUAGE_MODEL_ONLY=0
 VLLM_HF_CONFIG_PATH=""              # optional: vLLM --hf-config-path (a dir with config.json)
 SERVER_CHAT_TEMPLATE=""             # optional: --chat-template file for the server (both engines)
 SERVER_ENV=""                       # optional: newline-separated KEY=VALUE set for the server only
+SERVER_EXTRA_ARGS=""                # optional: space-separated extra flags for the server (both engines)
 MAX_MODEL_LEN=""
 DATASET="terminal-bench@2.0"
 DATASET_PATH=""
@@ -143,6 +144,10 @@ Options:
   --chat-template FILE   chat template the server renders with (--chat-template, both
                          engines) instead of the model's own; a path the job can read,
                          e.g. under /weka/oe-adapt-default
+  --server-extra-args "FLAGS"
+                         extra flags appended to the server command (space-separated, both
+                         engines), e.g. for Olmo 3.5 hybrid (KDA) models on SGLang:
+                         "--attention-backend triton --mamba-radix-cache-strategy extra_buffer"
   --server-env KEY=VAL   environment variable for the inference server process only
                          (repeatable), e.g. SGLANG_EXTERNAL_MODEL_PACKAGE=olmo_sglang.models
                          for Olmo 3.5 models served by an image with olmo-sglang
@@ -226,6 +231,7 @@ while [ $# -gt 0 ]; do
         --language-model-only|--language_model_only) VLLM_LANGUAGE_MODEL_ONLY=1; shift ;;
         --hf-config-path)  VLLM_HF_CONFIG_PATH="$2"; shift 2 ;;
         --chat-template)   SERVER_CHAT_TEMPLATE="$2"; shift 2 ;;
+        --server-extra-args) SERVER_EXTRA_ARGS="$2"; shift 2 ;;
         --server-env)      SERVER_ENV="${SERVER_ENV:+$SERVER_ENV$'\n'}$2"; shift 2 ;;
         --max-model-len)   MAX_MODEL_LEN="$2"; shift 2 ;;
         --dataset)         DATASET="$2"; shift 2 ;;
@@ -346,6 +352,7 @@ cat <<EOF
   HF config:    ${VLLM_HF_CONFIG_PATH:-<model repo>}
   Chat template: ${SERVER_CHAT_TEMPLATE:-<from the model>}
   Server env:   ${SERVER_ENV:-<none>}
+  Server args:  ${SERVER_EXTRA_ARGS:-<none>}
   GPUs:         ${GPU_COUNT} (TP=${TP_SIZE}, DP=${DP_SIZE})
   Dataset:      ${DATASET}
   Harbor env:   ${HARBOR_ENV}
@@ -404,6 +411,7 @@ GANTRY_CMD=(
     --env "VLLM_HF_CONFIG_PATH=${VLLM_HF_CONFIG_PATH}"
     --env "SERVER_CHAT_TEMPLATE=${SERVER_CHAT_TEMPLATE}"
     --env "SERVER_ENV=${SERVER_ENV}"
+    --env "SERVER_EXTRA_ARGS=${SERVER_EXTRA_ARGS}"
     --env "VLLM_PORT=${VLLM_PORT}"
     --env "TP_SIZE=${TP_SIZE}"
     --env "DP_SIZE=${DP_SIZE}"
