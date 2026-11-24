@@ -15,12 +15,17 @@
 #   SGLANG_VERSION           SGLang release to install when the image has none
 #                            (default: 0.5.21)
 #   SGLANG_TOOL_CALL_PARSER  SGLang tool parser (default: qwen3_coder)
-#   SGLANG_REASONING_PARSER  SGLang reasoning parser (default: qwen3)
+#   SGLANG_REASONING_PARSER  SGLang reasoning parser (default when unset: qwen3; empty
+#                            disables it, as launch_eval.sh --reasoning-parser none)
 #   SGLANG_WATCHDOG_TIMEOUT  seconds without a finished batch before SGLang
 #                            stops itself (default: 3600)
 #   VLLM_LANGUAGE_MODEL_ONLY load the language model only when set to 1 (vLLM
 #                            --language_model_only, SGLang --language-model-only)
 #   VLLM_HF_CONFIG_PATH      optional vLLM --hf-config-path (dir with config.json)
+#   SERVER_CHAT_TEMPLATE     optional chat template file the server renders with
+#                            (--chat-template, vLLM and SGLang) instead of the model's
+#   SERVER_ENV               optional newline-separated KEY=VALUE pairs set for the
+#                            server process only (e.g. SGLANG_EXTERNAL_MODEL_PACKAGE)
 #   VLLM_PORT                port for vLLM (default: 8008)
 #   TP_SIZE                  --tensor-parallel-size (required)
 #   DP_SIZE                  --data-parallel-size (default: 1)
@@ -526,7 +531,8 @@ sglang)
     # the qwen3 reasoning parser, one GPU per engine, SGLang's other defaults.
     : "${SGLANG_VERSION:=0.5.21}"
     : "${SGLANG_TOOL_CALL_PARSER:=qwen3_coder}"
-    : "${SGLANG_REASONING_PARSER:=qwen3}"
+    # `=`, not `:=`: launch_eval.sh passes the resolved parser, empty for --reasoning-parser none.
+    : "${SGLANG_REASONING_PARSER=qwen3}"
     # SGLang stops the whole server when no batch finishes for this long, and it
     # counts wall-clock time, so a node stall counts too: at the 300 s default a
     # stalled node killed a TBlite eval's server on resume; the longest gap
@@ -585,6 +591,22 @@ sglang)
     exit 1
     ;;
 esac
+
+# Options both engines take, from launch_eval.sh --chat-template / --server-env.
+if [ -n "${SERVER_CHAT_TEMPLATE:-}" ]; then
+    if [ ! -f "$SERVER_CHAT_TEMPLATE" ]; then
+        log "FATAL: SERVER_CHAT_TEMPLATE=$SERVER_CHAT_TEMPLATE is not a readable file"
+        exit 1
+    fi
+    SERVER_CMD+=( --chat-template "$SERVER_CHAT_TEMPLATE" )
+fi
+if [ -n "${SERVER_ENV:-}" ]; then
+    SERVER_ENV_ARGS=()
+    while IFS= read -r kv; do
+        [ -n "$kv" ] && SERVER_ENV_ARGS+=( "$kv" )
+    done <<< "$SERVER_ENV"
+    SERVER_CMD=( env "${SERVER_ENV_ARGS[@]}" "${SERVER_CMD[@]}" )
+fi
 
 log "launching $ENGINE: ${SERVER_CMD[*]}"
 "${SERVER_CMD[@]}" >"$SERVER_LOG" 2>&1 &

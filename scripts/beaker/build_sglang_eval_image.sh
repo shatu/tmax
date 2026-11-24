@@ -12,17 +12,21 @@
 #
 # Usage (from anywhere in the tmax repo, on a machine with podman + beaker CLI;
 # the base image is ~52 GB and each upload ~51 GB):
-#   scripts/beaker/build_sglang_eval_image.sh [--base shashankg/tmax-miles-train-20261029] \
+#   scripts/beaker/build_sglang_eval_image.sh [--base shashankg/tmax-miles-train-20261029] [--name tmax-sglang-eval] \
 #       [--workspace ai2/oe-agents] [--allow-dirty]
 set -euo pipefail
 
 BASE_BEAKER_IMAGE="shashankg/tmax-miles-train-20261029"
 WORKSPACE="ai2/oe-agents"
+# Image name stem: <stem>_<commit> and <stem>_latest. Give a base other than the Qwen Miles image its own
+# stem (e.g. tmax-sglang-eval-olmo for the OLMo-core Miles image), so its _latest does not replace the default.
+NAME_STEM="tmax-sglang-eval"
 ALLOW_DIRTY=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --base)        BASE_BEAKER_IMAGE="$2"; shift 2 ;;
         --workspace)   WORKSPACE="$2"; shift 2 ;;
+        --name)        NAME_STEM="$2"; shift 2 ;;
         --allow-dirty) ALLOW_DIRTY=1; shift ;;
         -h|--help)     sed -n '2,17p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 1 ;;
@@ -48,8 +52,8 @@ SHORT="$(git rev-parse --short=12 HEAD)"
 BEAKER_USER="$(beaker account whoami --format json | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["name"])')"
 BASE_ID="$(beaker image get "$BASE_BEAKER_IMAGE" --format json \
     | python3 -c 'import json,sys; d=json.load(sys.stdin); d=d[0] if isinstance(d,list) else d; print(d["id"])')"
-NAME_COMMIT="tmax-sglang-eval_${SHORT}"
-NAME_LATEST="tmax-sglang-eval_latest"
+NAME_COMMIT="${NAME_STEM}_${SHORT}"
+NAME_LATEST="${NAME_STEM}_latest"
 DESC="tmax scripts/beaker/Dockerfile.sglang_eval @ ${SHA} (base ${BASE_BEAKER_IMAGE} = ${BASE_ID})"
 [ "$dirty" = 1 ] && DESC="$DESC (dirty tree)"
 BASE_LOCAL_TAG="localhost/tmax-sglang-eval-base:${BASE_ID,,}"
