@@ -10,6 +10,8 @@
 #   HARBOR_MODEL_NAME        optional model name passed to harbor
 #   ENGINE                   vllm (default) or sglang
 #   VLLM_VERSION             vLLM package version for uvx (default: 0.19.1)
+#   SERVER_SETUP             optional setup script run before the server starts: a file name in
+#                            this script's directory (e.g. setup_olmoe3_vllm.sh) or a path
 #   VLLM_BIN                 optional vllm executable already in the image (e.g. olmo-eval's
 #                            /opt/vllm-venv/bin/vllm, which serves Olmo 3.5 MoE) instead of uvx
 #   VLLM_TOOL_CALL_PARSER    vLLM tool parser (default: hermes)
@@ -492,6 +494,17 @@ fi
 unset VLLM_PORT
 API_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); p=s.getsockname()[1]; s.close(); print(p)')"
 SERVER_LOG="/tmp/${ENGINE}.log"
+
+# Server setup (launch_eval.sh --server-setup), e.g. a vLLM venv with a model plugin.
+if [ -n "${SERVER_SETUP:-}" ]; then
+    SETUP_PATH="$SERVER_SETUP"
+    case "$SETUP_PATH" in /*) ;; *) SETUP_PATH="$SCRIPT_DIR/$SETUP_PATH" ;; esac
+    log "server setup: $SETUP_PATH"
+    if ! bash "$SETUP_PATH"; then
+        log "FATAL: server setup $SETUP_PATH failed"
+        exit 1
+    fi
+fi
 VLLM_LOG_TAIL_LINES="${VLLM_LOG_TAIL_LINES:-300}"
 case "$ENGINE" in
 vllm)
