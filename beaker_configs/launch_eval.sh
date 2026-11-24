@@ -87,6 +87,7 @@ MIN_RUNTIME=""
 RETRIES=2                           # Beaker retries of a failed job; each resumes from its /results
 EVAL_RESUMABLE=1                    # resume from the previous job's /results after a Beaker preemption
 HOSTNAME_CONSTRAINT=""              # optional: pin to a specific beaker node hostname (gantry --hostname)
+EXTRA_WEKA_MOUNTS=()                # optional: more gantry --weka BUCKET:PATH mounts (oe-adapt-default is always mounted)
 HARBOR_TIMEOUT_MULTIPLIER=""
 HARBOR_AGENT_TIMEOUT_MULTIPLIER=""
 HARBOR_VERIFIER_TIMEOUT_MULTIPLIER=""
@@ -185,6 +186,9 @@ Options:
                          failed job's /results, so a resumable eval picks up where it stopped
   --no-resume            disable preemption-resume (harbor writes to local disk, copied at end)
   --hostname HOST        pin the job to one beaker node (gantry --hostname; repeatable via comma list)
+  --weka BUCKET:PATH     mount another weka bucket (repeatable), e.g.
+                         olmo-3p5-post-checkpoints:/weka/olmo-3p5-post-checkpoints for a model there;
+                         oe-adapt-default is always mounted at /weka/oe-adapt-default
   --timeout-multiplier X harbor task timeout multiplier
   --agent-timeout-multiplier X
                         harbor agent timeout multiplier
@@ -254,6 +258,7 @@ while [ $# -gt 0 ]; do
         --retries)         RETRIES="$2"; shift 2 ;;
         --no-resume)       EVAL_RESUMABLE=0; shift ;;
         --hostname)        HOSTNAME_CONSTRAINT="$2"; shift 2 ;;
+        --weka)            EXTRA_WEKA_MOUNTS+=("$2"); shift 2 ;;
         --timeout-multiplier) HARBOR_TIMEOUT_MULTIPLIER="$2"; shift 2 ;;
         --agent-timeout-multiplier) HARBOR_AGENT_TIMEOUT_MULTIPLIER="$2"; shift 2 ;;
         --verifier-timeout-multiplier) HARBOR_VERIFIER_TIMEOUT_MULTIPLIER="$2"; shift 2 ;;
@@ -445,6 +450,7 @@ fi
 if [ -n "$HOSTNAME_CONSTRAINT" ]; then
     for h in ${HOSTNAME_CONSTRAINT//,/ }; do GANTRY_CMD+=(--hostname "$h"); done
 fi
+for m in "${EXTRA_WEKA_MOUNTS[@]}"; do GANTRY_CMD+=(--weka "$m"); done
 
 # Gantry accepts repeated --cluster flags; CLUSTER may be comma-separated.
 if [ -z "$HOSTNAME_CONSTRAINT" ]; then   # gantry forbids --cluster together with --hostname
